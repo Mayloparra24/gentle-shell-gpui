@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Builds dist/Gentle Shell.app and dist/gentle-shell-gpui-<version>-macos-<arch>.zip.
+# Builds dist/Gentle Shell.app, dist/gentle-shell-gpui-<version>-macos-<arch>.zip
+# (what the in-app updater downloads) and a .dmg of the same signed app with an
+# Applications shortcut (what people download to install by dragging).
 #
 #   packaging/macos/bundle.sh <target-triple> <version>
 #   packaging/macos/bundle.sh aarch64-apple-darwin 0.1.0
@@ -52,5 +54,15 @@ rm -f "$zip"
 # No AppleDouble `._*` entries: non-Apple unzippers (incl. the in-app
 # updater) would write them into the bundle and invalidate the seal.
 ditto -c -k --norsrc --noextattr --noacl --keepParent "$app" "$zip"
+
+dmg="dist/gentle-shell-gpui-$version-macos-$arch.dmg"
+stage="$(mktemp -d)"
+trap 'rm -rf "$stage"' EXIT
+ditto --norsrc --noextattr --noacl "$app" "$stage/Gentle Shell.app"
+ln -s /Applications "$stage/Applications"
+rm -f "$dmg"
+hdiutil create -quiet -volname "Gentle Shell" -srcfolder "$stage" -ov -format UDZO "$dmg"
+
 echo "$app"
 echo "$zip"
+echo "$dmg"

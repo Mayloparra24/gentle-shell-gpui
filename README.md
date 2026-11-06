@@ -39,7 +39,7 @@ The app does not reimplement Gentle Shell. Each tab starts `gentle-shell --mode 
 
 Download the asset for your system from [Releases](https://github.com/ismaelosuna7824/gentle-shell-gpui/releases) (names under [Packages and releases](#packages-and-releases)).
 
-- **macOS:** unzip and move `Gentle Shell.app` to `~/Applications` (or `/Applications`). The app is ad-hoc signed, not notarized, so the first launch is blocked: right-click the app → **Open** → **Open**, or allow it in System Settings → Privacy & Security → **Open Anyway**. From a terminal, `xattr -dr com.apple.quarantine ~/Applications/"Gentle Shell.app"` does the same. Later versions install from inside the app ([Updating the app](#updating-the-app)).
+- **macOS:** open `gentle-shell-gpui-<version>-macos-aarch64.dmg` (Apple silicon) or `…-macos-x86_64.dmg` (Intel) and drag **Gentle Shell** onto **Applications**. The app is ad-hoc signed, not notarized, so the first launch is blocked: right-click the app → **Open** → **Open**, or allow it in System Settings → Privacy & Security → **Open Anyway**. From a terminal, `xattr -dr com.apple.quarantine /Applications/"Gentle Shell.app"` does the same. Later versions install from inside the app ([Updating the app](#updating-the-app)).
 - **Windows:** unzip and run `gentle-shell-gpui.exe`. SmartScreen may warn about an unknown publisher: **More info** → **Run anyway**.
 - **Linux:** extract the tarball and run `gentle-shell-gpui-<version>/gentle-shell-gpui`. Copy the `.desktop` file to `~/.local/share/applications/` (and fix its `Exec=` path) to get a launcher entry.
 
@@ -96,7 +96,7 @@ Cut a release:
 2. Optional dry run: Actions → Release → Run workflow. It builds all four targets and uploads the assets and `SHA256SUMS` as an artifact without publishing.
 3. `git tag v0.2.0 && git push origin main v0.2.0`. The Release workflow checks the tag against the workspace version, builds macOS (arm64 and x86_64), Windows and Linux, writes `SHA256SUMS` and publishes the GitHub release with generated notes. A version with `-` (`0.2.0-rc.1`) is a prerelease.
 
-Assets: `gentle-shell-gpui-<v>-macos-aarch64.zip`, `…-macos-x86_64.zip` (each holds `Gentle Shell.app`, ad-hoc signed), `…-windows-x86_64.zip` (the exe), `…-linux-x86_64.tar.gz` (binary, `.desktop`, icon) and `SHA256SUMS`. The in-app updater relies on these names.
+Assets: `gentle-shell-gpui-<v>-macos-aarch64.dmg` / `.zip` and `…-macos-x86_64.dmg` / `.zip` (the same ad-hoc signed `Gentle Shell.app`: the DMG to install by dragging, the zip for the in-app updater), `…-windows-x86_64.zip` (the exe), `…-linux-x86_64.tar.gz` (binary, `.desktop`, icon) and `SHA256SUMS`. The in-app updater relies on these names.
 
 ### Updating the app
 
@@ -119,7 +119,7 @@ The check cache and the skipped version are in `<data dir>/gentle-shell-gpui/app
 
 Known gaps and things not tested yet, so you know what to expect:
 
-- **No release published yet.** The Release workflow, the Windows and Linux builds and the in-app updater have never run for real. The updater (download, checksum, replace, restart) can only be tested once two releases exist; the Windows and Linux code paths have only been type-checked on macOS.
+- **First release:** v0.1.0 is the first one, so the in-app updater (download, checksum, replace, restart) can only be tested end to end once v0.1.1 exists. The Windows and Linux builds first compile in that release's CI; they have only been type-checked on macOS.
 - **Signing:** macOS builds are ad-hoc signed, not notarized, and Windows builds are unsigned, hence the first-launch warnings above.
 - **Claude usage:** Usage & stats shows nothing for Claude through `pi-claude-bridge`. Gentle Shell keeps those 5h/7d windows in its terminal UI only; the app sees the bridge's high-usage warnings (the composer's `7d 57%` chip) but not the full windows. Reading Claude Code's login from the Keychain to ask Anthropic's usage endpoint is possible but not implemented.
 - **Quitting with unsaved files:** closing a pane or tab with unsaved edits asks first, but ⌘Q does not.
