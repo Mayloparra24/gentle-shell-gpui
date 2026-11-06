@@ -58,11 +58,6 @@ struct Chrome {
 /// Least time between working-tree refreshes a turn's tool calls trigger.
 const GIT_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 
-/// Whether the right rail is shown; one setting for every tab.
-#[derive(Clone, Copy)]
-pub struct RailVisible(pub bool);
-impl Global for RailVisible {}
-
 enum Backend {
     Starting,
     Ready(Arc<PiProcess>),
@@ -170,10 +165,6 @@ pub struct SessionView {
     git_scheduled: bool,
     /// The pane's own width, measured each frame; narrow layouts adapt to it.
     pane_width: std::rc::Rc<std::cell::Cell<f32>>,
-    /// The whole pane's width (rail included), measured each frame.
-    root_width: std::rc::Rc<std::cell::Cell<f32>>,
-    /// The pane was wide enough for the rail last frame (for hysteresis).
-    rail_fits: bool,
     focus_handle: FocusHandle,
     _io: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -285,8 +276,6 @@ impl SessionView {
             context_percent: None,
             cost: 0.0,
             pane_width: std::rc::Rc::new(std::cell::Cell::new(10_000.)),
-            root_width: std::rc::Rc::new(std::cell::Cell::new(0.)),
-            rail_fits: false,
             commands: Vec::new(),
             session_name: None,
             session_file: None,

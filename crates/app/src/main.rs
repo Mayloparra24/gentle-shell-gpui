@@ -33,7 +33,7 @@ use gpui_kit::*;
 
 use workspace::{
     ClosePane, CloseTab, FocusNextPane, FocusPrevPane, NewTab, NewTerminalTab, NextTab, PrevTab,
-    Quit, SplitDown, SplitRight, ToggleRail, ToggleSidebar, Workspace,
+    Quit, SplitDown, SplitRight, ToggleSidebar, Workspace,
 };
 
 /// `gentle-shell-gpui [FOLDER] [-p|--prompt TEXT]`
@@ -170,7 +170,6 @@ fn main() {
                 KeyBinding::new(key!("]"), FocusNextPane, None),
                 KeyBinding::new(key!("["), FocusPrevPane, None),
                 KeyBinding::new(key!("b"), ToggleSidebar, None),
-                KeyBinding::new(key!("alt-b"), ToggleRail, None),
                 KeyBinding::new(key!("q"), Quit, None),
                 KeyBinding::new("escape", workspace::CloseOverlay, Some("GentleWorkspace")),
                 KeyBinding::new("escape", session::Abort, Some(session::CONTEXT)),
@@ -197,7 +196,6 @@ fn main() {
                     MenuItem::action("Close Tab", CloseTab),
                     MenuItem::separator(),
                     MenuItem::action("Toggle Sidebar", ToggleSidebar),
-                    MenuItem::action("Toggle Side Panel", ToggleRail),
                     MenuItem::separator(),
                     MenuItem::action("Quit Gentle Shell", Quit),
                 ],

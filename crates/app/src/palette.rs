@@ -35,7 +35,6 @@ pub enum PaletteAction {
     NewAgentPane,
     NewTerminalPane,
     ClosePane,
-    ToggleRail,
     ToggleSidebar,
     /// Send `/name` as a prompt in the active agent pane.
     Command(String),
@@ -464,12 +463,6 @@ fn screen_rows() -> Vec<Row> {
             "Toggle sidebar",
             &format!("Files and the left panel ({cmd}B)"),
             PaletteAction::ToggleSidebar,
-        ),
-        row(
-            IconName::PanelRight,
-            "Toggle side panel",
-            &format!("Changes, todo, jobs, helpers ({cmd}⌥B)"),
-            PaletteAction::ToggleRail,
         ),
     ]
 }
@@ -1194,9 +1187,11 @@ impl Render for PaletteView {
             .absolute()
             .inset_0()
             .flex()
+            // Centered like every other screen (`ui::screen`); the fixed
+            // height keeps it from jumping as results change.
+            .items_center()
             .justify_center()
-            .pt(px(72.))
-            .pb(px(32.))
+            .p(px(32.))
             .bg(ui::backdrop())
             .occlude()
             .capture_key_down(cx.listener(Self::on_key_down))

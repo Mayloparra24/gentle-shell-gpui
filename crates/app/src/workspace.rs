@@ -25,7 +25,7 @@ use crate::palette::{
 use crate::pane::{PaneFactories, PaneId, PaneItem, PaneKind, PaneTree, SplitAxis};
 use crate::profiles::{ModelChoice, ProfilesEvent, ProfilesView};
 use crate::providers::{ProvidersEvent, ProvidersView};
-use crate::session::{RailVisible, SessionEvent, SessionView};
+use crate::session::{SessionEvent, SessionView};
 use crate::sessions::{SessionsEvent, SessionsView};
 use crate::settings::{SettingsEvent, SettingsView};
 use crate::ui;
@@ -48,7 +48,6 @@ actions!(
         FocusNextPane,
         FocusPrevPane,
         ToggleSidebar,
-        ToggleRail,
         OpenProviders,
         OpenSessions,
         OpenPalette,
@@ -275,15 +274,12 @@ impl Workspace {
                 saved: Some((w.tabs, w.active_tab)),
             })
             .collect();
-        // Before the observer below, so restoring doesn't count as a change.
-        cx.set_global(RailVisible(saved.rail));
         let lifecycle = vec![
             cx.on_app_quit(|this, cx| {
                 this.save_now(cx);
                 async {}
             }),
             cx.on_release(|this, cx| this.save_now(cx)),
-            cx.observe_global::<RailVisible>(|this, cx| this.schedule_save(cx)),
             // The title-bar update pill follows this app's own update state.
             cx.observe_global::<crate::app_update::AppUpdate>(|_, cx| cx.notify()),
         ];
@@ -1329,7 +1325,6 @@ impl Workspace {
             current: self.current,
             workspaces,
             sidebar: self.sidebar_visible,
-            rail: cx.try_global::<RailVisible>().is_none_or(|r| r.0),
         }
     }
 
@@ -1463,10 +1458,6 @@ impl Workspace {
         self.sidebar_visible
     }
 
-    fn on_toggle_rail(&mut self, _: &ToggleRail, _: &mut Window, cx: &mut Context<Self>) {
-        toggle_rail(cx);
-    }
-
     fn on_open_providers(
         &mut self,
         _: &OpenProviders,
@@ -1583,7 +1574,6 @@ impl Workspace {
             PaletteAction::NewAgentPane => self.split_with_kind(PaneKind::Agent, window, cx),
             PaletteAction::NewTerminalPane => self.split_with_kind(PaneKind::Terminal, window, cx),
             PaletteAction::ClosePane => self.on_close_pane(&ClosePane, window, cx),
-            PaletteAction::ToggleRail => toggle_rail(cx),
             PaletteAction::ToggleSidebar => self.toggle_sidebar(cx),
             PaletteAction::Agents => {
                 if let Some(tab) = tab {
@@ -2369,12 +2359,6 @@ fn menu_row(
         .child(ui::kbd(keys))
 }
 
-pub fn toggle_rail(cx: &mut App) {
-    let visible = cx.try_global::<RailVisible>().is_none_or(|r| r.0);
-    cx.set_global(RailVisible(!visible));
-    cx.refresh_windows();
-}
-
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Follow keyboard focus into panes (a terminal focused by its own click).
@@ -2389,7 +2373,6 @@ impl Render for Workspace {
         {
             tab.focused = inside;
         }
-        let rail_visible = cx.try_global::<RailVisible>().is_none_or(|r| r.0);
         let sidebar = self.sidebar.clone().filter(|_| self.sidebar_visible);
         let has_sidebar = self.sidebar.is_some();
         // Below this the screen buttons fold into one overflow menu.
@@ -2410,7 +2393,6 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_focus_next_pane))
             .on_action(cx.listener(Self::on_focus_prev_pane))
             .on_action(cx.listener(Self::on_toggle_sidebar))
-            .on_action(cx.listener(Self::on_toggle_rail))
             .on_action(cx.listener(Self::on_open_providers))
             .on_action(cx.listener(Self::on_open_sessions))
             .on_action(cx.listener(Self::on_open_palette))
@@ -2435,13 +2417,7 @@ impl Render for Workspace {
                                     .min_w_0()
                                     .overflow_hidden()
                                     .child(self.render_workspace_chip(cx))
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .w(px(1.))
-                                            .h(px(14.))
-                                            .bg(ui::border()),
-                                    )
+                                    .child(div().flex_none().w(px(1.)).h(px(14.)).bg(ui::border()))
                                     .child(self.render_tabs(cx)),
                             )
                             .child(
@@ -2492,13 +2468,7 @@ impl Render for Workspace {
                                                     this.on_close_pane(&ClosePane, window, cx)
                                                 })),
                                         )
-                                        .child(
-                                            div()
-                                                .w(px(1.))
-                                                .h(px(14.))
-                                                .mx_1()
-                                                .bg(ui::border()),
-                                        )
+                                        .child(div().w(px(1.)).h(px(14.)).mx_1().bg(ui::border()))
                                     })
                                     .when_some(crate::app_update::badge(cx), |d, (label, tip)| {
                                         d.child(
@@ -2590,7 +2560,9 @@ impl Render for Workspace {
                                                                     "Configuration",
                                                                     "Settings for this folder",
                                                                     |this, window, cx| {
-                                                                        this.open_settings(window, cx)
+                                                                        this.open_settings(
+                                                                            window, cx,
+                                                                        )
                                                                     },
                                                                 ))
                                                                 .item(entry(
@@ -2598,7 +2570,9 @@ impl Render for Workspace {
                                                                     "Profiles",
                                                                     "Model and effort per agent",
                                                                     |this, window, cx| {
-                                                                        this.open_profiles(window, cx)
+                                                                        this.open_profiles(
+                                                                            window, cx,
+                                                                        )
                                                                     },
                                                                 ))
                                                                 .item(entry(
@@ -2614,7 +2588,9 @@ impl Render for Workspace {
                                                                     "Sessions",
                                                                     "Resume a past session",
                                                                     |this, window, cx| {
-                                                                        this.open_sessions(window, cx)
+                                                                        this.open_sessions(
+                                                                            window, cx,
+                                                                        )
                                                                     },
                                                                 ))
                                                                 .item(entry(
@@ -2622,28 +2598,11 @@ impl Render for Workspace {
                                                                     "Providers",
                                                                     "Sign-in and API keys",
                                                                     |this, window, cx| {
-                                                                        this.open_providers(window, cx)
+                                                                        this.open_providers(
+                                                                            window, cx,
+                                                                        )
                                                                     },
                                                                 ))
-                                                                .item(
-                                                                    PopupMenuItem::element(
-                                                                        move |_, _| {
-                                                                            menu_row(
-                                                                                if rail_visible {
-                                                                                    IconName::PanelRightClose
-                                                                                } else {
-                                                                                    IconName::PanelRightOpen
-                                                                                },
-                                                                                "Side panel",
-                                                                                "Show or hide the session rail",
-                                                                                "⌥⌘B",
-                                                                            )
-                                                                        },
-                                                                    )
-                                                                    .on_click(|_, _, cx| {
-                                                                        toggle_rail(cx)
-                                                                    }),
-                                                                )
                                                         }),
                                                 ),
                                         )
@@ -2714,20 +2673,6 @@ impl Render for Workspace {
                                                 .on_click(cx.listener(|this, _, _, cx| {
                                                     this.toggle_sidebar(cx)
                                                 })),
-                                        )
-                                    })
-                                    .when(!narrow, |d| {
-                                        d.child(
-                                            Button::new("toggle-rail")
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(Icon::new(if rail_visible {
-                                                    IconName::PanelRightClose
-                                                } else {
-                                                    IconName::PanelRightOpen
-                                                }))
-                                                .tooltip("Toggle side panel (⌥⌘B)")
-                                                .on_click(|_, _, cx| toggle_rail(cx)),
                                         )
                                     }),
                             ),

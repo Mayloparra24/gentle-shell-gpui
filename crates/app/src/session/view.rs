@@ -23,7 +23,7 @@ use gpui_kit::*;
 use pi_rpc::{UiAnswer, UiMethod};
 
 use super::attachments;
-use super::{Backend, CONTEXT, ModelInfo, RailVisible, SessionView};
+use super::{Backend, CONTEXT, ModelInfo, SessionView};
 use crate::gentle_state::PermissionMode;
 use crate::tools;
 use crate::transcript::{Block, Dirty, Item, NoticeLevel, ToolStatus, format_tokens};
@@ -2024,6 +2024,27 @@ impl SessionView {
             })
     }
 
+    /// "Todos 3/7": opens the task list in a popover above the composer.
+    fn render_todo_chip(&self) -> impl IntoElement + use<> {
+        let todo = self.todo.clone();
+        let done = todo.iter().filter(|t| t.status == "done").count();
+        let total = todo.len();
+        let color = if done == total {
+            ui::success()
+        } else {
+            ui::accent()
+        };
+        chip_popover(
+            "todo",
+            IconName::ListTodo,
+            color,
+            format!("Todos {done}/{total}"),
+            "Tasks",
+            format!("{done}/{total}"),
+            move || todo_rows(&todo),
+        )
+    }
+
     /// Elapsed time, phase and current tool over the composer, with the
     /// session's live chips on the right.
     fn render_activity(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -2107,7 +2128,6 @@ impl SessionView {
                 })
             });
 
-        let running_jobs = self.jobs.iter().filter(|j| j.is_running()).count();
         let width = self.pane_width.get();
         let statuses: Vec<(String, String)> = self
             .statuses
@@ -2157,17 +2177,20 @@ impl SessionView {
                         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
                 )
             })
-            .when(running_jobs > 0, |this| {
-                this.child(ui::chip(
-                    format!(
-                        "⧗ {running_jobs} job{}",
-                        if running_jobs == 1 { "" } else { "s" }
-                    ),
-                    ui::accent(),
-                ))
+            .when(!self.jobs.is_empty(), |this| {
+                this.child(self.render_jobs_chip())
             })
             .when(self.queued > 0, |this| {
                 this.child(ui::chip(format!("{} queued", self.queued), ui::warning()))
+            })
+            // Tern-style: the todo list, jobs, widgets and last-response usage
+            // live in chips here instead of a side panel.
+            .when(!self.todo.is_empty(), |this| {
+                this.child(self.render_todo_chip())
+            })
+            .when(!collapse, |this| this.children(self.render_widget_chips()))
+            .when(width >= NARROW, |this| {
+                this.children(self.render_usage_chip())
             })
             .when_some(
                 self.agents.as_ref().filter(|a| !a.tasks.is_empty()),
@@ -2501,242 +2524,149 @@ impl SessionView {
             })
     }
 
-    // ── Rail ───────────────────────────────────────────────────────────────
+    // ── Status chips (Tern-style: everything that used to sit in a side
+    //    panel lives in small chips over the composer, each opening a card) ──
 
-    /// Whether the rail would show anything.
-    fn rail_has_content(&self) -> bool {
-        !self.jobs.is_empty()
-            || !self.todo.is_empty()
-            || self.agents.as_ref().is_some_and(|a| !a.tasks.is_empty())
-            || !self.widgets.is_empty()
-            || self.transcript.last_usage.is_some()
-    }
-
-    fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let card = || ui::card().w_full().gap_1p5().p_3();
-        let mut rail = v_flex()
-            .id("rail")
-            .w(px(300.))
-            .h_full()
-            .flex_shrink_0()
-            .gap_3()
-            .p_3()
-            .overflow_y_scroll();
-        // Git changes live in the sidebar's Changes tab; the rail doesn't repeat them.
-
-        if !self.jobs.is_empty() {
-            let running = self.jobs.iter().filter(|j| j.is_running()).count();
-            rail = rail.child(ui::appear(
-                "rail-jobs",
-                card()
-                    .child(
-                        h_flex()
-                            .child(ui::section_label("Jobs"))
-                            .child(div().flex_1())
-                            .when(running > 0, |this| {
-                                this.child(ui::chip(format!("{running} running"), ui::accent()))
-                            }),
-                    )
-                    .children(self.jobs.iter().take(10).map(|job| {
-                        let (glyph, color) = if job.is_running() {
-                            ("⧗", ui::accent())
-                        } else if job.exit_code.unwrap_or(0) == 0 && job.status != "failed" {
-                            ("✓", ui::success())
-                        } else {
-                            ("✗", ui::danger())
-                        };
+    /// Background jobs: "⧗ 2 running" or "Jobs 3", with the list on click.
+    fn render_jobs_chip(&self) -> impl IntoElement + use<> {
+        let running = self.jobs.iter().filter(|j| j.is_running()).count();
+        let total = self.jobs.len();
+        let color = if running > 0 {
+            ui::accent()
+        } else {
+            ui::muted()
+        };
+        let rows: Vec<(String, &'static str, Hsla, String)> = self
+            .jobs
+            .iter()
+            .take(20)
+            .map(|job| {
+                let (glyph, color) = if job.is_running() {
+                    ("⧗", ui::accent())
+                } else if job.exit_code.unwrap_or(0) == 0 && job.status != "failed" {
+                    ("✓", ui::success())
+                } else {
+                    ("✗", ui::danger())
+                };
+                let label = if job.label.is_empty() {
+                    format!("job {}", job.id)
+                } else {
+                    job.label.clone()
+                };
+                let state = match job.exit_code {
+                    Some(code) => format!("exit {code}"),
+                    None => job.status.clone(),
+                };
+                (label, glyph, color, state)
+            })
+            .collect();
+        let label = if running > 0 {
+            format!("{running} running")
+        } else {
+            format!("Jobs {total}")
+        };
+        chip_popover(
+            "jobs",
+            IconName::Activity,
+            color,
+            label,
+            "Background jobs",
+            format!("{running}/{total}"),
+            move || {
+                rows.iter()
+                    .map(|(label, glyph, color, state)| {
                         h_flex()
                             .gap_2()
                             .text_size(px(12.))
-                            .child(div().text_color(color).child(glyph))
+                            .child(div().flex_none().text_color(*color).child(*glyph))
                             .child(
                                 div()
                                     .flex_1()
                                     .min_w_0()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .whitespace_nowrap()
+                                    .truncate()
                                     .font_family(ui::MONO)
                                     .text_color(ui::fg())
-                                    .child(if job.label.is_empty() {
-                                        format!("job {}", job.id)
-                                    } else {
-                                        job.label.clone()
-                                    }),
+                                    .child(label.clone()),
                             )
-                            .child(div().text_color(ui::faint()).child(match job.exit_code {
-                                Some(code) => format!("exit {code}"),
-                                None => job.status.clone(),
-                            }))
-                    })),
-            ));
-        }
-
-        if !self.todo.is_empty() {
-            let done = self.todo.iter().filter(|t| t.status == "done").count();
-            rail = rail.child(ui::appear(
-                "rail-todo",
-                card()
-                    .child(
-                        h_flex()
-                            .child(ui::section_label("Todo"))
-                            .child(div().flex_1())
-                            .child(ui::chip(
-                                format!("{done}/{}", self.todo.len()),
-                                ui::success(),
-                            )),
-                    )
-                    .children(self.todo.iter().map(|task| {
-                        let (glyph, color) = match task.status.as_str() {
-                            "done" => ("✓", ui::success()),
-                            "in_progress" => ("◐", ui::accent()),
-                            "blocked" => ("⊘", ui::warning()),
-                            "dropped" => ("–", ui::faint()),
-                            _ => ("○", ui::muted()),
-                        };
-                        v_flex()
                             .child(
-                                h_flex()
-                                    .items_start()
-                                    .gap_2()
-                                    .text_size(px(12.))
-                                    .child(div().flex_none().text_color(color).child(glyph))
-                                    // min_w_0 lets long titles wrap inside the card
-                                    // instead of pushing past its edge.
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .text_color(if task.status == "done" {
-                                                ui::muted()
-                                            } else {
-                                                ui::fg()
-                                            })
-                                            .child(task.title.clone()),
-                                    ),
+                                div()
+                                    .flex_none()
+                                    .text_color(ui::faint())
+                                    .child(state.clone()),
                             )
-                            .when_some(task.note.clone(), |this, note| {
-                                this.child(
-                                    div()
-                                        .pl_4()
-                                        .text_size(px(11.))
-                                        .text_color(ui::faint())
-                                        .child(note),
-                                )
-                            })
-                    })),
-            ));
-        }
+                            .into_any_element()
+                    })
+                    .collect()
+            },
+        )
+    }
 
-        if let Some(activity) = &self.agents
-            && !activity.tasks.is_empty()
-        {
-            rail = rail.child(
-                card()
-                    .id("rail-helpers")
-                    .cursor_pointer()
-                    .hover(|s| s.border_color(ui::border_strong()))
-                    .on_click(cx.listener(|this, _, _, cx| this.open_agents(None, cx)))
-                    .child(
-                        h_flex()
-                            .child(ui::section_label("Helpers"))
-                            .child(div().flex_1())
-                            .when(activity.summary.running > 0, |this| {
-                                this.child(ui::chip(
-                                    format!("{} running", activity.summary.running),
-                                    ui::warning(),
-                                ))
-                            }),
-                    )
-                    .children(activity.tasks.iter().take(12).map(|task| {
-                        let s = &task.summary;
-                        let color = super::agents::status_color(&s.status);
-                        let dot = div().size(px(6.)).rounded_full().bg(color);
-                        v_flex()
-                            .gap_0p5()
-                            .child(
-                                h_flex()
-                                    .gap_2()
+    /// Extension widgets (`setWidget`): one chip each, its lines on click.
+    fn render_widget_chips(&self) -> Vec<AnyElement> {
+        self.widgets
+            .iter()
+            .map(|(key, lines)| {
+                let lines = lines.clone();
+                let title = key.clone();
+                chip_popover(
+                    SharedString::from(format!("widget-{key}")),
+                    IconName::LayoutDashboard,
+                    ui::muted(),
+                    ui::first_line(key, 18),
+                    title,
+                    String::new(),
+                    move || {
+                        lines
+                            .iter()
+                            .map(|line| {
+                                div()
                                     .min_w_0()
                                     .text_size(px(12.))
-                                    .child(if s.status == "running" {
-                                        ui::pulse(
-                                            ElementId::Name(format!("helper-{}", s.id).into()),
-                                            dot,
-                                        )
-                                        .into_any_element()
-                                    } else {
-                                        dot.into_any_element()
-                                    })
-                                    .child(
-                                        div()
-                                            .min_w_0()
-                                            .overflow_hidden()
-                                            .text_ellipsis()
-                                            .whitespace_nowrap()
-                                            .text_color(ui::fg())
-                                            .child(s.agent.clone()),
-                                    )
-                                    .child(
-                                        div().flex_none().text_color(color).child(s.status.clone()),
-                                    ),
+                                    .font_family(ui::MONO)
+                                    .text_color(ui::muted())
+                                    .child(line.clone())
+                                    .into_any_element()
+                            })
+                            .collect()
+                    },
+                )
+                .into_any_element()
+            })
+            .collect()
+    }
+
+    /// The last response's tokens: output on the chip, the breakdown on click.
+    fn render_usage_chip(&self) -> Option<impl IntoElement + use<>> {
+        let usage = self.transcript.last_usage?;
+        let rows = [
+            ("Input", format_tokens(usage.input)),
+            ("Output", format_tokens(usage.output)),
+            ("Cache read", format_tokens(usage.cache_read)),
+        ];
+        Some(chip_popover(
+            "last-usage",
+            IconName::ChartPie,
+            ui::faint(),
+            format!("out {}", format_tokens(usage.output)),
+            "Last response",
+            String::new(),
+            move || {
+                rows.iter()
+                    .map(|(name, value)| {
+                        h_flex()
+                            .text_size(px(12.))
+                            .child(div().flex_1().text_color(ui::muted()).child(*name))
+                            .child(
+                                div()
+                                    .font_family(ui::MONO)
+                                    .text_color(ui::fg())
+                                    .child(value.clone()),
                             )
-                            .when_some(s.label.clone(), |this, label| {
-                                this.child(
-                                    div()
-                                        .min_w_0()
-                                        .text_size(px(11.))
-                                        .text_color(ui::muted())
-                                        .child(label),
-                                )
-                            })
-                            .when_some(s.last_step.clone(), |this, step| {
-                                this.child(
-                                    div()
-                                        .min_w_0()
-                                        .overflow_hidden()
-                                        .text_ellipsis()
-                                        .whitespace_nowrap()
-                                        .text_size(px(11.))
-                                        .font_family(ui::MONO)
-                                        .text_color(ui::faint())
-                                        .child(ui::first_line(&step, 60)),
-                                )
-                            })
-                    })),
-            );
-        }
-
-        for (key, lines) in &self.widgets {
-            rail = rail.child(card().child(ui::section_label(key.clone())).children(
-                lines.iter().map(|line| {
-                    div()
-                        .min_w_0()
-                        .text_size(px(12.))
-                        .font_family(ui::MONO)
-                        .text_color(ui::muted())
-                        .child(line.clone())
-                }),
-            ));
-        }
-
-        if let Some(usage) = self.transcript.last_usage {
-            rail = rail.child(
-                card().child(ui::section_label("Last response")).child(
-                    div()
-                        .text_size(px(12.))
-                        .font_family(ui::MONO)
-                        .text_color(ui::muted())
-                        .child(format!(
-                            "in {} · out {} · cache {}",
-                            format_tokens(usage.input),
-                            format_tokens(usage.output),
-                            format_tokens(usage.cache_read)
-                        )),
-                ),
-            );
-        }
-        rail
+                            .into_any_element()
+                    })
+                    .collect()
+            },
+        ))
     }
 }
 
@@ -2828,16 +2758,7 @@ impl Render for SessionView {
         // A tab starts its backend once shown.
         self.ensure_started(window, cx);
         self.sync_view(cx);
-        // The rail shows only with something in it, and gives way in narrow
-        // panes (a split pane, not just a narrow window) so the conversation
-        // keeps its width.
-        self.rail_fits = rail_fits(self.rail_fits, self.root_width.get());
-        let show_rail = cx.try_global::<RailVisible>().is_none_or(|r| r.0)
-            && self.rail_fits
-            && self.rail_has_content();
-
         let width = self.pane_width.clone();
-        let root_width = self.root_width.clone();
         let view = cx.entity_id();
         let narrow = self.pane_width.get() < NARROW;
         let main = v_flex()
@@ -2890,34 +2811,12 @@ impl Render for SessionView {
             .capture_key_down(cx.listener(Self::on_dialog_key))
             .relative()
             .size_full()
-            // The whole pane's width (the conversation column's shrinks with the rail).
-            .child(
-                canvas(
-                    move |bounds, _, cx| {
-                        let w = f32::from(bounds.size.width);
-                        if (w - root_width.get()).abs() > 1. {
-                            root_width.set(w);
-                            cx.notify(view);
-                        }
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .size_full(),
-            )
             .child(main)
-            .when(show_rail, |this| this.child(self.render_rail(cx)))
             .children(self.render_agents_panel(cx))
     }
 }
 
 // ── Building blocks ────────────────────────────────────────────────────────
-
-/// Whether the pane (`width` px) is wide enough for the rail, with some
-/// hysteresis so it does not flip while a split is dragged near the edge.
-fn rail_fits(shown: bool, width: f32) -> bool {
-    width >= if shown { 780. } else { 820. }
-}
 
 /// Everything a tool or shell card shows except its text bodies, derived
 /// once per change of its item; the bodies are borrowed from the item when
@@ -3275,8 +3174,11 @@ fn user_bubble(text: &str, images: Vec<Option<Arc<Image>>>) -> Div {
         background_color: Some(ui::info().opacity(0.14)),
         ..Default::default()
     };
-    h_flex().w_full().justify_end().child(
+    // min_w_0 on both levels: without it the bubble's minimum width is its
+    // unwrapped text, so in a narrow pane it overflows (clipped on the left).
+    h_flex().w_full().min_w_0().justify_end().child(
         v_flex()
+            .min_w_0()
             .max_w(px(560.))
             .gap_2()
             .px_4()
@@ -3411,6 +3313,117 @@ fn working_indicator(
         })
 }
 
+/// A status chip over the composer that opens a card above it: icon, title,
+/// optional count, and the rows `body` builds when the card opens. Every
+/// chip (todos, jobs, widgets, usage) shares this look.
+fn chip_popover(
+    id: impl Into<SharedString>,
+    icon: IconName,
+    color: Hsla,
+    label: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    count: String,
+    body: impl Fn() -> Vec<AnyElement> + 'static,
+) -> Popover {
+    let id: SharedString = id.into();
+    let title: SharedString = title.into();
+    let trigger = Button::new(SharedString::from(format!("{id}-chip")))
+        .ghost()
+        .xsmall()
+        .text_color(color)
+        .icon(Icon::new(icon))
+        .label(label);
+    Popover::new(SharedString::from(format!("{id}-popover")))
+        .anchor(Anchor::BottomRight)
+        .trigger(trigger)
+        .w(px(360.))
+        .p_0()
+        .content(move |_, _, _| {
+            v_flex()
+                .p_3()
+                .gap_2()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(Icon::new(icon).small().text_color(color))
+                        .child(
+                            div()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(ui::fg())
+                                .child(title.clone()),
+                        )
+                        .child(div().flex_1())
+                        .when(!count.is_empty(), |d| {
+                            d.child(
+                                div()
+                                    .text_xs()
+                                    .font_family(ui::MONO)
+                                    .text_color(ui::muted())
+                                    .child(count.clone()),
+                            )
+                        }),
+                )
+                .child(
+                    v_flex()
+                        .id(SharedString::from(format!("{id}-popover-list")))
+                        .max_h(px(380.))
+                        .overflow_y_scroll()
+                        .gap_1p5()
+                        .children(body()),
+                )
+                .into_any_element()
+        })
+}
+
+/// One row per todo task (glyph, wrapped title, optional note) for the
+/// "Todos" popover.
+fn todo_rows(todo: &[crate::tools::TodoTask]) -> Vec<AnyElement> {
+    todo.iter()
+        .map(|task| {
+            let (glyph, color) = match task.status.as_str() {
+                "done" => ("✓", ui::success()),
+                "in_progress" => ("◐", ui::accent()),
+                "blocked" => ("⊘", ui::warning()),
+                "dropped" => ("–", ui::faint()),
+                _ => ("○", ui::muted()),
+            };
+            let done = task.status == "done";
+            v_flex()
+                .child(
+                    h_flex()
+                        .items_start()
+                        .gap_2()
+                        .text_size(px(12.))
+                        .child(div().flex_none().text_color(color).child(glyph))
+                        // min_w_0 lets long titles wrap instead of overflowing.
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .text_color(if done { ui::muted() } else { ui::fg() })
+                                .when(done, |d| d.line_through())
+                                .child(task.title.clone()),
+                        ),
+                )
+                .when_some(task.note.clone(), |this, note| {
+                    this.child(
+                        div()
+                            .pl_4()
+                            .text_size(px(11.))
+                            .text_color(if task.status == "blocked" {
+                                ui::warning()
+                            } else {
+                                ui::faint()
+                            })
+                            .child(note),
+                    )
+                })
+                .into_any_element()
+        })
+        .collect()
+}
+
 /// The selected-row marker of lists and pickers.
 fn accent_bar() -> Div {
     div()
@@ -3538,17 +3551,8 @@ mod tests {
     use super::{
         ListUpdate, Row, Shape, Tail, checkbox_option, command_language, head_slice, label_stamp,
         language_for_path, limit_label, line_count, list_update, option_matches, parse_diff_line,
-        parse_rate_limit, rail_fits, split_current, tail_slice, ticker_needed,
+        parse_rate_limit, split_current, tail_slice, ticker_needed,
     };
-
-    #[test]
-    fn rail_shows_in_wide_panes_with_hysteresis() {
-        assert!(!rail_fits(false, 800.));
-        assert!(rail_fits(false, 820.));
-        // Once shown it stays until the pane is clearly narrower.
-        assert!(rail_fits(true, 800.));
-        assert!(!rail_fits(true, 779.));
-    }
 
     #[test]
     fn diff_lines_split_sign_number_and_text() {

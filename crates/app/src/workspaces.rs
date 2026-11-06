@@ -55,16 +55,13 @@ pub struct SavedState {
     /// The files sidebar (⌘B) was showing.
     #[serde(default = "shown")]
     pub sidebar: bool,
-    /// The session side panel (⌥⌘B) was showing.
-    #[serde(default = "shown")]
-    pub rail: bool,
 }
 
 fn shown() -> bool {
     true
 }
 
-/// A first launch shows both panels, as a file from before they were saved does.
+/// A first launch shows the sidebar, as a file from before it was saved does.
 impl Default for SavedState {
     fn default() -> Self {
         Self {
@@ -72,7 +69,6 @@ impl Default for SavedState {
             current: 0,
             workspaces: Vec::new(),
             sidebar: true,
-            rail: true,
         }
     }
 }
@@ -203,7 +199,6 @@ mod tests {
                 },
             ],
             sidebar: false,
-            rail: true,
         }
     }
 
@@ -219,10 +214,9 @@ mod tests {
             serde_json::from_str(r#"{"workspaces":[{"name":"x","root":"/x"}]}"#).unwrap();
         assert_eq!(minimal.workspaces[0].tabs.len(), 0);
         assert_eq!(minimal.current, 0);
-        // A file from before panels were saved keeps both showing.
-        assert!(minimal.sidebar && minimal.rail);
+        // A file from before the sidebar was saved keeps it showing.
+        assert!(minimal.sidebar);
         assert_eq!(SavedState::default().sidebar, minimal.sidebar);
-        assert_eq!(SavedState::default().rail, minimal.rail);
     }
 
     #[test]
