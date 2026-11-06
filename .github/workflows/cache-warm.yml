@@ -1,0 +1,57 @@
+name: Cache warm
+
+# GitHub only lets a tag run restore caches saved on the default branch, so
+# release.yml would compile every dependency from scratch on each tag. This
+# builds the shipping profile on main, only when dependencies or the build
+# setup change, and saves the dependency cache release.yml restores.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Cargo.lock
+      - "**/Cargo.toml"
+      - .github/workflows/cache-warm.yml
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+concurrency:
+  group: cache-warm
+  cancel-in-progress: true
+
+jobs:
+  warm:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: dist-${{ matrix.target }}
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+      # Same profile, target and deployment target as the packaging scripts,
+      # so the cached dependency builds are the ones a release needs.
+      - name: Build the shipping profile
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == macOS ]]; then export MACOSX_DEPLOYMENT_TARGET=11.0; fi
+          cargo build --profile dist --locked -p gentle-shell-gpui --target "${{ matrix.target }}"

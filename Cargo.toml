@@ -19,9 +19,12 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 opt-level = 2
 
-# Shipped builds: whole-program optimization and no debug symbols. Thin LTO
-# keeps link time reasonable in CI while still pruning across crates.
-[profile.release]
+# `cargo run --release` stays Cargo's default (parallel codegen, no LTO) so
+# local optimized builds are quick. Published packages use `--profile dist`:
+# whole-program optimization, one codegen unit and no symbols, which makes
+# the binary about a third smaller at the cost of a much slower build.
+[profile.dist]
+inherits = "release"
 lto = "thin"
 codegen-units = 1
 strip = true

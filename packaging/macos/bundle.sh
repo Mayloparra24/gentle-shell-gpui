@@ -7,7 +7,7 @@
 #   packaging/macos/bundle.sh aarch64-apple-darwin 0.1.0
 #
 # Set GENTLE_BIN=<path> to bundle an already-built binary instead of running
-# `cargo build --release --target <target-triple>`.
+# `cargo build --profile dist --target <target-triple>` (the shipping profile).
 set -euo pipefail
 
 if [[ $# -ne 2 ]]; then
@@ -30,8 +30,8 @@ if [[ -n "${GENTLE_BIN:-}" ]]; then
   binary="$GENTLE_BIN"
 else
   MACOSX_DEPLOYMENT_TARGET="$min_macos" \
-    cargo build --release --locked -p gentle-shell-gpui --target "$target"
-  binary="target/$target/release/gentle-shell-gpui"
+    cargo build --profile dist --locked -p gentle-shell-gpui --target "$target"
+  binary="target/$target/dist/gentle-shell-gpui"
 fi
 [[ -x "$binary" ]] || { echo "missing binary: $binary" >&2; exit 1; }
 

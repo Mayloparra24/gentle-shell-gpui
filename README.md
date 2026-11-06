@@ -86,9 +86,13 @@ The app icon (the Gentle Shell pixel rose) lives in `packaging/icons/`. `generat
 
 Build packages locally:
 
-- macOS: `packaging/macos/bundle.sh aarch64-apple-darwin 0.1.0` → `dist/Gentle Shell.app` and `dist/gentle-shell-gpui-0.1.0-macos-aarch64.zip` (`x86_64-apple-darwin` for Intel). `GENTLE_BIN=target/release/gentle-shell-gpui` reuses an existing build.
+- macOS: `packaging/macos/bundle.sh aarch64-apple-darwin 0.1.0` → `dist/Gentle Shell.app`, `dist/gentle-shell-gpui-0.1.0-macos-aarch64.zip` and `.dmg` (`x86_64-apple-darwin` for Intel; it cross-compiles from Apple silicon). `GENTLE_BIN=<path>` packages an existing build instead.
 - Linux: `packaging/linux/package.sh x86_64-unknown-linux-gnu 0.1.0` → `dist/gentle-shell-gpui-0.1.0-linux-x86_64.tar.gz`.
 - Windows: the icon and version info are embedded in the exe by `crates/app/build.rs`.
+
+Build profiles: `cargo run --release` uses Cargo's default release settings, so local optimized builds stay quick. Packages use `--profile dist` (thin LTO, one codegen unit, stripped): about a third smaller, much slower to build. The scripts and the Release workflow build `dist`.
+
+Workflows: **CI** runs clippy and the tests on macOS, Linux and Windows for pushes to `main` and pull requests (Markdown-only changes skip it). **Release** builds and publishes packages for `v*` tags. **Cache warm** builds the `dist` profile on `main` only when `Cargo.lock`, a `Cargo.toml` or the release workflows change, and saves the dependency cache that tag builds restore (GitHub doesn't let one tag reuse another tag's cache).
 
 Cut a release:
 

@@ -586,16 +586,17 @@ pub fn bundle_of(exe: &Path) -> Option<PathBuf> {
         .then(|| bundle.to_path_buf())
 }
 
-/// `…/target/{debug,release}/<exe>`: a `cargo` build, not a release.
+/// `…/target/[<triple>/]{debug,release,dist}/<exe>`: a `cargo` build, not a
+/// release (`<triple>` for cross builds such as the packaging scripts make).
 fn in_cargo_target(exe: &Path) -> bool {
     let profile = exe.parent();
-    let target = profile.and_then(Path::parent);
-    profile
+    let named =
+        |p: Option<&Path>, name: &str| p.and_then(Path::file_name).is_some_and(|n| n == name);
+    let is_profile = profile
         .and_then(Path::file_name)
-        .is_some_and(|n| n == "debug" || n == "release")
-        && target
-            .and_then(Path::file_name)
-            .is_some_and(|n| n == "target")
+        .is_some_and(|n| n == "debug" || n == "release" || n == "dist");
+    let parent = profile.and_then(Path::parent);
+    is_profile && (named(parent, "target") || named(parent.and_then(Path::parent), "target"))
 }
 
 /// What an update would replace for the app running from `exe`.
@@ -1354,6 +1355,17 @@ mod tests {
         assert!(problem.message.contains("build directory"));
         assert_eq!(problem.link.as_deref(), Some(RELEASES_URL));
         assert!(install_target(dev, "linux").is_err());
+        // The packaging profile, plain and cross-compiled, is a build dir too.
+        for build in [
+            "/src/g/target/dist/gentle-shell-gpui",
+            "/src/g/target/x86_64-unknown-linux-gnu/dist/gentle-shell-gpui",
+            "/src/g/target/x86_64-pc-windows-msvc/release/gentle-shell-gpui.exe",
+        ] {
+            assert!(
+                install_target(Path::new(build), "linux").is_err(),
+                "{build}"
+            );
+        }
         assert!(bundle_of(Path::new("/x/App/Contents/MacOS/bin")).is_none());
         let translocated = Path::new(
             "/private/var/folders/x/AppTranslocation/ABC/d/Gentle Shell.app/Contents/MacOS/gentle-shell-gpui",

@@ -58,8 +58,8 @@ jobs:
           # macos-14 is no longer offered; macos-latest is GitHub's Apple silicon image.
           - os: macos-latest
             target: aarch64-apple-darwin
-          # macos-13 was retired in Dec 2025; macos-15-intel is GitHub's x86_64 macOS image.
-          - os: macos-15-intel
+          # Intel is cross-compiled on the (much faster) Apple silicon runner.
+          - os: macos-latest
             target: x86_64-apple-darwin
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -73,9 +73,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      # Tag runs can't read another tag's cache, only main's: cache-warm.yml
+      # fills this key on main whenever dependencies change, and tags reuse it.
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          shared-key: dist-${{ matrix.target }}
+          save-if: false
       - name: Linux system libraries
         if: runner.os == 'Linux'
         run: |
@@ -92,11 +95,11 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo build --release --locked -p gentle-shell-gpui --target "${{ matrix.target }}"
+          cargo build --profile dist --locked -p gentle-shell-gpui --target "${{ matrix.target }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           New-Item -ItemType Directory -Force dist | Out-Null
           Compress-Archive -Force `
-            -Path "target/${{ matrix.target }}/release/gentle-shell-gpui.exe" `
+            -Path "target/${{ matrix.target }}/dist/gentle-shell-gpui.exe" `
             -DestinationPath "dist/gentle-shell-gpui-$env:VERSION-windows-x86_64.zip"
       - uses: actions/upload-artifact@v4
         with:
