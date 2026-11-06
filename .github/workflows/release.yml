@@ -55,7 +55,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          # macos-14 is no longer offered; macos-latest is GitHub's Apple silicon image.
+          - os: macos-latest
             target: aarch64-apple-darwin
           # macos-13 was retired in Dec 2025; macos-15-intel is GitHub's x86_64 macOS image.
           - os: macos-15-intel
