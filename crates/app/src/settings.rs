@@ -3,6 +3,8 @@
 //! (`gentle-shell install|remove`) and the Claude bridge's plan.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -12,6 +14,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use pi_rpc::file_cache::Stamp;
 use serde_json::Value;
 
 use crate::{app_update, themes, ui};
@@ -295,16 +298,7 @@ pub fn read_snapshot(agent: &Path, config: &Path, cwd: &Path) -> Snapshot {
 /// Runs the launcher's own read-only probes: `--version` and the home mode.
 fn probe(spec: &pi_rpc::LaunchSpec, snapshot: &mut Snapshot) {
     snapshot.launcher = Some(spec.program.clone());
-    let mut command = std::process::Command::new(&spec.program);
-    command
-        .arg("--version")
-        .current_dir(&spec.cwd)
-        .stdin(std::process::Stdio::null());
-    for (k, v) in &spec.env {
-        command.env(k, v);
-    }
-    if let Ok(out) = command.output() {
-        let text = String::from_utf8_lossy(&out.stdout);
+    if let Some(text) = pi_rpc::version_output(spec) {
         for line in text.lines() {
             if let Some(mode) = line.strip_prefix("home ") {
                 snapshot.home_mode = mode.to_string();
@@ -313,26 +307,76 @@ fn probe(spec: &pi_rpc::LaunchSpec, snapshot: &mut Snapshot) {
             }
         }
     }
-    // The bridge rides on Claude Code's own login.
-    let mut claude = std::process::Command::new("claude");
-    claude
-        .args(["auth", "status"])
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    claude.env("PATH", pi_rpc::child_path());
-    snapshot.claude_code = match claude.output() {
-        Ok(out) => serde_json::from_slice::<Value>(&out.stdout).ok().map(|v| {
-            if v["loggedIn"] == true {
-                format!(
-                    "signed in ({})",
-                    v["authMethod"].as_str().unwrap_or("claude.ai")
-                )
-            } else {
-                "not signed in — run `claude auth login`".to_string()
-            }
-        }),
-        Err(_) => Some("Claude Code is not installed".into()),
-    };
+    snapshot.claude_code = claude_auth_status();
+}
+
+/// One probe result and what it was valid for.
+struct Probe<T> {
+    at: Instant,
+    stamp: Option<Stamp>,
+    value: T,
+}
+
+/// `claude auth status`, reused briefly: reopening Configuration should not
+/// start Node every time.
+static CLAUDE_AUTH: Mutex<Option<Probe<Option<String>>>> = Mutex::new(None);
+const CLAUDE_AUTH_TTL: Duration = Duration::from_secs(60);
+
+/// Run `claude auth status` again next time (after anything that may change it).
+pub fn forget_claude_auth() {
+    *CLAUDE_AUTH.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// The bridge rides on Claude Code's own login. Also re-run when Claude
+/// Code's `~/.claude.json` (it records the signed-in account) changes.
+fn claude_auth_status() -> Option<String> {
+    let stamp = dirs::home_dir().and_then(|home| Stamp::of(&home.join(".claude.json")));
+    reuse_or_run(&CLAUDE_AUTH, Instant::now(), CLAUDE_AUTH_TTL, stamp, || {
+        let mut claude = std::process::Command::new("claude");
+        claude
+            .args(["auth", "status"])
+            .stdin(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        claude.env("PATH", pi_rpc::child_path());
+        match claude.output() {
+            Ok(out) => serde_json::from_slice::<Value>(&out.stdout).ok().map(|v| {
+                if v["loggedIn"] == true {
+                    format!(
+                        "signed in ({})",
+                        v["authMethod"].as_str().unwrap_or("claude.ai")
+                    )
+                } else {
+                    "not signed in — run `claude auth login`".to_string()
+                }
+            }),
+            Err(_) => Some("Claude Code is not installed".into()),
+        }
+    })
+}
+
+/// `slot`'s value if younger than `ttl` and taken at `stamp`, else `run()`.
+/// The lock is held while running so concurrent loads share one run.
+fn reuse_or_run<T: Clone>(
+    slot: &Mutex<Option<Probe<T>>>,
+    now: Instant,
+    ttl: Duration,
+    stamp: Option<Stamp>,
+    run: impl FnOnce() -> T,
+) -> T {
+    let mut cached = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(probe) = cached.as_ref()
+        && probe.stamp == stamp
+        && now.saturating_duration_since(probe.at) < ttl
+    {
+        return probe.value.clone();
+    }
+    let value = run();
+    *cached = Some(Probe {
+        at: now,
+        stamp,
+        value: value.clone(),
+    });
+    value
 }
 
 /// Set `provider.plan` in `claude-bridge.json`, keeping every other key.
@@ -502,6 +546,7 @@ impl SettingsView {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.running = None;
+                forget_claude_auth();
                 let (ok, text) = match result {
                     Ok(text) => (true, text),
                     Err(text) => (false, text),
@@ -527,6 +572,7 @@ impl SettingsView {
 
     fn set_plan(&mut self, plan: &'static str, cx: &mut Context<Self>) {
         let agent = pi_rpc::resolve_homes().agent;
+        forget_claude_auth();
         match save_bridge_plan(&agent, plan) {
             Ok(()) => {
                 self.log = vec![format!(
@@ -578,6 +624,8 @@ impl SettingsView {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.upgrading = false;
+                pi_rpc::forget_versions();
+                forget_claude_auth();
                 let (failed, text) = match result {
                     Ok(text) => (false, text),
                     Err(text) => (true, text),
@@ -1649,6 +1697,48 @@ mod tests {
         BACKGROUND_SUBAGENTS_FILE, PolicySource, npm_name, read_snapshot,
         resolve_background_policy, save_bridge_plan,
     };
+
+    #[test]
+    fn probes_are_reused_until_expiry_or_stamp_change() {
+        use super::{Probe, Stamp, reuse_or_run};
+        use std::sync::Mutex;
+        use std::time::{Duration, Instant, SystemTime};
+
+        let path =
+            std::env::temp_dir().join(format!("gentle-settings-probe-{}.json", std::process::id()));
+        std::fs::write(&path, "{}").unwrap();
+        let set_mtime = |secs: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap();
+        };
+        set_mtime(4_000_000);
+        let slot: Mutex<Option<Probe<u32>>> = Mutex::new(None);
+        let ttl = Duration::from_secs(60);
+        let start = Instant::now();
+        let mut runs = 0;
+        let mut probe = |now: Instant| {
+            reuse_or_run(&slot, now, ttl, Stamp::of(&path), || {
+                runs += 1;
+                runs
+            })
+        };
+        assert_eq!(probe(start), 1);
+        assert_eq!(probe(start + Duration::from_secs(30)), 1);
+        // Expired.
+        assert_eq!(probe(start + Duration::from_secs(61)), 2);
+        // The watched file changed.
+        set_mtime(4_000_001);
+        assert_eq!(probe(start + Duration::from_secs(62)), 3);
+        assert_eq!(probe(start + Duration::from_secs(63)), 3);
+        // Forgotten.
+        *slot.lock().unwrap() = None;
+        assert_eq!(probe(start + Duration::from_secs(64)), 4);
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn npm_names_drop_versions() {

@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
@@ -57,12 +58,37 @@ struct Repo {
     refs: RefsSnapshot,
 }
 
+/// One row of the virtualized list, [`ROW_HEIGHT`] tall: a section header,
+/// or a ref by its index in the snapshot's list for that section.
+#[derive(Clone, Copy)]
+enum Line {
+    Header {
+        section: Section,
+        count: usize,
+        collapsed: bool,
+    },
+    Ref(Section, usize),
+}
+
+/// Indices of the `items` that pass `hit`.
+fn matching<T>(items: &[T], hit: impl Fn(&T) -> bool) -> Vec<usize> {
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| hit(item))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 pub struct RefsView {
     root: PathBuf,
     /// `None` until the first read, `Some(None)` outside a git work tree.
     repo: Option<Option<Repo>>,
     filter: Entity<InputState>,
     collapsed: HashSet<Section>,
+    /// The list's rows, rebuilt when the refs, filter or collapsed sections change.
+    lines: Rc<Vec<Line>>,
+    scroll: UniformListScrollHandle,
     busy: bool,
     error: Option<String>,
     visible: bool,
@@ -75,8 +101,9 @@ impl EventEmitter<RefsEvent> for RefsView {}
 impl RefsView {
     pub fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter refs"));
-        let subscriptions = vec![cx.subscribe(&filter, |_, _, event: &InputEvent, cx| {
+        let subscriptions = vec![cx.subscribe(&filter, |this, _, event: &InputEvent, cx| {
             if let InputEvent::Change = event {
+                this.relayout(cx);
                 cx.notify();
             }
         })];
@@ -85,6 +112,8 @@ impl RefsView {
             repo: None,
             filter,
             collapsed: HashSet::new(),
+            lines: Rc::new(Vec::new()),
+            scroll: UniformListScrollHandle::new(),
             busy: false,
             error: None,
             visible: true,
@@ -148,10 +177,59 @@ impl RefsView {
         }
         let first = self.repo.is_none();
         self.repo = Some(repo);
+        self.relayout(cx);
         if !first {
             cx.emit(RefsEvent::Changed);
         }
         cx.notify();
+    }
+
+    /// Rebuild the flat row model: each section with a match gets a header
+    /// (with its match count) and, unless collapsed, its matching refs.
+    fn relayout(&mut self, cx: &App) {
+        let mut lines = Vec::new();
+        if let Some(repo) = self.snapshot() {
+            let query = self.filter.read(cx).value().trim().to_lowercase();
+            let hit = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
+            let refs = &repo.refs;
+            let sections = [
+                (
+                    Section::Branches,
+                    matching(&refs.branches, |b| hit(&b.name)),
+                ),
+                (Section::Remotes, matching(&refs.remotes, |r| hit(&r.name))),
+                (Section::Tags, matching(&refs.tags, |t| hit(&t.name))),
+                (
+                    Section::Stashes,
+                    matching(&refs.stashes, |s| hit(&s.message) || hit(&s.name)),
+                ),
+                (
+                    Section::Worktrees,
+                    matching(&refs.worktrees, |w| {
+                        hit(&w.path.to_string_lossy()) || w.branch.as_deref().is_some_and(hit)
+                    }),
+                ),
+                (
+                    Section::Submodules,
+                    matching(&refs.submodules, |s| hit(&s.path)),
+                ),
+            ];
+            for (section, items) in sections {
+                if items.is_empty() {
+                    continue;
+                }
+                let collapsed = self.collapsed.contains(&section);
+                lines.push(Line::Header {
+                    section,
+                    count: items.len(),
+                    collapsed,
+                });
+                if !collapsed {
+                    lines.extend(items.into_iter().map(|ix| Line::Ref(section, ix)));
+                }
+            }
+        }
+        self.lines = Rc::new(lines);
     }
 
     /// Run a git operation in the background, then re-read the refs.
@@ -248,17 +326,14 @@ impl RefsView {
 
     // ── Rendering ───────────────────────────────────────────────────────────
 
-    fn render_section(
+    fn render_section_header(
         &self,
         section: Section,
-        rows: Vec<AnyElement>,
+        count: usize,
+        collapsed: bool,
         cx: &mut Context<Self>,
-    ) -> Option<Div> {
-        if rows.is_empty() {
-            return None;
-        }
-        let collapsed = self.collapsed.contains(&section);
-        let header = h_flex()
+    ) -> AnyElement {
+        h_flex()
             .id(SharedString::from(format!("refs-section-{section:?}")))
             .h(px(ROW_HEIGHT))
             .mx_1p5()
@@ -289,229 +364,220 @@ impl RefsView {
                     .font_family(ui::MONO)
                     .text_size(px(10.5))
                     .text_color(ui::faint())
-                    .child(rows.len().to_string()),
+                    .child(count.to_string()),
             )
             .on_click(cx.listener(move |this, _, _, cx| {
                 if !this.collapsed.remove(&section) {
                     this.collapsed.insert(section);
                 }
+                this.relayout(cx);
                 cx.notify();
-            }));
-        Some(
-            v_flex()
-                .pb_1()
-                .child(header)
-                .when(!collapsed, |d| d.children(rows)),
+            }))
+            .into_any_element()
+    }
+
+    fn render_line(&self, line: Line, cx: &mut Context<Self>) -> AnyElement {
+        let (section, ix) = match line {
+            Line::Header {
+                section,
+                count,
+                collapsed,
+            } => return self.render_section_header(section, count, collapsed, cx),
+            Line::Ref(section, ix) => (section, ix),
+        };
+        let rendered = self.snapshot().and_then(|repo| {
+            let refs = &repo.refs;
+            Some(match section {
+                Section::Branches => self.render_branch(refs.branches.get(ix)?, cx),
+                Section::Remotes => self.render_remote(&refs.remotes.get(ix)?.name, cx),
+                Section::Tags => {
+                    let t = refs.tags.get(ix)?;
+                    row(
+                        SharedString::from(format!("refs-tag-{}", t.name)),
+                        IconName::Tag,
+                        ui::muted(),
+                        t.name.clone(),
+                        ui::fg(),
+                        Some(detail(t.subject.clone())),
+                    )
+                    .into_any_element()
+                }
+                Section::Stashes => {
+                    let s = refs.stashes.get(ix)?;
+                    self.render_stash(&s.name, &s.message, cx)
+                }
+                Section::Worktrees => {
+                    let w = refs.worktrees.get(ix)?;
+                    let title = match (&w.branch, &w.head) {
+                        (Some(branch), _) => branch.clone(),
+                        (None, Some(head)) => {
+                            format!("detached at {}", &head[..head.len().min(7)])
+                        }
+                        (None, None) => "bare".to_string(),
+                    };
+                    let flag = if w.prunable {
+                        Some(ui::chip("prunable", ui::warning()))
+                    } else if w.locked {
+                        Some(ui::chip("locked", ui::muted()))
+                    } else {
+                        None
+                    };
+                    let (prefix, leaf) = ui::split_path(&w.path);
+                    row(
+                        SharedString::from(format!("refs-worktree-{}", w.path.display())),
+                        IconName::FolderGit,
+                        ui::muted(),
+                        title,
+                        ui::fg(),
+                        Some(
+                            h_flex()
+                                .min_w_0()
+                                .gap_1()
+                                .child(detail(format!("{prefix}{leaf}")))
+                                .children(flag)
+                                .into_any_element(),
+                        ),
+                    )
+                    .into_any_element()
+                }
+                Section::Submodules => {
+                    let s = refs.submodules.get(ix)?;
+                    let state = match s.state {
+                        '-' => Some(ui::chip("not initialized", ui::muted())),
+                        '+' => Some(ui::chip("moved", ui::warning())),
+                        'U' => Some(ui::chip("conflict", ui::danger())),
+                        _ => None,
+                    };
+                    row(
+                        SharedString::from(format!("refs-submodule-{}", s.path)),
+                        IconName::Package,
+                        ui::muted(),
+                        s.path.clone(),
+                        ui::fg(),
+                        state.map(IntoElement::into_any_element),
+                    )
+                    .into_any_element()
+                }
+            })
+        });
+        rendered.unwrap_or_else(|| div().h(px(ROW_HEIGHT)).into_any_element())
+    }
+
+    fn render_remote(&self, remote: &str, cx: &mut Context<Self>) -> AnyElement {
+        let name = remote.to_string();
+        let weak = cx.entity().downgrade();
+        row(
+            SharedString::from(format!("refs-remote-{remote}")),
+            IconName::Cloud,
+            ui::muted(),
+            remote.to_string(),
+            ui::fg(),
+            None,
         )
+        .context_menu(move |menu, _, _| {
+            let (weak, name) = (weak.clone(), name.clone());
+            menu.item(
+                PopupMenuItem::new("Check out as local branch")
+                    .icon(Icon::new(IconName::GitBranch))
+                    .on_click(move |_, _, cx| {
+                        let name = name.clone();
+                        let _ = weak.update(cx, |this, cx| {
+                            this.git_op(move |top| git::checkout_remote(top, &name), cx)
+                        });
+                    }),
+            )
+        })
+        .into_any_element()
+    }
+
+    fn render_stash(&self, stash: &str, stash_message: &str, cx: &mut Context<Self>) -> AnyElement {
+        let (name, message) = (stash.to_string(), stash_message.to_string());
+        let weak = cx.entity().downgrade();
+        row(
+            SharedString::from(format!("refs-stash-{stash}")),
+            IconName::Archive,
+            ui::muted(),
+            stash_message.to_string(),
+            ui::fg(),
+            Some(
+                div()
+                    .flex_none()
+                    .font_family(ui::MONO)
+                    .text_size(px(10.5))
+                    .text_color(ui::faint())
+                    .child(stash.trim_start_matches("stash").to_string())
+                    .into_any_element(),
+            ),
+        )
+        .context_menu(move |menu, _, _| {
+            let action = |label: &'static str, icon: IconName, action: StashAction| {
+                let (weak, name) = (weak.clone(), name.clone());
+                PopupMenuItem::new(label)
+                    .icon(Icon::new(icon))
+                    .on_click(move |_, _, cx| {
+                        let name = name.clone();
+                        let _ = weak.update(cx, |this, cx| {
+                            this.git_op(move |top| git::stash(top, action, &name), cx)
+                        });
+                    })
+            };
+            let drop = {
+                let (weak, name, message) = (weak.clone(), name.clone(), message.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    let (name, message) = (name.clone(), message.clone());
+                    let _ =
+                        weak.update(cx, |this, cx| this.confirm_drop(name, message, window, cx));
+                }
+            };
+            menu.item(action("Apply", IconName::Check, StashAction::Apply))
+                .item(action("Pop", IconName::ArrowUp, StashAction::Pop))
+                .separator()
+                .item(
+                    PopupMenuItem::new("Drop…")
+                        .icon(Icon::new(IconName::Trash))
+                        .on_click(drop),
+                )
+        })
+        .into_any_element()
     }
 
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
-        let repo = match &self.repo {
+        match &self.repo {
             None => return note("Reading refs…").into_any_element(),
             Some(None) => return note("Not a git repository").into_any_element(),
-            Some(Some(repo)) => repo,
-        };
-        let query = self.filter.read(cx).value().trim().to_lowercase();
-        let hit = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
-        let refs = &repo.refs;
-        let weak = cx.entity().downgrade();
-
-        let branches = refs
-            .branches
-            .iter()
-            .filter(|b| hit(&b.name))
-            .map(|b| self.render_branch(b, cx))
-            .collect();
-        let remotes = refs
-            .remotes
-            .iter()
-            .filter(|r| hit(&r.name))
-            .map(|r| {
-                let name = r.name.clone();
-                let weak = weak.clone();
-                row(
-                    SharedString::from(format!("refs-remote-{}", r.name)),
-                    IconName::Cloud,
-                    ui::muted(),
-                    r.name.clone(),
-                    ui::fg(),
-                    None,
-                )
-                .context_menu(move |menu, _, _| {
-                    let (weak, name) = (weak.clone(), name.clone());
-                    menu.item(
-                        PopupMenuItem::new("Check out as local branch")
-                            .icon(Icon::new(IconName::GitBranch))
-                            .on_click(move |_, _, cx| {
-                                let name = name.clone();
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.git_op(move |top| git::checkout_remote(top, &name), cx)
-                                });
-                            }),
-                    )
-                })
-                .into_any_element()
-            })
-            .collect();
-        let tags = refs
-            .tags
-            .iter()
-            .filter(|t| hit(&t.name))
-            .map(|t| {
-                row(
-                    SharedString::from(format!("refs-tag-{}", t.name)),
-                    IconName::Tag,
-                    ui::muted(),
-                    t.name.clone(),
-                    ui::fg(),
-                    Some(detail(t.subject.clone())),
-                )
-                .into_any_element()
-            })
-            .collect();
-        let stashes = refs
-            .stashes
-            .iter()
-            .filter(|s| hit(&s.message) || hit(&s.name))
-            .map(|s| {
-                let (name, message) = (s.name.clone(), s.message.clone());
-                let weak = weak.clone();
-                row(
-                    SharedString::from(format!("refs-stash-{}", s.name)),
-                    IconName::Archive,
-                    ui::muted(),
-                    s.message.clone(),
-                    ui::fg(),
-                    Some(
-                        div()
-                            .flex_none()
-                            .font_family(ui::MONO)
-                            .text_size(px(10.5))
-                            .text_color(ui::faint())
-                            .child(s.name.trim_start_matches("stash").to_string())
-                            .into_any_element(),
-                    ),
-                )
-                .context_menu(move |menu, _, _| {
-                    let action = |label: &'static str, icon: IconName, action: StashAction| {
-                        let (weak, name) = (weak.clone(), name.clone());
-                        PopupMenuItem::new(label)
-                            .icon(Icon::new(icon))
-                            .on_click(move |_, _, cx| {
-                                let name = name.clone();
-                                let _ = weak.update(cx, |this, cx| {
-                                    this.git_op(move |top| git::stash(top, action, &name), cx)
-                                });
-                            })
-                    };
-                    let drop = {
-                        let (weak, name, message) = (weak.clone(), name.clone(), message.clone());
-                        move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
-                            let (name, message) = (name.clone(), message.clone());
-                            let _ = weak.update(cx, |this, cx| {
-                                this.confirm_drop(name, message, window, cx)
-                            });
-                        }
-                    };
-                    menu.item(action("Apply", IconName::Check, StashAction::Apply))
-                        .item(action("Pop", IconName::ArrowUp, StashAction::Pop))
-                        .separator()
-                        .item(
-                            PopupMenuItem::new("Drop…")
-                                .icon(Icon::new(IconName::Trash))
-                                .on_click(drop),
-                        )
-                })
-                .into_any_element()
-            })
-            .collect();
-        let worktrees = refs
-            .worktrees
-            .iter()
-            .filter(|w| hit(&w.path.to_string_lossy()) || w.branch.as_deref().is_some_and(hit))
-            .map(|w| {
-                let title = match (&w.branch, &w.head) {
-                    (Some(branch), _) => branch.clone(),
-                    (None, Some(head)) => format!("detached at {}", &head[..head.len().min(7)]),
-                    (None, None) => "bare".to_string(),
-                };
-                let flag = if w.prunable {
-                    Some(ui::chip("prunable", ui::warning()))
-                } else if w.locked {
-                    Some(ui::chip("locked", ui::muted()))
-                } else {
-                    None
-                };
-                let (prefix, leaf) = ui::split_path(&w.path);
-                row(
-                    SharedString::from(format!("refs-worktree-{}", w.path.display())),
-                    IconName::FolderGit,
-                    ui::muted(),
-                    title,
-                    ui::fg(),
-                    Some(
-                        h_flex()
-                            .min_w_0()
-                            .gap_1()
-                            .child(detail(format!("{prefix}{leaf}")))
-                            .children(flag)
-                            .into_any_element(),
-                    ),
-                )
-                .into_any_element()
-            })
-            .collect();
-        let submodules = refs
-            .submodules
-            .iter()
-            .filter(|s| hit(&s.path))
-            .map(|s| {
-                let state = match s.state {
-                    '-' => Some(ui::chip("not initialized", ui::muted())),
-                    '+' => Some(ui::chip("moved", ui::warning())),
-                    'U' => Some(ui::chip("conflict", ui::danger())),
-                    _ => None,
-                };
-                row(
-                    SharedString::from(format!("refs-submodule-{}", s.path)),
-                    IconName::Package,
-                    ui::muted(),
-                    s.path.clone(),
-                    ui::fg(),
-                    state.map(IntoElement::into_any_element),
-                )
-                .into_any_element()
-            })
-            .collect();
-
-        let sections: Vec<Div> = [
-            (Section::Branches, branches),
-            (Section::Remotes, remotes),
-            (Section::Tags, tags),
-            (Section::Stashes, stashes),
-            (Section::Worktrees, worktrees),
-            (Section::Submodules, submodules),
-        ]
-        .into_iter()
-        .filter_map(|(section, rows)| self.render_section(section, rows, cx))
-        .collect();
-        if sections.is_empty() {
+            Some(Some(_)) => {}
+        }
+        if self.lines.is_empty() {
+            let value = self.filter.read(cx).value();
+            let query = value.trim();
             return if query.is_empty() {
                 note("No branches, remotes, tags, stashes, worktrees or submodules")
             } else {
-                note(format!(
-                    "No refs match \u{201c}{}\u{201d}",
-                    self.filter.read(cx).value().trim()
-                ))
+                note(format!("No refs match \u{201c}{query}\u{201d}"))
             }
             .into_any_element();
         }
         div()
-            .id("refs-list")
+            .relative()
             .flex_1()
             .min_h_0()
-            .overflow_y_scrollbar()
-            .child(v_flex().py_1().children(sections))
+            .child(
+                uniform_list(
+                    "refs-list",
+                    self.lines.len(),
+                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                        let lines = this.lines.clone();
+                        lines[range]
+                            .iter()
+                            .map(|line| this.render_line(*line, cx))
+                            .collect::<Vec<_>>()
+                    }),
+                )
+                .size_full()
+                .py_1()
+                .track_scroll(&self.scroll),
+            )
+            .vertical_scrollbar(&self.scroll)
             .into_any_element()
     }
 

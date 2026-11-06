@@ -20,6 +20,7 @@ use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use pi_rpc::file_cache::{FileCache, Stamp};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -198,7 +199,7 @@ fn read_summaries(files: &[PathBuf]) -> Vec<SessionSummary> {
         .min(8)
         .min(files.len());
     if workers <= 1 {
-        return files.iter().filter_map(|f| read_summary(f)).collect();
+        return files.iter().filter_map(|f| cached_summary(f)).collect();
     }
     let next = AtomicUsize::new(0);
     let out = Mutex::new(Vec::with_capacity(files.len()));
@@ -208,7 +209,7 @@ fn read_summaries(files: &[PathBuf]) -> Vec<SessionSummary> {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     let Some(file) = files.get(i) else { break };
-                    if let Some(summary) = read_summary(file) {
+                    if let Some(summary) = cached_summary(file) {
                         out.lock().unwrap_or_else(|e| e.into_inner()).push(summary);
                     }
                 }
@@ -268,9 +269,35 @@ fn content_text(content: &Value) -> String {
     }
 }
 
-/// Summarize one session file the way Pi's `buildSessionInfo` does.
-pub fn read_summary(path: &Path) -> Option<SessionSummary> {
+/// Summaries by file, so reopening the browser only parses new or changed
+/// sessions. Holds non-session files too, as `None`.
+static SUMMARIES: FileCache<Option<SessionSummary>> = FileCache::new(8_192);
+
+fn cached_summary(path: &Path) -> Option<SessionSummary> {
+    cached_summary_in(&SUMMARIES, path)
+}
+
+fn cached_summary_in(
+    cache: &FileCache<Option<SessionSummary>>,
+    path: &Path,
+) -> Option<SessionSummary> {
     let file = File::open(path).ok()?;
+    let Ok(meta) = file.metadata() else {
+        return summarize(file, path).ok().flatten();
+    };
+    let stamp = Stamp::from_metadata(&meta);
+    if let Some(summary) = cache.get(path, stamp) {
+        return summary;
+    }
+    // A read error is not cached: the same bytes may read fine next time.
+    let summary = summarize(file, path).ok()?;
+    cache.insert(path, stamp, summary.clone());
+    summary
+}
+
+/// Summarize one session file the way Pi's `buildSessionInfo` does.
+/// `Ok(None)` for a file that is not a session.
+fn summarize(file: File, path: &Path) -> std::io::Result<Option<SessionSummary>> {
     let mtime_ms = file
         .metadata()
         .and_then(|m| m.modified())
@@ -293,7 +320,7 @@ pub fn read_summary(path: &Path) -> Option<SessionSummary> {
             break;
         }
         line.clear();
-        let read = reader.read_until(b'\n', &mut line).ok()?;
+        let read = reader.read_until(b'\n', &mut line)?;
         if read == 0 {
             break;
         }
@@ -304,9 +331,11 @@ pub fn read_summary(path: &Path) -> Option<SessionSummary> {
         let kind = str_of(&entry.kind).unwrap_or_default();
         let Some(_) = &header else {
             // The first parsed entry must be the header.
-            let id = str_of(&entry.id)?;
+            let Some(id) = str_of(&entry.id) else {
+                return Ok(None);
+            };
             if kind != "session" {
-                return None;
+                return Ok(None);
             }
             let cwd = PathBuf::from(str_of(&entry.cwd).unwrap_or_default());
             header = Some((
@@ -362,7 +391,9 @@ pub fn read_summary(path: &Path) -> Option<SessionSummary> {
             _ => {}
         }
     }
-    let (id, cwd, created_ms) = header?;
+    let Some((id, cwd, created_ms)) = header else {
+        return Ok(None);
+    };
     let modified_ms = if truncated {
         mtime_ms.max(last_activity.unwrap_or(0))
     } else {
@@ -371,7 +402,7 @@ pub fn read_summary(path: &Path) -> Option<SessionSummary> {
             .or(created_ms)
             .unwrap_or(mtime_ms)
     };
-    Some(SessionSummary {
+    Ok(Some(SessionSummary {
         path: path.to_path_buf(),
         id,
         cwd,
@@ -381,7 +412,7 @@ pub fn read_summary(path: &Path) -> Option<SessionSummary> {
         message_count,
         truncated,
         model,
-    })
+    }))
 }
 
 /// Days since 1970-01-01 for a proleptic Gregorian date.
@@ -927,10 +958,65 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use pi_rpc::file_cache::FileCache;
+
     use super::{
-        Scope, SessionSummary, list_sessions, parse_iso_ms, read_summary, relative_time,
-        session_dir_name,
+        Scope, SessionSummary, cached_summary_in, list_sessions, parse_iso_ms, relative_time,
+        session_dir_name, summarize,
     };
+
+    fn read_summary(path: &Path) -> Option<SessionSummary> {
+        summarize(std::fs::File::open(path).ok()?, path)
+            .ok()
+            .flatten()
+    }
+
+    #[test]
+    fn summaries_are_cached_by_mtime_and_len() {
+        use std::time::Duration;
+        let tmp = TempDir::new("cache");
+        let set_mtime = |path: &Path, secs: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap();
+        };
+        let cache = FileCache::new(8);
+        let head = header("abc", "/w", "2024-12-03T14:00:00.000Z");
+        let path = write_session(&tmp.0, "a.jsonl", &[head.clone(), user("u1", "aaaa", 1)]);
+        set_mtime(&path, 6_000_000);
+        let first = cached_summary_in(&cache, &path).unwrap();
+        assert_eq!(first.first_message.as_deref(), Some("aaaa"));
+
+        // Same mtime and length: the cached summary, not the new text.
+        write_session(&tmp.0, "a.jsonl", &[head.clone(), user("u1", "bbbb", 1)]);
+        set_mtime(&path, 6_000_000);
+        assert_eq!(cached_summary_in(&cache, &path), Some(first));
+
+        set_mtime(&path, 6_000_001);
+        let second = cached_summary_in(&cache, &path).unwrap();
+        assert_eq!(second.first_message.as_deref(), Some("bbbb"));
+        assert_eq!(Some(second), read_summary(&path));
+
+        // An appended turn changes the length.
+        write_session(
+            &tmp.0,
+            "a.jsonl",
+            &[head, user("u1", "bbbb", 1), user("u2", "c", 2)],
+        );
+        set_mtime(&path, 6_000_001);
+        assert_eq!(cached_summary_in(&cache, &path).unwrap().message_count, 2);
+
+        // Non-session files are cached as such.
+        let other = write_session(&tmp.0, "b.jsonl", &[user("u1", "hi", 1)]);
+        assert_eq!(cached_summary_in(&cache, &other), None);
+        assert_eq!(
+            cached_summary_in(&cache, &tmp.0.join("missing.jsonl")),
+            None
+        );
+    }
 
     struct TempDir(PathBuf);
 

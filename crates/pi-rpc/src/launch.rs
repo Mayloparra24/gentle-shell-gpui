@@ -1,7 +1,10 @@
 use anyhow::{Result, bail};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
+
+use crate::file_cache::Stamp;
 
 /// How to start one RPC backend process.
 #[derive(Debug, Clone)]
@@ -66,6 +69,65 @@ pub fn child_path() -> OsString {
 
 /// The launcher's own version line (`gentle-shell 4.6.0` → `4.6.0`).
 pub fn backend_version(spec: &LaunchSpec) -> Option<String> {
+    let text = version_output(spec)?;
+    let line = text.lines().find(|l| l.starts_with("gentle-shell "))?;
+    Some(line.trim_start_matches("gentle-shell ").trim().to_string())
+}
+
+/// Which launcher build, and which home config, a cached `--version` ran against.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct VersionKey {
+    program: Stamp,
+    /// `~/.gentle-shell/config.json`: its `home` line follows `gentle-shell home`.
+    config: Option<Stamp>,
+}
+
+static VERSIONS: Mutex<BTreeMap<PathBuf, (VersionKey, String)>> = Mutex::new(BTreeMap::new());
+/// Held while a probe runs, so concurrent tab starts share one run.
+static VERSION_RUN: Mutex<()> = Mutex::new(());
+
+/// Everything `<launcher> --version` prints on stdout, cached per launcher
+/// until the launcher file (an upgrade) or the home config changes.
+pub fn version_output(spec: &LaunchSpec) -> Option<String> {
+    let program = std::fs::canonicalize(&spec.program).unwrap_or_else(|_| spec.program.clone());
+    let key = || {
+        Some(VersionKey {
+            program: Stamp::of(&program)?,
+            config: Stamp::of(&crate::home::launcher_config_path()),
+        })
+    };
+    let cached = |key: VersionKey| {
+        let versions = VERSIONS.lock().unwrap_or_else(|e| e.into_inner());
+        versions
+            .get(&program)
+            .filter(|(k, _)| *k == key)
+            .map(|(_, text)| text.clone())
+    };
+    if let Some(text) = key().and_then(cached) {
+        return Some(text);
+    }
+    let _run = VERSION_RUN.lock().unwrap_or_else(|e| e.into_inner());
+    // Stat before running, so a change mid-run only costs another run later.
+    let key = key();
+    if let Some(text) = key.and_then(cached) {
+        return Some(text);
+    }
+    let text = run_version(spec)?;
+    if let Some(key) = key {
+        VERSIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(program, (key, text.clone()));
+    }
+    Some(text)
+}
+
+/// Drop every cached `--version` (after `gentle-shell upgrade`).
+pub fn forget_versions() {
+    VERSIONS.lock().unwrap_or_else(|e| e.into_inner()).clear();
+}
+
+fn run_version(spec: &LaunchSpec) -> Option<String> {
     let mut command = std::process::Command::new(&spec.program);
     command
         .arg("--version")
@@ -81,9 +143,7 @@ pub fn backend_version(spec: &LaunchSpec) -> Option<String> {
         command.creation_flags(0x0800_0000);
     }
     let out = command.output().ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.lines().find(|l| l.starts_with("gentle-shell "))?;
-    Some(line.trim_start_matches("gentle-shell ").trim().to_string())
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// The login shell's PATH merged ahead of the inherited one, computed once.
@@ -149,4 +209,60 @@ fn login_shell_path() -> Option<OsString> {
 #[cfg(not(unix))]
 fn login_shell_path() -> Option<OsString> {
     None
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::os::unix::fs::PermissionsExt as _;
+    use std::time::{Duration, SystemTime};
+
+    fn set_mtime(path: &Path, secs: u64) {
+        let file = File::options().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    #[test]
+    fn version_is_cached_until_the_launcher_changes() {
+        let dir = std::env::temp_dir().join(format!("pi-rpc-version-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let runs = dir.join("runs");
+        let program = dir.join("gentle-shell");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\necho x >> '{}'\necho 'gentle-shell 1.2.3'\necho 'home isolated /h'\n",
+                runs.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        set_mtime(&program, 3_000_000);
+        let spec = LaunchSpec {
+            program: program.clone(),
+            args: Vec::new(),
+            cwd: dir.clone(),
+            env: Vec::new(),
+        };
+        let run_count = || std::fs::read_to_string(&runs).map_or(0, |s| s.lines().count());
+
+        assert_eq!(backend_version(&spec).as_deref(), Some("1.2.3"));
+        assert_eq!(
+            version_output(&spec).as_deref(),
+            Some("gentle-shell 1.2.3\nhome isolated /h\n")
+        );
+        assert_eq!(run_count(), 1);
+
+        // An upgrade rewrites the launcher.
+        set_mtime(&program, 3_000_001);
+        assert_eq!(backend_version(&spec).as_deref(), Some("1.2.3"));
+        assert_eq!(run_count(), 2);
+
+        forget_versions();
+        assert_eq!(backend_version(&spec).as_deref(), Some("1.2.3"));
+        assert_eq!(run_count(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

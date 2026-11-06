@@ -7,6 +7,7 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
@@ -54,6 +55,29 @@ struct Repo {
     tree: WorkTree,
 }
 
+/// One row of the virtualized list; every kind is [`ROW_HEIGHT`] tall.
+enum Line {
+    Header {
+        side: Side,
+        count: usize,
+    },
+    Untracked(usize),
+    Dir {
+        side: Side,
+        dir: String,
+        count: usize,
+        collapsed: bool,
+    },
+    Entry {
+        side: Side,
+        /// Index into the work tree's entries.
+        entry: usize,
+        badge: char,
+        /// Under a folder row in the by-folder view.
+        nested: bool,
+    },
+}
+
 pub struct ChangesView {
     root: PathBuf,
     /// `None` until the first read, `Some(None)` outside a git work tree.
@@ -61,6 +85,9 @@ pub struct ChangesView {
     tree_mode: bool,
     collapsed: HashSet<(Side, String)>,
     selected: Option<(Side, String)>,
+    /// The list's rows, rebuilt when the tree, mode or collapsed folders change.
+    lines: Rc<Vec<Line>>,
+    scroll: UniformListScrollHandle,
     summary: Entity<InputState>,
     description: Entity<TextareaState>,
     stash_message: Entity<InputState>,
@@ -100,6 +127,8 @@ impl ChangesView {
             tree_mode: false,
             collapsed: HashSet::new(),
             selected: None,
+            lines: Rc::new(Vec::new()),
+            scroll: UniformListScrollHandle::new(),
             summary,
             description,
             stash_message,
@@ -183,10 +212,85 @@ impl ChangesView {
         }
         let before = self.change_count();
         self.repo = Some(repo);
+        self.relayout();
         if self.change_count() != before {
             cx.emit(ChangesEvent::Changed);
         }
         cx.notify();
+    }
+
+    /// Rebuild the flat row model: per side a header, the untracked count,
+    /// then the entries (grouped under folder rows in the by-folder view).
+    fn relayout(&mut self) {
+        let mut lines = Vec::new();
+        if let Some(tree) = self.tree() {
+            let untracked = tree
+                .entries
+                .iter()
+                .filter(|e| e.kind == EntryKind::Untracked)
+                .count();
+            for side in [Side::Unstaged, Side::Staged] {
+                let entries: Vec<(usize, char)> = tree
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, e)| {
+                        match side {
+                            Side::Unstaged => e.unstaged(),
+                            Side::Staged => e.staged(),
+                        }
+                        .map(|badge| (i, badge))
+                    })
+                    .collect();
+                if entries.is_empty() {
+                    continue;
+                }
+                lines.push(Line::Header {
+                    side,
+                    count: entries.len(),
+                });
+                if side == Side::Unstaged && untracked > 0 {
+                    lines.push(Line::Untracked(untracked));
+                }
+                if !self.tree_mode {
+                    lines.extend(entries.into_iter().map(|(entry, badge)| Line::Entry {
+                        side,
+                        entry,
+                        badge,
+                        nested: false,
+                    }));
+                    continue;
+                }
+                let mut groups: BTreeMap<&str, Vec<(usize, char)>> = BTreeMap::new();
+                for (entry, badge) in entries {
+                    let path = &tree.entries[entry].path;
+                    let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+                    groups.entry(dir).or_default().push((entry, badge));
+                }
+                for (dir, files) in groups {
+                    let nested = !dir.is_empty();
+                    if nested {
+                        let collapsed = self.collapsed.contains(&(side, dir.to_string()));
+                        lines.push(Line::Dir {
+                            side,
+                            dir: dir.to_string(),
+                            count: files.len(),
+                            collapsed,
+                        });
+                        if collapsed {
+                            continue;
+                        }
+                    }
+                    lines.extend(files.into_iter().map(|(entry, badge)| Line::Entry {
+                        side,
+                        entry,
+                        badge,
+                        nested,
+                    }));
+                }
+            }
+        }
+        self.lines = Rc::new(lines);
     }
 
     /// Run a git operation in the background, then re-read status; a
@@ -472,6 +576,7 @@ impl ChangesView {
                 .on_click(cx.listener(move |this, _, _, cx| {
                     if this.tree_mode != tree {
                         this.tree_mode = tree;
+                        this.relayout();
                         cx.notify();
                     }
                 }))
@@ -519,13 +624,7 @@ impl ChangesView {
             )
     }
 
-    fn render_section(
-        &self,
-        side: Side,
-        entries: &[(&StatusEntry, char)],
-        untracked: usize,
-        cx: &mut Context<Self>,
-    ) -> Div {
+    fn render_section_header(&self, side: Side, count: usize, cx: &mut Context<Self>) -> Div {
         let (label, action, id) = match side {
             Side::Unstaged => ("Unstaged", "Stage all", "changes-stage-all"),
             Side::Staged => ("Staged", "Unstage all", "changes-unstage-all"),
@@ -535,10 +634,9 @@ impl ChangesView {
             Side::Staged => this.git_op(git::unstage_all, cx),
         };
         let weak = cx.entity().downgrade();
-        let header = h_flex()
+        h_flex()
+            .h(px(ROW_HEIGHT))
             .px_3()
-            .pt_2()
-            .pb_1()
             .gap_2()
             .child(
                 Checkbox::new(SharedString::from(format!("{id}-check")))
@@ -564,7 +662,7 @@ impl ChangesView {
                     .font_family(ui::MONO)
                     .text_size(px(10.5))
                     .text_color(ui::muted())
-                    .child(entries.len().to_string()),
+                    .child(count.to_string()),
             )
             .child(div().flex_1())
             .child(
@@ -573,49 +671,51 @@ impl ChangesView {
                     .xsmall()
                     .label(action)
                     .on_click(cx.listener(move |this, _, _, cx| all(this, cx))),
-            );
-        let untracked_line = (untracked > 0).then(|| {
-            h_flex()
-                .px_3()
-                .pb_1()
-                .gap_1()
-                .text_size(px(12.))
-                .child(
-                    div()
-                        .font_family(ui::MONO)
-                        .text_color(ui::success())
-                        .child(untracked.to_string()),
-                )
-                .child(div().text_color(ui::muted()).child("untracked"))
-        });
-        let mut list = v_flex().pb_1();
-        if self.tree_mode {
-            let mut groups: BTreeMap<&str, Vec<(&StatusEntry, char)>> = BTreeMap::new();
-            for &(entry, badge) in entries {
-                let dir = entry.path.rsplit_once('/').map_or("", |(dir, _)| dir);
-                groups.entry(dir).or_default().push((entry, badge));
-            }
-            for (dir, files) in groups {
-                let indent = if dir.is_empty() {
-                    0.
-                } else {
-                    let collapsed = self.collapsed.contains(&(side, dir.to_string()));
-                    list = list.child(self.render_dir(side, dir, files.len(), collapsed, cx));
-                    if collapsed {
-                        continue;
-                    }
-                    18.
-                };
-                for (entry, badge) in files {
-                    list = list.child(self.render_entry(entry, side, badge, indent, cx));
+            )
+    }
+
+    fn render_untracked(count: usize) -> Div {
+        h_flex()
+            .h(px(ROW_HEIGHT))
+            .px_3()
+            .gap_1()
+            .text_size(px(12.))
+            .child(
+                div()
+                    .font_family(ui::MONO)
+                    .text_color(ui::success())
+                    .child(count.to_string()),
+            )
+            .child(div().text_color(ui::muted()).child("untracked"))
+    }
+
+    fn render_line(&self, line: &Line, cx: &mut Context<Self>) -> AnyElement {
+        match line {
+            Line::Header { side, count } => self
+                .render_section_header(*side, *count, cx)
+                .into_any_element(),
+            Line::Untracked(count) => Self::render_untracked(*count).into_any_element(),
+            Line::Dir {
+                side,
+                dir,
+                count,
+                collapsed,
+            } => self
+                .render_dir(*side, dir, *count, *collapsed, cx)
+                .into_any_element(),
+            Line::Entry {
+                side,
+                entry,
+                badge,
+                nested,
+            } => match self.tree().and_then(|tree| tree.entries.get(*entry)) {
+                Some(status) => {
+                    let indent = if *nested { 18. } else { 0. };
+                    self.render_entry(status, *side, *badge, indent, cx)
                 }
-            }
-        } else {
-            for &(entry, badge) in entries {
-                list = list.child(self.render_entry(entry, side, badge, 0., cx));
-            }
+                None => div().h(px(ROW_HEIGHT)).into_any_element(),
+            },
         }
-        v_flex().child(header).children(untracked_line).child(list)
     }
 
     fn render_dir(
@@ -674,6 +774,7 @@ impl ChangesView {
                 if !this.collapsed.remove(&key) {
                     this.collapsed.insert(key.clone());
                 }
+                this.relayout();
                 cx.notify();
             }))
     }
@@ -686,7 +787,10 @@ impl ChangesView {
         indent: f32,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let selected = self.selected.as_ref() == Some(&(side, entry.path.clone()));
+        let selected = self
+            .selected
+            .as_ref()
+            .is_some_and(|(s, path)| *s == side && *path == entry.path);
         let (dir, name) = match entry.path.rsplit_once('/') {
             Some((dir, name)) if indent == 0. => (format!("{dir}/"), name.to_string()),
             Some((_, name)) => (String::new(), name.to_string()),
@@ -816,35 +920,27 @@ impl ChangesView {
         if tree.entries.is_empty() {
             return empty_state(IconName::CircleCheck, "Working tree clean");
         }
-        let unstaged: Vec<(&StatusEntry, char)> = tree
-            .entries
-            .iter()
-            .filter_map(|e| e.unstaged().map(|b| (e, b)))
-            .collect();
-        let staged: Vec<(&StatusEntry, char)> = tree
-            .entries
-            .iter()
-            .filter_map(|e| e.staged().map(|b| (e, b)))
-            .collect();
-        let untracked = tree
-            .entries
-            .iter()
-            .filter(|e| e.kind == EntryKind::Untracked)
-            .count();
         div()
-            .id("changes-list")
+            .relative()
             .flex_1()
             .min_h_0()
-            .overflow_y_scrollbar()
             .child(
-                v_flex()
-                    .when(!unstaged.is_empty(), |d| {
-                        d.child(self.render_section(Side::Unstaged, &unstaged, untracked, cx))
-                    })
-                    .when(!staged.is_empty(), |d| {
-                        d.child(self.render_section(Side::Staged, &staged, 0, cx))
+                uniform_list(
+                    "changes-list",
+                    self.lines.len(),
+                    cx.processor(|this, range: std::ops::Range<usize>, _, cx| {
+                        let lines = this.lines.clone();
+                        lines[range]
+                            .iter()
+                            .map(|line| this.render_line(line, cx))
+                            .collect::<Vec<_>>()
                     }),
+                )
+                .size_full()
+                .py_1()
+                .track_scroll(&self.scroll),
             )
+            .vertical_scrollbar(&self.scroll)
             .into_any_element()
     }
 

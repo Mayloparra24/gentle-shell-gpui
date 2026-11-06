@@ -18,6 +18,7 @@ use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{Icon, Selectable as _, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
+use pi_rpc::file_cache::{FileCache, Stamp};
 use serde_json::{Map, Value};
 
 use crate::transcript::format_tokens;
@@ -1081,10 +1082,21 @@ fn last_usage_at(record: &SessionRecord) -> i64 {
         .unwrap_or(i64::MIN)
 }
 
+/// Parsed session files, so reopening Stats only reads new or changed ones.
+static SESSION_RECORDS: FileCache<Option<SessionRecord>> = FileCache::new(16_384);
+
 /// Top-level session files only (`sessions/<dir>/*.jsonl`; nested subagent
 /// runs live deeper and are excluded, like Pi's `listSessionFiles`). Copies
 /// of one session id keep the richer one.
 pub fn load_sessions(root: &Path, max_bytes: u64) -> StatsData {
+    load_sessions_in(&SESSION_RECORDS, root, max_bytes)
+}
+
+fn load_sessions_in(
+    cache: &FileCache<Option<SessionRecord>>,
+    root: &Path,
+    max_bytes: u64,
+) -> StatsData {
     let mut files = Vec::new();
     for entry in std::fs::read_dir(root).into_iter().flatten().flatten() {
         if !entry.file_type().is_ok_and(|t| t.is_dir()) {
@@ -1111,18 +1123,26 @@ pub fn load_sessions(root: &Path, max_bytes: u64) -> StatsData {
     };
     let mut by_id: HashMap<String, usize> = HashMap::new();
     for (path, dir) in files {
-        let size = match std::fs::metadata(&path) {
-            Ok(meta) => meta.len(),
+        let meta = match std::fs::metadata(&path) {
+            Ok(meta) => meta,
             Err(_) => {
                 data.unreadable += 1;
                 continue;
             }
         };
+        let size = meta.len();
         if size > max_bytes {
             data.skipped_large.push((path, size));
             continue;
         }
-        let record = match read_session_file(&path, &dir) {
+        let stamp = Stamp::from_metadata(&meta);
+        let read = match cache.get(&path, stamp) {
+            Some(cached) => Ok(cached),
+            // Read errors are not cached; the next load tries again.
+            None => read_session_file(&path, &dir)
+                .inspect(|record| cache.insert(&path, stamp, record.clone())),
+        };
+        let record = match read {
             Ok(Some(record)) => record,
             Ok(None) => continue,
             Err(_) => {
@@ -2685,6 +2705,59 @@ mod tests {
         let capped = load_sessions(&root, 10);
         assert_eq!(capped.skipped_large.len(), 4);
         assert!(capped.sessions.is_empty());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn session_records_are_cached_by_mtime_and_len() {
+        use pi_rpc::file_cache::FileCache;
+        use std::time::{Duration, UNIX_EPOCH};
+        let root = std::env::temp_dir().join(format!(
+            "gentle-usage-cache-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        let dir = root.join("--w--");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.jsonl");
+        let write = |cost: f64| {
+            let lines = [
+                json!({ "type": "session", "id": "s1", "cwd": "/w", "timestamp": iso(NOW) })
+                    .to_string(),
+                assistant(NOW, "anthropic", "claude", 100, 50, cost),
+            ];
+            std::fs::write(&path, lines.join("\n")).unwrap();
+        };
+        let set_mtime = |secs: u64| {
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(UNIX_EPOCH + Duration::from_secs(secs))
+                .unwrap();
+        };
+        let cost = |data: &super::StatsData| data.sessions[0].messages[0].cost;
+        let cache = FileCache::new(8);
+
+        write(0.5);
+        set_mtime(7_000_000);
+        let first = super::load_sessions_in(&cache, &root, MAX_SESSION_BYTES);
+        assert_eq!(cost(&first), 0.5);
+
+        // Same mtime and length: the cached record, not the new cost.
+        write(0.7);
+        set_mtime(7_000_000);
+        let cached = super::load_sessions_in(&cache, &root, MAX_SESSION_BYTES);
+        assert_eq!(cached.sessions, first.sessions);
+
+        set_mtime(7_000_001);
+        let fresh = super::load_sessions_in(&cache, &root, MAX_SESSION_BYTES);
+        assert_eq!(cost(&fresh), 0.7);
+        assert_eq!(
+            fresh.sessions,
+            load_sessions(&root, MAX_SESSION_BYTES).sessions
+        );
 
         std::fs::remove_dir_all(&root).unwrap();
     }

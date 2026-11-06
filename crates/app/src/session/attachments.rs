@@ -234,39 +234,75 @@ pub fn chip_text(text: &str) -> (String, Vec<Range<usize>>) {
 // ── Decode cache ───────────────────────────────────────────────────────────
 
 /// Conversation images decoded from base64 once, by [`UserImage::key`].
-/// `None` marks data that is not a displayable image.
+/// Decoding runs off the UI thread: [`ImageCache::request`] hands out the
+/// work and [`ImageCache::finish`] files the results.
 #[derive(Default)]
 pub struct ImageCache {
-    images: HashMap<u64, Option<Arc<Image>>>,
+    images: HashMap<u64, Slot>,
+}
+
+enum Slot {
+    /// Handed out for decoding; shown as a placeholder meanwhile.
+    Decoding,
+    /// `None` marks data that is not a displayable image.
+    Ready(Option<Arc<Image>>),
 }
 
 impl ImageCache {
     /// Seed with a sent attachment so Pi's echo of it needs no decode.
     pub fn insert(&mut self, attachment: &Attachment) {
         self.images
-            .insert(attachment.key, Some(attachment.image.clone()));
+            .insert(attachment.key, Slot::Ready(Some(attachment.image.clone())));
     }
 
+    /// The decoded image; `None` while decoding or when it is not an image.
     pub fn get(&self, image: &UserImage) -> Option<Arc<Image>> {
-        self.images.get(&image.key).cloned().flatten()
+        match self.images.get(&image.key) {
+            Some(Slot::Ready(image)) => image.clone(),
+            _ => None,
+        }
     }
 
-    /// Decode the shown images not seen yet; when any were new, forget the
-    /// ones no longer shown.
-    pub fn sync<'a>(&mut self, shown: impl IntoIterator<Item = &'a UserImage>) {
+    /// Mark the shown images not seen yet as decoding and return them to
+    /// decode (once per key). With `prune` (`shown` is every image shown),
+    /// forget the ones no longer shown when any were new.
+    pub fn request<'a>(
+        &mut self,
+        shown: impl IntoIterator<Item = &'a UserImage>,
+        prune: bool,
+    ) -> Vec<UserImage> {
         let mut keys = HashSet::new();
-        let mut decoded = false;
+        let mut jobs = Vec::new();
         for image in shown {
-            keys.insert(image.key);
+            if prune {
+                keys.insert(image.key);
+            }
             if let Entry::Vacant(slot) = self.images.entry(image.key) {
-                slot.insert(decode(image));
-                decoded = true;
+                slot.insert(Slot::Decoding);
+                jobs.push(image.clone());
             }
         }
-        if decoded {
+        if prune && !jobs.is_empty() {
             self.images.retain(|key, _| keys.contains(key));
         }
+        jobs
     }
+
+    /// File decoded images; ones pruned meanwhile stay forgotten.
+    pub fn finish(&mut self, decoded: Vec<(u64, Option<Arc<Image>>)>) {
+        for (key, image) in decoded {
+            if let Some(slot @ Slot::Decoding) = self.images.get_mut(&key) {
+                *slot = Slot::Ready(image);
+            }
+        }
+    }
+}
+
+/// Decode `jobs` (from [`ImageCache::request`]); meant for a background thread.
+pub fn decode_all(jobs: Vec<UserImage>) -> Vec<(u64, Option<Arc<Image>>)> {
+    jobs.iter()
+        .map(|image| (image.key, decode(image)))
+        .collect()
 }
 
 fn decode(image: &UserImage) -> Option<Arc<Image>> {
@@ -427,10 +463,30 @@ mod tests {
 
         let jpeg = UserImage::new("image/jpeg", STANDARD.encode(JPEG).into());
         let junk = UserImage::new("image/png", "!!not base64".into());
-        cache.sync([&jpeg, &junk]);
+        let jobs = cache.request([&jpeg, &junk, &jpeg], true);
+        assert_eq!(jobs.len(), 2);
+        // Decoding: a placeholder, and not handed out again.
+        assert!(cache.get(&jpeg).is_none());
+        assert!(cache.request([&jpeg], false).is_empty());
+        // The PNG is no longer shown, so a pruning request that found new images dropped it.
+        assert!(cache.get(&echoed).is_none());
+
+        cache.finish(decode_all(jobs));
         assert_eq!(cache.get(&jpeg).unwrap().format, ImageFormat::Jpeg);
         assert!(cache.get(&junk).is_none());
-        // The PNG is no longer shown, so a sync that decoded dropped it.
-        assert!(cache.get(&echoed).is_none());
+        assert!(cache.request([&junk], false).is_empty());
+    }
+
+    #[test]
+    fn finished_decodes_of_pruned_images_are_dropped() {
+        let jpeg = UserImage::new("image/jpeg", STANDARD.encode(JPEG).into());
+        let other = UserImage::new("image/png", STANDARD.encode(PNG).into());
+        let mut cache = ImageCache::default();
+        let jobs = cache.request([&jpeg], true);
+        // A new conversation shows only `other` before the decode lands.
+        let _ = cache.request([&other], true);
+        cache.finish(decode_all(jobs));
+        assert!(cache.get(&jpeg).is_none());
+        assert_eq!(cache.request([&jpeg], false).len(), 1);
     }
 }

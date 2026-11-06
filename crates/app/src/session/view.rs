@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -20,13 +21,12 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use pi_rpc::{UiAnswer, UiMethod};
-use serde_json::Value;
 
 use super::attachments;
 use super::{Backend, CONTEXT, ModelInfo, RailVisible, SessionView};
 use crate::gentle_state::PermissionMode;
 use crate::tools;
-use crate::transcript::{Block, Item, NoticeLevel, ToolStatus, format_tokens};
+use crate::transcript::{Block, Dirty, Item, NoticeLevel, ToolStatus, format_tokens};
 use crate::ui;
 
 // ── Display-only state ─────────────────────────────────────────────────────
@@ -41,6 +41,8 @@ pub(super) struct Live {
     tools: HashMap<usize, Span>,
     /// Thinking blocks by (item, block).
     thinking: HashMap<(usize, usize), Span>,
+    /// Spans in `tools` and `thinking` still running (their labels show tenths).
+    open_spans: usize,
     pending: Option<Pending>,
     /// Keyboard highlight of the front dialog, by dialog id.
     dialog_cursor: Option<(String, usize)>,
@@ -50,6 +52,41 @@ pub(super) struct Live {
     model_scroll: ScrollHandle,
     /// Re-renders running timers while something is live.
     ticker: Option<Task<()>>,
+    /// The ticker's loop is still going (it also ends by itself once idle).
+    ticking: bool,
+    /// Ticks so far, and the timer text they last painted.
+    ticks: u64,
+    stamp: Option<LabelStamp>,
+}
+
+/// How often live timers are re-checked.
+const TICK: Duration = Duration::from_millis(200);
+
+/// What the live timer labels read: a repaint is due only when it changes.
+/// `fine` is set while a tenths-of-a-second label (running tool or
+/// thinking block) shows, and changes every tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LabelStamp {
+    fine: Option<u64>,
+    turn_secs: Option<u64>,
+    pending_secs: Option<u64>,
+}
+
+fn label_stamp(
+    fine_tick: Option<u64>,
+    turn: Option<Duration>,
+    pending: Option<Duration>,
+) -> LabelStamp {
+    LabelStamp {
+        fine: fine_tick,
+        turn_secs: turn.map(|d| d.as_secs()),
+        pending_secs: pending.map(|d| d.as_secs()),
+    }
+}
+
+/// Whether live timers need ticking: a turn, a `!command` or a prompt in flight.
+fn ticker_needed(running: bool, shells: bool, pending: bool) -> bool {
+    running || shells || pending
 }
 
 #[derive(Clone, Copy)]
@@ -107,16 +144,21 @@ pub(super) struct RateLimit {
     pub(super) text: String,
 }
 
-fn track<K: Eq + Hash>(map: &mut HashMap<K, Span>, key: K, live: bool, now: Instant) {
+/// Open or close `key`'s span; returns the change in open spans.
+fn track<K: Eq + Hash>(map: &mut HashMap<K, Span>, key: K, live: bool, now: Instant) -> isize {
     match map.get_mut(&key) {
         Some(span) if live && span.took.is_some() => {
             *span = Span {
                 start: now,
                 took: None,
-            }
+            };
+            1
         }
-        Some(span) if !live && span.took.is_none() => span.took = Some(now - span.start),
-        Some(_) => {}
+        Some(span) if !live && span.took.is_none() => {
+            span.took = Some(now - span.start);
+            -1
+        }
+        Some(_) => 0,
         None if live => {
             map.insert(
                 key,
@@ -125,8 +167,208 @@ fn track<K: Eq + Hash>(map: &mut HashMap<K, Span>, key: K, live: bool, now: Inst
                     took: None,
                 },
             );
+            1
         }
-        None => {}
+        None => 0,
+    }
+}
+
+// ── Transcript list ────────────────────────────────────────────────────────
+
+/// Rows after the transcript items.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Tail {
+    /// The prompt just sent, in the slot (`base`) Pi's echo of it takes.
+    PendingBubble(usize),
+    /// "Thinking…" until Pi picks the prompt up.
+    Pending(usize),
+    /// "Working…" between tool calls, at this item count.
+    Between(usize),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Row {
+    /// The hero and the backend state (empty once both are gone).
+    Header,
+    Item(usize),
+    Tail(Tail),
+    /// The column's bottom padding.
+    Footer,
+}
+
+/// The list's rows: the header, one per transcript item, the tail rows and
+/// the footer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Shape {
+    items: usize,
+    tail: Vec<Tail>,
+}
+
+impl Shape {
+    fn len(&self) -> usize {
+        self.items + self.tail.len() + 2
+    }
+
+    fn row(&self, ix: usize) -> Option<Row> {
+        let tail_start = 1 + self.items;
+        match ix {
+            0 => Some(Row::Header),
+            ix if ix < tail_start => Some(Row::Item(ix - 1)),
+            ix if ix < tail_start + self.tail.len() => Some(Row::Tail(self.tail[ix - tail_start])),
+            ix if ix + 1 == self.len() => Some(Row::Footer),
+            _ => None,
+        }
+    }
+}
+
+/// How the list's rows change from `old` to `new`, given the first changed
+/// item: rows to re-measure in place, then rows to replace.
+#[derive(Debug, PartialEq, Eq)]
+struct ListUpdate {
+    remeasure: Range<usize>,
+    /// Old rows replaced, and how many new rows take their place.
+    splice: Option<(Range<usize>, usize)>,
+}
+
+fn list_update(old: &Shape, new: &Shape, dirty_from: Option<usize>) -> ListUpdate {
+    let (old_len, new_len) = (old.len(), new.len());
+    let mut first = old_len.max(new_len);
+    if let Some(from) = dirty_from {
+        first = first.min(1 + from);
+    }
+    if old.items != new.items {
+        first = first.min(1 + old.items.min(new.items));
+    } else if let Some(i) =
+        (0..old.tail.len().max(new.tail.len())).find(|&i| old.tail.get(i) != new.tail.get(i))
+    {
+        first = first.min(1 + old.items + i);
+    }
+    let common = old_len.min(new_len);
+    ListUpdate {
+        remeasure: first.min(common)..common,
+        splice: (old_len != new_len).then(|| (common..old_len, new_len - common)),
+    }
+}
+
+/// What the header row shows; a change re-measures it (and the first row,
+/// whose top padding depends on it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HeaderKey {
+    hero: bool,
+    backend: u8,
+}
+
+/// Display data derived once per change of an item, not per frame.
+enum Prepared {
+    Card(CardSpec),
+    /// A custom message's line count.
+    Lines(usize),
+}
+
+/// How long after it first shows a row still fades in.
+const APPEAR_WINDOW: Duration = Duration::from_millis(300);
+
+/// The conversation as a virtualized list: only rows on screen render, and
+/// rows are re-measured only from the first changed item on.
+pub(super) struct TranscriptList {
+    state: ListState,
+    /// The rows `state` was last told about.
+    shape: Shape,
+    header: Option<HeaderKey>,
+    /// By transcript index.
+    prepared: HashMap<usize, Prepared>,
+    /// When each animated row first rendered: it animates in only then, not
+    /// each time it scrolls back into view.
+    born: HashMap<(&'static str, usize), Instant>,
+}
+
+impl TranscriptList {
+    pub(super) fn new() -> Self {
+        let shape = Shape::default();
+        Self {
+            state: ListState::new(shape.len(), ListAlignment::Top, px(600.)),
+            shape,
+            header: None,
+            prepared: HashMap::new(),
+            born: HashMap::new(),
+        }
+    }
+
+    /// The transcript was replaced: indices name other items now.
+    fn forget_items(&mut self) {
+        self.prepared.clear();
+        self.born.clear();
+    }
+
+    /// Derive display data for items `from..`.
+    fn prepare(&mut self, items: &[Item], from: usize) {
+        let changed = items.get(from..).unwrap_or_default();
+        for (ix, item) in (from..).zip(changed) {
+            let prepared = match item {
+                Item::Tool { .. } | Item::Shell { .. } => card_spec(item).map(Prepared::Card),
+                Item::Custom { text, .. } => Some(Prepared::Lines(line_count(text))),
+                _ => None,
+            };
+            match prepared {
+                Some(prepared) => {
+                    self.prepared.insert(ix, prepared);
+                }
+                None => {
+                    self.prepared.remove(&ix);
+                }
+            }
+        }
+    }
+
+    /// Tell the list which rows changed since the last sync.
+    fn sync(&mut self, items: usize, tail: Vec<Tail>, header: HeaderKey, dirty: Option<Dirty>) {
+        let shape = Shape { items, tail };
+        if dirty.is_some_and(|d| d.reset) {
+            self.state.reset(shape.len());
+        } else {
+            if self.header.is_some_and(|old| old != header) {
+                self.state.remeasure_items(0..self.shape.len().min(2));
+            }
+            let update = list_update(&self.shape, &shape, dirty.map(|d| d.from));
+            if !update.remeasure.is_empty() {
+                self.state.remeasure_items(update.remeasure);
+            }
+            if let Some((range, count)) = update.splice {
+                self.state.splice(range, count);
+            }
+        }
+        self.header = Some(header);
+        self.shape = shape;
+    }
+
+    /// Item `ix` changed height (a fold toggled).
+    fn remeasure_item(&self, ix: usize) {
+        let row = ix + 1;
+        if row < self.shape.len() {
+            self.state.remeasure_items(row..row + 1);
+        }
+    }
+
+    /// Scroll to the bottom at the next layout.
+    pub(super) fn scroll_to_end(&self) {
+        self.state.scroll_to_end();
+    }
+
+    /// Scrolled to (within a few lines of) the bottom: new output follows.
+    pub(super) fn at_bottom(&self) -> bool {
+        let offset = -self.state.scroll_px_offset_for_scrollbar().y;
+        let max = self.state.max_offset_for_scrollbar().y;
+        offset >= max - px(48.)
+    }
+
+    /// `element`, fading in if the row first showed just now.
+    fn appear(&mut self, id: (&'static str, usize), now: Instant, element: Div) -> AnyElement {
+        let born = *self.born.entry(id).or_insert(now);
+        if now.duration_since(born) < APPEAR_WINDOW {
+            ui::appear(id, element).into_any_element()
+        } else {
+            element.into_any_element()
+        }
     }
 }
 
@@ -153,28 +395,59 @@ impl SessionView {
         self.transcript.running || self.live.pending.is_some()
     }
 
-    /// Record start/end instants of live items and keep a ticker running
-    /// for their timers.
-    fn sync_live(&mut self, cx: &mut Context<Self>) {
-        let now = Instant::now();
-        let running = self.transcript.running;
-        if running {
-            self.live.turn.get_or_insert(now);
-        } else {
-            self.live.turn = None;
+    /// The empty state (hero and banner) shows.
+    pub(super) fn hero_shown(&self) -> bool {
+        self.transcript.items.is_empty() && self.live.pending.is_none()
+    }
+
+    /// Bring everything derived from the transcript up to date: Markdown,
+    /// live spans, decoded images, card data and the list's measurements.
+    /// Only items from the first changed one on are revisited.
+    pub(super) fn sync_view(&mut self, cx: &mut Context<Self>) {
+        let dirty = self.transcript.take_dirty();
+        if let Some(dirty) = dirty {
+            if dirty.reset {
+                self.markdown.clear();
+                self.list.forget_items();
+            }
+            let from = dirty.from.min(self.transcript.items.len());
+            self.sync_markdown(from, cx);
+            self.track_live(from);
+            self.list.prepare(&self.transcript.items, from);
+            self.request_images(from, dirty.reset, cx);
         }
-        let mut shells = false;
-        for (ix, item) in self.transcript.items.iter().enumerate() {
+        self.sync_live(cx);
+        let tail = self.tail_rows();
+        let header = HeaderKey {
+            hero: self.hero_shown(),
+            backend: match self.backend {
+                Backend::Starting => 0,
+                Backend::Ready(_) => 1,
+                Backend::Failed(_) => 2,
+                Backend::Exited(_) => 3,
+            },
+        };
+        self.list
+            .sync(self.transcript.items.len(), tail, header, dirty);
+    }
+
+    /// Record start/end instants of live items `from..`.
+    fn track_live(&mut self, from: usize) {
+        let now = Instant::now();
+        let mut opened = 0;
+        let items = self.transcript.items.get(from..).unwrap_or_default();
+        for (ix, item) in (from..).zip(items) {
             match item {
-                Item::Tool { status, .. } => track(
-                    &mut self.live.tools,
-                    ix,
-                    *status == ToolStatus::Running,
-                    now,
-                ),
+                Item::Tool { status, .. } => {
+                    opened += track(
+                        &mut self.live.tools,
+                        ix,
+                        *status == ToolStatus::Running,
+                        now,
+                    )
+                }
                 Item::Shell { running, .. } => {
-                    shells |= *running;
-                    track(&mut self.live.tools, ix, *running, now);
+                    opened += track(&mut self.live.tools, ix, *running, now)
                 }
                 Item::Assistant {
                     blocks, streaming, ..
@@ -182,12 +455,25 @@ impl SessionView {
                     for (bi, block) in blocks.iter().enumerate() {
                         if matches!(block, Block::Thinking(_)) {
                             let live = *streaming && bi + 1 == blocks.len();
-                            track(&mut self.live.thinking, (ix, bi), live, now);
+                            opened += track(&mut self.live.thinking, (ix, bi), live, now);
                         }
                     }
                 }
                 _ => {}
             }
+        }
+        self.live.open_spans = self.live.open_spans.saturating_add_signed(opened);
+    }
+
+    /// Update the turn clock and the prompt in flight; whether live timers
+    /// still need ticking.
+    fn refresh_live(&mut self) -> bool {
+        let now = Instant::now();
+        let running = self.transcript.running;
+        if running {
+            self.live.turn.get_or_insert(now);
+        } else {
+            self.live.turn = None;
         }
 
         let ready = matches!(self.backend, Backend::Ready(_));
@@ -211,23 +497,115 @@ impl SessionView {
                 self.live.pending = None;
             }
         }
+        ticker_needed(
+            running,
+            self.transcript.shells_running(),
+            self.live.pending.is_some(),
+        )
+    }
 
-        if running || shells || self.live.pending.is_some() {
-            if self.live.ticker.is_none() {
-                self.live.ticker = Some(cx.spawn(async move |this, cx| {
-                    loop {
-                        cx.background_executor()
-                            .timer(Duration::from_millis(200))
-                            .await;
-                        if this.update(cx, |_, cx| cx.notify()).is_err() {
-                            break;
-                        }
-                    }
-                }));
-            }
-        } else {
+    /// Keep a ticker running exactly while something is live. Runs on every
+    /// state change (not only on render), so hidden tabs stop ticking too.
+    fn sync_live(&mut self, cx: &mut Context<Self>) {
+        if !self.refresh_live() {
             self.live.ticker = None;
+            self.live.ticking = false;
+            return;
         }
+        if self.live.ticking {
+            return;
+        }
+        self.live.ticking = true;
+        self.live.stamp = None;
+        self.live.ticker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(TICK).await;
+                match this.update(cx, |this, cx| this.tick(cx)) {
+                    Ok(true) => {}
+                    _ => break,
+                }
+            }
+        }));
+    }
+
+    /// One ticker step: repaint only when a timer label reads differently
+    /// (or the prompt in flight resolved); false once nothing is live.
+    fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let had_pending = self.live.pending.is_some();
+        let live = self.refresh_live();
+        self.live.ticks += 1;
+        let stamp = label_stamp(
+            (self.live.open_spans > 0).then_some(self.live.ticks),
+            self.live.turn.map(|t| t.elapsed()),
+            self.live.pending.as_ref().map(|p| p.since.elapsed()),
+        );
+        if self.live.stamp != Some(stamp) || had_pending != self.live.pending.is_some() {
+            self.live.stamp = Some(stamp);
+            cx.notify();
+        }
+        if !live {
+            self.live.ticking = false;
+        }
+        live
+    }
+
+    /// Decode images of user items `from..` off the UI thread (all shown
+    /// images when the transcript was replaced, forgetting the rest).
+    fn request_images(&mut self, from: usize, prune: bool, cx: &mut Context<Self>) {
+        let start = if prune { 0 } else { from };
+        let shown = self
+            .transcript
+            .items
+            .get(start..)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|item| match item {
+                Item::User { images, .. } => Some(images),
+                _ => None,
+            })
+            .flatten();
+        let jobs = self.image_cache.request(shown, prune);
+        if jobs.is_empty() {
+            return;
+        }
+        let decoding = cx
+            .background_executor()
+            .spawn(async move { attachments::decode_all(jobs) });
+        cx.spawn(async move |this, cx| {
+            let decoded = decoding.await;
+            let _ = this.update(cx, |this, cx| {
+                this.image_cache.finish(decoded);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// The rows after the transcript: the prompt just sent (until Pi echoes
+    /// it) and a working indicator.
+    fn tail_rows(&self) -> Vec<Tail> {
+        let count = self.transcript.items.len();
+        let mut tail = Vec::new();
+        if let Some(pending) = &self.live.pending {
+            // It takes the same slot (and animation id) as the real message
+            // so nothing jumps.
+            if count == pending.base && !pending.text.starts_with('/') {
+                tail.push(Tail::PendingBubble(pending.base));
+            }
+            tail.push(Tail::Pending(pending.base));
+        } else if self.transcript.running {
+            // Between tool calls nothing streams; keep a pulse at the end.
+            let idle_tail = match self.transcript.items.last() {
+                Some(Item::Assistant { streaming, .. }) => !streaming,
+                Some(Item::Tool { status, .. }) => *status != ToolStatus::Running,
+                Some(Item::Shell { running, .. }) => !running,
+                _ => true,
+            };
+            if idle_tail {
+                tail.push(Tail::Between(count));
+            }
+        }
+        tail
     }
 
     fn tool_duration(
@@ -250,6 +628,8 @@ impl SessionView {
         if !self.expanded.remove(&key) {
             self.expanded.insert(key);
         }
+        // Fold keys carry their item index.
+        self.list.remeasure_item(key >> 16);
         cx.notify();
     }
 
@@ -439,46 +819,32 @@ impl SessionView {
                 }
                 column.into_any_element()
             }
-            Item::Tool {
-                name,
-                args,
-                status,
-                output,
-                details,
-                duration_ms,
-                ..
-            } => {
-                let spec = tool_spec(name, args, *status, output, details);
-                let duration = self.tool_duration(ix, *status, *duration_ms);
-                self.render_card(ix, spec, duration, cx)
-            }
-            Item::Shell {
-                command,
-                output,
-                exit_code,
-                running,
-            } => {
-                let status = match (running, exit_code) {
-                    (true, _) => ToolStatus::Running,
-                    (false, Some(0)) => ToolStatus::Done,
-                    _ => ToolStatus::Failed,
+            Item::Tool { .. } | Item::Shell { .. } => {
+                let computed;
+                let spec = match self.list.prepared.get(&ix) {
+                    Some(Prepared::Card(spec)) => spec,
+                    _ => {
+                        computed = card_spec(item);
+                        match &computed {
+                            Some(spec) => spec,
+                            None => return div().into_any_element(),
+                        }
+                    }
                 };
-                let spec = CardSpec {
-                    icon: IconName::CodeXml,
-                    title: "Shell".into(),
-                    subject: String::new(),
-                    chip: Some(command_language(command).to_string()),
-                    added: None,
-                    removed: None,
-                    input: Some((command.clone(), false)),
-                    output: output.clone(),
-                    always_output: true,
-                    status,
+                let backend_ms = match item {
+                    Item::Tool { duration_ms, .. } => *duration_ms,
+                    _ => None,
                 };
-                let duration = self.tool_duration(ix, status, None);
-                self.render_card(ix, spec, duration, cx)
+                let duration = self.tool_duration(ix, spec.status, backend_ms);
+                self.render_card(ix, item, spec, duration, cx)
             }
-            Item::Custom { kind, text } => self.render_custom(ix, kind, text, cx),
+            Item::Custom { kind, text } => {
+                let lines = match self.list.prepared.get(&ix) {
+                    Some(Prepared::Lines(lines)) => *lines,
+                    _ => line_count(text),
+                };
+                self.render_custom(ix, kind, text, lines, cx)
+            }
             Item::Notice { level, text } => notice_card(*level, text).into_any_element(),
         }
     }
@@ -556,6 +922,7 @@ impl SessionView {
         ix: usize,
         kind: &str,
         text: &str,
+        lines: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let (icon, title, color) = match kind {
@@ -568,8 +935,14 @@ impl SessionView {
         };
         let key = fold_key(ix, 0, OUTPUT);
         let open = self.expanded.contains(&key);
-        let (shown, hidden) = head(text, if open { 400 } else { INPUT_LINES });
-        let more = text.trim_end().lines().count().saturating_sub(INPUT_LINES);
+        let (shown, hidden) = head_slice(text, lines, if open { 400 } else { INPUT_LINES });
+        // One text run: line endings normalized the way `str::lines` reads them.
+        let shown = if shown.contains('\r') {
+            shown.lines().collect::<Vec<_>>().join("\n")
+        } else {
+            shown.to_string()
+        };
+        let more = lines.saturating_sub(INPUT_LINES);
         ui::card()
             .w_full()
             .overflow_hidden()
@@ -626,13 +999,15 @@ impl SessionView {
     fn render_card(
         &self,
         ix: usize,
-        spec: CardSpec,
+        item: &Item,
+        spec: &CardSpec,
         duration: Option<Duration>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (input, output) = card_texts(item);
         let out_key = fold_key(ix, 0, OUTPUT);
         let open = self.expanded.contains(&out_key);
-        let has_output = !spec.output.trim().is_empty();
+        let has_output = spec.has_output;
         let show_output =
             has_output && (spec.always_output || open || spec.status != ToolStatus::Done);
         let foldable = has_output && !spec.always_output;
@@ -662,9 +1037,9 @@ impl SessionView {
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ui::champagne())
-                            .child(spec.title),
+                            .child(spec.title.clone()),
                     )
-                    .when_some(spec.chip, |this, chip| {
+                    .when_some(spec.chip.clone(), |this, chip| {
                         this.child(ui::chip(chip, ui::info()).flex_shrink_0())
                     })
                     .child(
@@ -677,7 +1052,7 @@ impl SessionView {
                             .font_family(ui::MONO)
                             .text_size(px(12.))
                             .text_color(ui::muted())
-                            .child(spec.subject),
+                            .child(spec.subject.clone()),
                     )
                     .when_some(spec.added, |this, n| {
                         this.child(
@@ -709,27 +1084,38 @@ impl SessionView {
                         )
                     }),
             )
-            .when_some(spec.input, |this, (text, diff)| {
-                this.child(div().px_3().pb_2().child(self.code_well(
-                    fold_key(ix, 0, INPUT),
-                    &text,
-                    diff,
-                    cx,
-                )))
-            })
+            .when_some(
+                input.zip(spec.input_lines),
+                |this, ((text, diff), lines)| {
+                    this.child(div().px_3().pb_2().child(self.code_well(
+                        fold_key(ix, 0, INPUT),
+                        text,
+                        lines,
+                        diff,
+                        cx,
+                    )))
+                },
+            )
             .when(show_output, |this| {
-                this.child(self.output_block(out_key, &spec.output, cx))
+                this.child(self.output_block(out_key, output, spec.output_lines, cx))
             })
             .child(status_footer(spec.status, duration))
             .into_any_element()
     }
 
-    /// A command, file body or diff, clipped from the bottom with a fade.
-    fn code_well(&self, key: usize, text: &str, diff: bool, cx: &mut Context<Self>) -> Div {
+    /// A command, file body or diff (`lines` long), clipped from the bottom with a fade.
+    fn code_well(
+        &self,
+        key: usize,
+        text: &str,
+        lines: usize,
+        diff: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let max = if diff { DIFF_LINES } else { INPUT_LINES };
         let open = self.expanded.contains(&key);
-        let (shown, hidden) = head(text, if open { 400 } else { max });
-        let more = text.trim_end().lines().count().saturating_sub(max);
+        let (shown, hidden) = head_slice(text, lines, if open { 400 } else { max });
+        let more = lines.saturating_sub(max);
         let clipped = !open && hidden > 0;
         let lines = v_flex()
             .relative()
@@ -790,11 +1176,11 @@ impl SessionView {
             })
     }
 
-    /// Command output, clipped from the top so the latest lines show.
-    fn output_block(&self, key: usize, body: &str, cx: &mut Context<Self>) -> Div {
+    /// Command output (`lines` long), clipped from the top so the latest lines show.
+    fn output_block(&self, key: usize, body: &str, lines: usize, cx: &mut Context<Self>) -> Div {
         let open = self.expanded.contains(&key);
-        let (shown, hidden) = ui::tail(body, if open { 200 } else { OUTPUT_LINES });
-        let more = body.trim_end().lines().count().saturating_sub(OUTPUT_LINES);
+        let (shown, hidden) = tail_slice(body, lines, if open { 200 } else { OUTPUT_LINES });
+        let more = lines.saturating_sub(OUTPUT_LINES);
         v_flex()
             .w_full()
             .border_t_1()
@@ -1647,9 +2033,13 @@ impl SessionView {
             .live
             .turn
             .or_else(|| self.live.pending.as_ref().map(|p| p.since));
+        // Only shown while busy; with no tool running there is nothing to find.
+        let scan = busy && self.transcript.running_tools() > 0;
         let current_tool = self
             .transcript
             .items
+            .get(if scan { 0 } else { self.transcript.items.len() }..)
+            .unwrap_or_default()
             .iter()
             .rev()
             .find_map(|item| match item {
@@ -2113,6 +2503,15 @@ impl SessionView {
 
     // ── Rail ───────────────────────────────────────────────────────────────
 
+    /// Whether the rail would show anything.
+    fn rail_has_content(&self) -> bool {
+        !self.jobs.is_empty()
+            || !self.todo.is_empty()
+            || self.agents.as_ref().is_some_and(|a| !a.tasks.is_empty())
+            || !self.widgets.is_empty()
+            || self.transcript.last_usage.is_some()
+    }
+
     fn render_rail(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let card = || ui::card().w_full().gap_1p5().p_3();
         let mut rail = v_flex()
@@ -2347,89 +2746,98 @@ impl Focusable for SessionView {
     }
 }
 
+impl SessionView {
+    /// One row of the transcript list; `cx.processor` calls it for the
+    /// rows on screen (and in the overdraw) only.
+    fn render_row(&mut self, ix: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let Some(row) = self.list.shape.row(ix) else {
+            return div().into_any_element();
+        };
+        let hero = self.hero_shown();
+        // `render_backend_state` shows something unless the backend is ready.
+        let header = hero || !matches!(self.backend, Backend::Ready(_));
+        let now = Instant::now();
+        let content = match row {
+            Row::Header => {
+                if !header {
+                    return div().into_any_element();
+                }
+                v_flex()
+                    .w_full()
+                    .gap_4()
+                    .when(hero, |this| this.child(self.render_hero(cx)))
+                    .children(self.render_backend_state())
+                    .into_any_element()
+            }
+            Row::Item(i) => {
+                let Some(item) = self.transcript.items.get(i) else {
+                    return div().into_any_element();
+                };
+                let element = self.render_item(i, item, cx);
+                // Keyed by index: items animate in once, never again.
+                self.list
+                    .appear(("item", i), now, div().w_full().child(element))
+            }
+            Row::Tail(Tail::PendingBubble(base)) => {
+                let Some(pending) = &self.live.pending else {
+                    return div().into_any_element();
+                };
+                let bubble = user_bubble(
+                    &pending.text,
+                    pending.images.iter().cloned().map(Some).collect(),
+                );
+                self.list
+                    .appear(("item", base), now, div().w_full().child(bubble))
+            }
+            Row::Tail(Tail::Pending(base)) => {
+                let since = self.live.pending.as_ref().map(|p| p.since.elapsed());
+                let indicator = working_indicator(("pending-petal", base), "Thinking…", since);
+                self.list
+                    .appear(("pending", base), now, div().w_full().child(indicator))
+            }
+            Row::Tail(Tail::Between(count)) => {
+                let since = self.live.turn.map(|t| t.elapsed());
+                let indicator = working_indicator(("between-petal", count), "Working…", since);
+                self.list
+                    .appear(("between", count), now, div().w_full().child(indicator))
+            }
+            // The column's bottom padding.
+            Row::Footer => return div().h(px(24.)).into_any_element(),
+        };
+        // The column's top padding before the first row, its gap after.
+        let first = matches!(row, Row::Header) || (ix == 1 && !header);
+        let narrow = self.pane_width.get() < NARROW;
+        h_flex()
+            .w_full()
+            .justify_center()
+            .child(
+                v_flex()
+                    .w_full()
+                    .min_w_0()
+                    .max_w(px(760.))
+                    .map(|d| if narrow { d.px_3() } else { d.px_6() })
+                    .pt(px(if first { 24. } else { 16. }))
+                    .child(content),
+            )
+            .into_any_element()
+    }
+}
+
 impl Render for SessionView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_live(cx);
-        self.image_cache.sync(
-            self.transcript
-                .items
-                .iter()
-                .filter_map(|item| match item {
-                    Item::User { images, .. } => Some(images),
-                    _ => None,
-                })
-                .flatten(),
-        );
-        let empty = self.transcript.items.is_empty() && self.live.pending.is_none();
-        // The rail gives way on narrow windows so the conversation keeps its width.
+        // A tab starts its backend once shown.
+        self.ensure_started(window, cx);
+        self.sync_view(cx);
+        // The rail shows only with something in it, and gives way in narrow
+        // panes (a split pane, not just a narrow window) so the conversation
+        // keeps its width.
+        self.rail_fits = rail_fits(self.rail_fits, self.root_width.get());
         let show_rail = cx.try_global::<RailVisible>().is_none_or(|r| r.0)
-            && window.viewport_size().width >= px(980.);
-        let count = self.transcript.items.len();
-        let mut items: Vec<AnyElement> = self
-            .transcript
-            .items
-            .iter()
-            .enumerate()
-            .map(|(ix, item)| {
-                // Keyed by index: items animate in once, never again.
-                ui::appear(
-                    ("item", ix),
-                    div().w_full().child(self.render_item(ix, item, cx)),
-                )
-                .into_any_element()
-            })
-            .collect();
-
-        // The prompt just sent, until Pi echoes it; it takes the same slot (and
-        // animation id) as the real message so nothing jumps.
-        if let Some(pending) = &self.live.pending {
-            if count == pending.base && !pending.text.starts_with('/') {
-                items.push(
-                    ui::appear(
-                        ("item", pending.base),
-                        div().w_full().child(user_bubble(
-                            &pending.text,
-                            pending.images.iter().cloned().map(Some).collect(),
-                        )),
-                    )
-                    .into_any_element(),
-                );
-            }
-            items.push(
-                ui::appear(
-                    ("pending", pending.base),
-                    div().w_full().child(working_indicator(
-                        ("pending-petal", pending.base),
-                        "Thinking…",
-                        Some(pending.since.elapsed()),
-                    )),
-                )
-                .into_any_element(),
-            );
-        } else if self.transcript.running {
-            // Between tool calls nothing streams; keep a pulse at the end.
-            let idle_tail = match self.transcript.items.last() {
-                Some(Item::Assistant { streaming, .. }) => !streaming,
-                Some(Item::Tool { status, .. }) => *status != ToolStatus::Running,
-                Some(Item::Shell { running, .. }) => !running,
-                _ => true,
-            };
-            if idle_tail {
-                items.push(
-                    ui::appear(
-                        ("between", count),
-                        div().w_full().child(working_indicator(
-                            ("between-petal", count),
-                            "Working…",
-                            self.live.turn.map(|t| t.elapsed()),
-                        )),
-                    )
-                    .into_any_element(),
-                );
-            }
-        }
+            && self.rail_fits
+            && self.rail_has_content();
 
         let width = self.pane_width.clone();
+        let root_width = self.root_width.clone();
         let view = cx.entity_id();
         let narrow = self.pane_width.get() < NARROW;
         let main = v_flex()
@@ -2456,26 +2864,13 @@ impl Render for SessionView {
                 .size_full(),
             )
             .child(
-                div()
-                    .id("transcript")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .track_scroll(&self.scroll)
-                    .child(
-                        h_flex().w_full().justify_center().child(
-                            v_flex()
-                                .w_full()
-                                .min_w_0()
-                                .max_w(px(760.))
-                                .map(|d| if narrow { d.px_3() } else { d.px_6() })
-                                .py_6()
-                                .gap_4()
-                                .when(empty, |this| this.child(self.render_hero(cx)))
-                                .children(self.render_backend_state())
-                                .children(items),
-                        ),
-                    ),
+                div().id("transcript").flex_1().min_h_0().child(
+                    list(
+                        self.list.state.clone(),
+                        cx.processor(|this, ix, window, cx| this.render_row(ix, window, cx)),
+                    )
+                    .size_full(),
+                ),
             )
             .child(
                 h_flex()
@@ -2495,6 +2890,21 @@ impl Render for SessionView {
             .capture_key_down(cx.listener(Self::on_dialog_key))
             .relative()
             .size_full()
+            // The whole pane's width (the conversation column's shrinks with the rail).
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let w = f32::from(bounds.size.width);
+                        if (w - root_width.get()).abs() > 1. {
+                            root_width.set(w);
+                            cx.notify(view);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_full(),
+            )
             .child(main)
             .when(show_rail, |this| this.child(self.render_rail(cx)))
             .children(self.render_agents_panel(cx))
@@ -2503,79 +2913,145 @@ impl Render for SessionView {
 
 // ── Building blocks ────────────────────────────────────────────────────────
 
-/// Everything a tool card shows, derived from the tool call.
+/// Whether the pane (`width` px) is wide enough for the rail, with some
+/// hysteresis so it does not flip while a split is dragged near the edge.
+fn rail_fits(shown: bool, width: f32) -> bool {
+    width >= if shown { 780. } else { 820. }
+}
+
+/// Everything a tool or shell card shows except its text bodies, derived
+/// once per change of its item; the bodies are borrowed from the item when
+/// drawn ([`card_texts`]).
 struct CardSpec {
     icon: IconName,
-    title: String,
-    subject: String,
-    chip: Option<String>,
+    title: SharedString,
+    subject: SharedString,
+    chip: Option<SharedString>,
     added: Option<usize>,
     removed: Option<usize>,
-    /// The command, file body or diff (`true`) shown in a code well.
-    input: Option<(String, bool)>,
-    output: String,
+    /// Lines of the code well (command, file body or diff), when there is one.
+    input_lines: Option<usize>,
+    output_lines: usize,
+    has_output: bool,
     /// Output is the point of the tool (commands): show it without a click.
     always_output: bool,
     status: ToolStatus,
 }
 
-fn tool_spec(
-    name: &str,
-    args: &Value,
-    status: ToolStatus,
-    output: &str,
-    details: &Value,
-) -> CardSpec {
-    let summary = tools::summarize(name, args, details);
-    let arg = |key: &str| args[key].as_str().filter(|s| !s.trim().is_empty());
-    let command_like = matches!(name, "bash" | "bash_background" | "monitor" | "codemode");
-    let input = match name {
-        "bash" | "bash_background" | "monitor" => arg("command").map(|c| (c.to_string(), false)),
-        "codemode" => arg("code")
-            .or(arg("command"))
-            .map(|c| (c.to_string(), false)),
-        "write" => arg("content").map(|c| (c.to_string(), false)),
-        "edit" => details["diff"].as_str().map(|d| (d.to_string(), true)),
-        _ => None,
-    };
-    let chip = match name {
-        "bash" | "bash_background" | "monitor" => {
-            Some(command_language(arg("command").unwrap_or_default()).to_string())
+/// The card data of a tool or shell item.
+fn card_spec(item: &Item) -> Option<CardSpec> {
+    let (input, output) = card_texts(item);
+    let (input_lines, output_lines) = (input.map(|(text, _)| line_count(text)), line_count(output));
+    let has_output = !output.trim().is_empty();
+    match item {
+        Item::Tool {
+            name,
+            args,
+            status,
+            details,
+            ..
+        } => {
+            let summary = tools::summarize(name, args, details);
+            let arg = |key: &str| args[key].as_str().filter(|s| !s.trim().is_empty());
+            let command_like = matches!(
+                name.as_str(),
+                "bash" | "bash_background" | "monitor" | "codemode"
+            );
+            let chip = match name.as_str() {
+                "bash" | "bash_background" | "monitor" => {
+                    Some(command_language(arg("command").unwrap_or_default()).into())
+                }
+                "codemode" => Some(arg("language").unwrap_or("code").to_string().into()),
+                "read" | "edit" | "write" => {
+                    language_for_path(arg("path").unwrap_or_default()).map(SharedString::from)
+                }
+                n if n.starts_with("subagent") => arg("agent").map(|a| a.to_string().into()),
+                _ => None,
+            };
+            let title = match arg("description") {
+                Some(description) if command_like => ui::first_line(description, 80),
+                _ => summary.title,
+            };
+            let subject = if command_like && input.is_some() {
+                String::new()
+            } else {
+                summary.subject
+            };
+            Some(CardSpec {
+                icon: tool_icon(name),
+                title: title.into(),
+                subject: subject.into(),
+                chip,
+                added: summary.added,
+                removed: summary.removed,
+                input_lines,
+                output_lines,
+                has_output,
+                always_output: command_like,
+                status: *status,
+            })
         }
-        "codemode" => Some(arg("language").unwrap_or("code").to_string()),
-        "read" | "edit" | "write" => {
-            language_for_path(arg("path").unwrap_or_default()).map(str::to_string)
-        }
-        n if n.starts_with("subagent") => arg("agent").map(str::to_string),
+        Item::Shell {
+            command,
+            exit_code,
+            running,
+            ..
+        } => Some(CardSpec {
+            icon: IconName::CodeXml,
+            title: "Shell".into(),
+            subject: SharedString::default(),
+            chip: Some(command_language(command).into()),
+            added: None,
+            removed: None,
+            input_lines,
+            output_lines,
+            has_output,
+            always_output: true,
+            status: match (running, exit_code) {
+                (true, _) => ToolStatus::Running,
+                (false, Some(0)) => ToolStatus::Done,
+                _ => ToolStatus::Failed,
+            },
+        }),
         _ => None,
-    };
-    let title = match arg("description") {
-        Some(description) if command_like => ui::first_line(description, 80),
-        _ => summary.title,
-    };
-    let subject = if command_like && input.is_some() {
-        String::new()
-    } else {
-        summary.subject
-    };
-    // A file tool's result is a one-line receipt; only failures say more.
-    let output =
-        if matches!(name, "edit" | "write") && input.is_some() && status != ToolStatus::Failed {
-            String::new()
-        } else {
-            output.to_string()
-        };
-    CardSpec {
-        icon: tool_icon(name),
-        title,
-        subject,
-        chip,
-        added: summary.added,
-        removed: summary.removed,
-        input,
-        output,
-        always_output: command_like,
-        status,
+    }
+}
+
+/// A card's text bodies, borrowed from its item: the code well (and
+/// whether it is a diff) and the output.
+fn card_texts(item: &Item) -> (Option<(&str, bool)>, &str) {
+    match item {
+        Item::Tool {
+            name,
+            args,
+            status,
+            output,
+            details,
+            ..
+        } => {
+            let arg = |key: &str| args[key].as_str().filter(|s| !s.trim().is_empty());
+            let input = match name.as_str() {
+                "bash" | "bash_background" | "monitor" => arg("command").map(|c| (c, false)),
+                "codemode" => arg("code").or(arg("command")).map(|c| (c, false)),
+                "write" => arg("content").map(|c| (c, false)),
+                "edit" => details["diff"].as_str().map(|d| (d, true)),
+                _ => None,
+            };
+            // A file tool's result is a one-line receipt; only failures say more.
+            let output = if matches!(name.as_str(), "edit" | "write")
+                && input.is_some()
+                && *status != ToolStatus::Failed
+            {
+                ""
+            } else {
+                output.as_str()
+            };
+            (input, output)
+        }
+        Item::Shell {
+            command, output, ..
+        } => (Some((command.as_str(), false)), output.as_str()),
+        _ => (None, ""),
     }
 }
 
@@ -2703,11 +3179,50 @@ fn diff_row(line: &str) -> Div {
         )
 }
 
-/// The first `max` lines of `text`, plus how many were hidden.
-fn head(text: &str, max: usize) -> (String, usize) {
-    let lines: Vec<&str> = text.trim_end().lines().collect();
-    let hidden = lines.len().saturating_sub(max);
-    (lines[..lines.len() - hidden].join("\n"), hidden)
+/// How many lines `str::lines` reads in `text` with its trailing whitespace trimmed.
+fn line_count(text: &str) -> usize {
+    let text = text.trim_end();
+    if text.is_empty() {
+        0
+    } else {
+        text.bytes().filter(|&b| b == b'\n').count() + 1
+    }
+}
+
+/// The first `max` of the `lines` lines of `text` ([`line_count`]) as one
+/// slice, plus how many were hidden. Read it back with `str::lines`.
+fn head_slice(text: &str, lines: usize, max: usize) -> (&str, usize) {
+    let text = text.trim_end();
+    if lines <= max {
+        return (text, 0);
+    }
+    if max == 0 {
+        return ("", lines);
+    }
+    let end = text
+        .match_indices('\n')
+        .nth(max - 1)
+        .map_or(text.len(), |(at, _)| at);
+    let head = &text[..end];
+    (head.strip_suffix('\r').unwrap_or(head), lines - max)
+}
+
+/// The last `max` of the `lines` lines of `text` ([`line_count`]) as one
+/// slice, plus how many were hidden. Read it back with `str::lines`.
+fn tail_slice(text: &str, lines: usize, max: usize) -> (&str, usize) {
+    let text = text.trim_end();
+    if lines <= max {
+        return (text, 0);
+    }
+    let hidden = lines - max;
+    if max == 0 {
+        return ("", hidden);
+    }
+    let start = text
+        .match_indices('\n')
+        .nth(hidden - 1)
+        .map_or(text.len(), |(at, _)| at + 1);
+    (&text[start..], hidden)
 }
 
 fn clock(elapsed: Duration) -> String {
@@ -3018,10 +3533,22 @@ fn limit_label(window: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{
-        checkbox_option, command_language, head, language_for_path, limit_label, option_matches,
-        parse_diff_line, parse_rate_limit, split_current,
+        ListUpdate, Row, Shape, Tail, checkbox_option, command_language, head_slice, label_stamp,
+        language_for_path, limit_label, line_count, list_update, option_matches, parse_diff_line,
+        parse_rate_limit, rail_fits, split_current, tail_slice, ticker_needed,
     };
+
+    #[test]
+    fn rail_shows_in_wide_panes_with_hysteresis() {
+        assert!(!rail_fits(false, 800.));
+        assert!(rail_fits(false, 820.));
+        // Once shown it stays until the pane is clearly narrower.
+        assert!(rail_fits(true, 800.));
+        assert!(!rail_fits(true, 779.));
+    }
 
     #[test]
     fn diff_lines_split_sign_number_and_text() {
@@ -3033,9 +3560,138 @@ mod tests {
     }
 
     #[test]
-    fn head_keeps_first_lines() {
-        assert_eq!(head("a\nb\nc\n", 2), ("a\nb".to_string(), 1));
-        assert_eq!(head("a", 5), ("a".to_string(), 0));
+    fn head_and_tail_slices_match_line_splitting() {
+        // What the old helpers' joined strings read back as (`str::lines`).
+        fn head(text: &str, max: usize) -> (Vec<&str>, usize) {
+            let lines: Vec<&str> = text.trim_end().lines().collect();
+            let hidden = lines.len().saturating_sub(max);
+            let read = lines[..lines.len() - hidden].join("\n").lines().count();
+            (lines[..read].to_vec(), hidden)
+        }
+        fn tail(text: &str, max: usize) -> (Vec<&str>, usize) {
+            let lines: Vec<&str> = text.trim_end().lines().collect();
+            let hidden = lines.len().saturating_sub(max);
+            let joined = lines[hidden..].join("\n");
+            let read = joined.lines().count();
+            (lines[hidden..hidden + read].to_vec(), hidden)
+        }
+        let texts = [
+            "",
+            "  \n",
+            "a",
+            "a\nb\nc\n",
+            "a\n\nb\n\n\n",
+            "one\r\ntwo\r\nthree\r\n",
+            "x\ny\nz\nw\nv",
+        ];
+        for text in texts {
+            let lines = line_count(text);
+            assert_eq!(lines, text.trim_end().lines().count(), "{text:?}");
+            for max in 0..7 {
+                let (shown, hidden) = head_slice(text, lines, max);
+                let shown: Vec<&str> = shown.lines().collect();
+                assert_eq!((shown, hidden), head(text, max), "{text:?} {max}");
+                let (shown, hidden) = tail_slice(text, lines, max);
+                let shown: Vec<&str> = shown.lines().collect();
+                assert_eq!((shown, hidden), tail(text, max), "{text:?} {max}");
+            }
+        }
+        assert_eq!(head_slice("a\nb\nc\n", 3, 2), ("a\nb", 1));
+        assert_eq!(tail_slice("a\nb\nc\n", 3, 2), ("b\nc", 1));
+    }
+
+    #[test]
+    fn rows_map_to_header_items_tail_and_footer() {
+        let shape = Shape {
+            items: 2,
+            tail: vec![Tail::Between(2)],
+        };
+        assert_eq!(shape.len(), 5);
+        assert_eq!(shape.row(0), Some(Row::Header));
+        assert_eq!(shape.row(2), Some(Row::Item(1)));
+        assert_eq!(shape.row(3), Some(Row::Tail(Tail::Between(2))));
+        assert_eq!(shape.row(4), Some(Row::Footer));
+        assert_eq!(shape.row(5), None);
+    }
+
+    #[test]
+    fn list_updates_start_at_the_first_changed_row() {
+        let shape = |items, tail: &[Tail]| Shape {
+            items,
+            tail: tail.to_vec(),
+        };
+        // Streaming into the last of 3 items: only its row is re-measured.
+        assert_eq!(
+            list_update(&shape(3, &[]), &shape(3, &[]), Some(2)),
+            ListUpdate {
+                remeasure: 3..5,
+                splice: None
+            }
+        );
+        // Nothing changed: nothing to do.
+        assert_eq!(
+            list_update(&shape(3, &[]), &shape(3, &[]), None),
+            ListUpdate {
+                remeasure: 5..5,
+                splice: None
+            }
+        );
+        // An item appended: the old footer slot is re-measured, one row added.
+        assert_eq!(
+            list_update(&shape(3, &[]), &shape(4, &[]), Some(3)),
+            ListUpdate {
+                remeasure: 4..5,
+                splice: Some((5..5, 1))
+            }
+        );
+        // The pending bubble becomes the real message; the indicator goes.
+        let pending = [Tail::PendingBubble(1), Tail::Pending(1)];
+        assert_eq!(
+            list_update(&shape(1, &pending), &shape(2, &[]), Some(1)),
+            ListUpdate {
+                remeasure: 2..4,
+                splice: Some((4..5, 0))
+            }
+        );
+        // Only the tail changed.
+        assert_eq!(
+            list_update(&shape(2, &[]), &shape(2, &[Tail::Between(2)]), None),
+            ListUpdate {
+                remeasure: 3..4,
+                splice: Some((4..4, 1))
+            }
+        );
+    }
+
+    #[test]
+    fn timers_stop_once_nothing_is_live() {
+        assert!(!ticker_needed(false, false, false));
+        assert!(ticker_needed(true, false, false));
+        assert!(ticker_needed(false, true, false));
+        assert!(ticker_needed(false, false, true));
+    }
+
+    #[test]
+    fn timer_repaints_only_when_labels_change() {
+        let at = |ms| Some(Duration::from_millis(ms));
+        // Whole-second clocks: the same second reads the same.
+        assert_eq!(
+            label_stamp(None, at(1_100), None),
+            label_stamp(None, at(1_900), None)
+        );
+        assert_ne!(
+            label_stamp(None, at(1_900), None),
+            label_stamp(None, at(2_100), None)
+        );
+        assert_ne!(
+            label_stamp(None, None, at(900)),
+            label_stamp(None, None, at(1_000))
+        );
+        // A tenths label (running tool) changes every tick.
+        assert_ne!(
+            label_stamp(Some(1), at(1_100), None),
+            label_stamp(Some(2), at(1_300), None)
+        );
     }
 
     #[test]

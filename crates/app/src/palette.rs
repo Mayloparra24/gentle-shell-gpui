@@ -129,6 +129,62 @@ enum Line {
 
 const MAX_FILES: usize = 20_000;
 
+/// The trimmed query, lowercased once per edit.
+#[derive(Default)]
+struct Needle {
+    text: String,
+    lower: String,
+    /// `lower` without leading slashes, for slash commands.
+    command: String,
+}
+
+impl Needle {
+    fn new(text: &str) -> Self {
+        let text = text.trim().to_string();
+        let lower = text.to_lowercase();
+        let command = lower.trim_start_matches('/').to_string();
+        Self {
+            text,
+            lower,
+            command,
+        }
+    }
+}
+
+/// A file under the root, relative, lowercased once at load.
+struct FileEntry {
+    path: String,
+    lower: String,
+    /// Byte offset of the file name in `path`.
+    name_at: usize,
+    /// The lowercased name when it isn't `lower[name_at..]` (non-ASCII paths,
+    /// whose lowercase can change byte lengths).
+    name_lower: Option<String>,
+}
+
+impl FileEntry {
+    fn new(path: String) -> Self {
+        let name_at = path.rfind(['/', '\\']).map_or(0, |i| i + 1);
+        let (lower, name_lower) = if path.is_ascii() {
+            (path.to_ascii_lowercase(), None)
+        } else {
+            (path.to_lowercase(), Some(path[name_at..].to_lowercase()))
+        };
+        Self {
+            path,
+            lower,
+            name_at,
+            name_lower,
+        }
+    }
+
+    fn name_lower(&self) -> &str {
+        self.name_lower
+            .as_deref()
+            .unwrap_or(&self.lower[self.name_at..])
+    }
+}
+
 pub struct PaletteView {
     query: Entity<InputState>,
     category: Category,
@@ -136,9 +192,15 @@ pub struct PaletteView {
     commands: Vec<Row>,
     workspaces: Vec<WorkspaceRow>,
     root: PathBuf,
-    files: Option<Vec<String>>,
+    files: Option<Vec<FileEntry>>,
     branches: Option<Vec<(String, bool)>>,
     renaming: Option<(usize, Entity<InputState>)>,
+    /// The query as last matched.
+    needle: Needle,
+    /// Matched rows and their display lines, recomputed by
+    /// [`Self::refresh_rows`] when the query, category or sources change.
+    rows: Vec<Row>,
+    lines: Vec<Line>,
     scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
     _tasks: Vec<Task<()>>,
@@ -147,23 +209,77 @@ pub struct PaletteView {
 impl EventEmitter<PaletteEvent> for PaletteView {}
 
 /// Case-insensitive subsequence score; lower is better, `None` = no match.
+/// `query` must already be lowercase (see [`Needle`]); allocation-free for
+/// ASCII `text`.
 pub fn fuzzy_score(query: &str, text: &str) -> Option<usize> {
     if query.is_empty() {
         return Some(0);
     }
-    let text = text.to_lowercase();
-    if let Some(pos) = text.find(&query.to_lowercase()) {
+    if text.is_ascii() {
+        ascii_score(query.as_bytes(), text.as_bytes())
+    } else {
+        lowered_score(query, &text.to_lowercase())
+    }
+}
+
+/// [`fuzzy_score`] over ASCII `text`, folding its case byte by byte. A
+/// non-ASCII byte in `query` never matches, as its lowercase char couldn't.
+fn ascii_score(query: &[u8], text: &[u8]) -> Option<usize> {
+    let folded = |a: &u8, q: &u8| a.to_ascii_lowercase() == *q;
+    if query.len() <= text.len()
+        && let Some(pos) = text
+            .windows(query.len())
+            .position(|w| w.iter().zip(query).all(|(a, q)| folded(a, q)))
+    {
+        return Some(pos);
+    }
+    let mut bytes = text.iter().enumerate();
+    let mut last = 0;
+    let mut gaps = 0;
+    for q in query {
+        let (i, _) = bytes.find(|(_, a)| folded(a, q))?;
+        gaps += i - last;
+        last = i;
+    }
+    Some(100 + gaps)
+}
+
+/// [`fuzzy_score`] with both sides already lowercase; allocation-free.
+fn lowered_score(query: &str, text: &str) -> Option<usize> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    if let Some(pos) = text.find(query) {
         return Some(pos);
     }
     let mut chars = text.char_indices();
     let mut last = 0;
     let mut gaps = 0;
-    for q in query.to_lowercase().chars() {
+    for q in query.chars() {
         let (i, _) = chars.find(|(_, c)| *c == q)?;
         gaps += i - last;
         last = i;
     }
     Some(100 + gaps)
+}
+
+/// Indices of the `files` matching `query` (lowercase), best first: name
+/// matches before path-only ones, then shorter paths; at most `cap`.
+fn rank_files(files: &[FileEntry], query: &str, cap: usize) -> Vec<usize> {
+    if query.is_empty() {
+        return (0..files.len().min(cap)).collect();
+    }
+    let mut scored: Vec<(usize, usize, usize)> = files
+        .iter()
+        .enumerate()
+        .filter_map(|(i, file)| {
+            let score = lowered_score(query, file.name_lower())
+                .or_else(|| lowered_score(query, &file.lower).map(|s| s + 50))?;
+            Some((score, file.path.len(), i))
+        })
+        .collect();
+    scored.sort_unstable();
+    scored.into_iter().take(cap).map(|(_, _, i)| i).collect()
 }
 
 /// Files under `root`, relative, honoring `.gitignore`; at most `cap`.
@@ -367,6 +483,7 @@ impl PaletteView {
             if let InputEvent::Change = event {
                 this.selected = 0;
                 this.scroll.scroll_to_item(0);
+                this.refresh_rows(cx);
                 cx.notify();
             }
         });
@@ -395,10 +512,16 @@ impl PaletteView {
         let files = cx.spawn(async move |this, cx| {
             let files = cx
                 .background_executor()
-                .spawn(async move { walk_files(&root, MAX_FILES) })
+                .spawn(async move {
+                    walk_files(&root, MAX_FILES)
+                        .into_iter()
+                        .map(FileEntry::new)
+                        .collect::<Vec<_>>()
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.files = Some(files);
+                this.refresh_rows(cx);
                 cx.notify();
             });
         });
@@ -410,11 +533,12 @@ impl PaletteView {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.branches = Some(branches);
+                this.refresh_rows(cx);
                 cx.notify();
             });
         });
 
-        Self {
+        let mut this = Self {
             query,
             category: input.category,
             selected: 0,
@@ -424,10 +548,15 @@ impl PaletteView {
             files: None,
             branches: None,
             renaming: None,
+            needle: Needle::default(),
+            rows: Vec::new(),
+            lines: Vec::new(),
             scroll: ScrollHandle::new(),
             _subscriptions: vec![subscription],
             _tasks: vec![files, branches],
-        }
+        };
+        this.refresh_rows(cx);
+        this
     }
 
     pub fn category(&self) -> Category {
@@ -448,37 +577,44 @@ impl PaletteView {
             state.set_placeholder(category.placeholder(), window, cx);
             state.focus(window, cx);
         });
+        self.refresh_rows(cx);
         cx.notify();
     }
 
-    fn query_text(&self, cx: &App) -> String {
-        self.query.read(cx).value().trim().to_string()
-    }
-
-    fn rows(&self, cx: &App) -> Vec<Row> {
-        let query = self.query_text(cx);
+    /// Re-match the rows against the current query and category.
+    fn refresh_rows(&mut self, cx: &App) {
+        let query = self.query.read(cx).value();
+        if query.trim() != self.needle.text {
+            self.needle = Needle::new(&query);
+        }
+        let typed = !self.needle.text.is_empty();
         let all = self.category == Category::All;
         let mut rows = Vec::new();
         if matches!(self.category, Category::All | Category::Workspaces) {
-            rows.extend(self.workspace_rows(&query, all));
+            rows.extend(self.workspace_rows(all));
         }
         if matches!(self.category, Category::All | Category::Commands) {
-            rows.extend(self.command_rows(&query, if all { 12 } else { 80 }));
+            rows.extend(self.command_rows(if all { 12 } else { 80 }));
         }
-        if self.category == Category::Files || (all && !query.is_empty()) {
-            rows.extend(self.file_rows(&query, if all { 8 } else { 60 }));
+        if self.category == Category::Files || (all && typed) {
+            rows.extend(self.file_rows(if all { 8 } else { 60 }));
         }
-        if self.category == Category::Branches || (all && !query.is_empty()) {
-            rows.extend(self.branch_rows(&query, if all { 5 } else { 60 }));
+        if self.category == Category::Branches || (all && typed) {
+            rows.extend(self.branch_rows(if all { 5 } else { 60 }));
         }
-        rows
+        if !rows.is_empty() && self.selected >= rows.len() {
+            self.selected = rows.len() - 1;
+        }
+        self.lines = Self::lines(&rows);
+        self.rows = rows;
     }
 
-    fn workspace_rows(&self, query: &str, all: bool) -> Vec<Row> {
+    fn workspace_rows(&self, all: bool) -> Vec<Row> {
+        let query = self.needle.text.as_str();
         let mut scored: Vec<(usize, &WorkspaceRow)> = self
             .workspaces
             .iter()
-            .filter_map(|w| Some((fuzzy_score(query, &w.name)?, w)))
+            .filter_map(|w| Some((fuzzy_score(&self.needle.lower, &w.name)?, w)))
             .collect();
         scored.sort_by_key(|(score, w)| (*score, w.index));
         let mut rows: Vec<Row> = scored
@@ -553,8 +689,8 @@ impl PaletteView {
         rows
     }
 
-    fn command_rows(&self, query: &str, cap: usize) -> Vec<Row> {
-        let query = query.trim_start_matches('/');
+    fn command_rows(&self, cap: usize) -> Vec<Row> {
+        let query = self.needle.command.as_str();
         let mut scored: Vec<(usize, usize, &Row)> = self
             .commands
             .iter()
@@ -576,29 +712,18 @@ impl PaletteView {
             .collect()
     }
 
-    fn file_rows(&self, query: &str, cap: usize) -> Vec<Row> {
+    fn file_rows(&self, cap: usize) -> Vec<Row> {
         let Some(files) = &self.files else {
             return Vec::new();
         };
-        let mut scored: Vec<(usize, &String)> = files
-            .iter()
-            .filter_map(|path| {
-                let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
-                let score = fuzzy_score(query, name)
-                    .or_else(|| fuzzy_score(query, path).map(|s| s + 50))?;
-                Some((score, path))
-            })
-            .collect();
-        if !query.is_empty() {
-            scored.sort_by_key(|(score, path)| (*score, path.len()));
-        }
-        scored
+        rank_files(files, &self.needle.lower, cap)
             .into_iter()
-            .take(cap)
-            .map(|(_, path)| {
-                let (dir, name) = match path.rsplit_once(['/', '\\']) {
-                    Some((dir, name)) => (dir.to_string(), name.to_string()),
-                    None => (String::new(), path.clone()),
+            .map(|i| {
+                let file = &files[i];
+                let path = &file.path;
+                let (dir, name) = match file.name_at {
+                    0 => (String::new(), path.clone()),
+                    at => (path[..at - 1].to_string(), path[at..].to_string()),
                 };
                 Row {
                     icon: IconName::File,
@@ -614,13 +739,13 @@ impl PaletteView {
             .collect()
     }
 
-    fn branch_rows(&self, query: &str, cap: usize) -> Vec<Row> {
+    fn branch_rows(&self, cap: usize) -> Vec<Row> {
         let Some(branches) = &self.branches else {
             return Vec::new();
         };
         let mut scored: Vec<(usize, &(String, bool))> = branches
             .iter()
-            .filter_map(|b| Some((fuzzy_score(query, &b.0)?, b)))
+            .filter_map(|b| Some((fuzzy_score(&self.needle.lower, &b.0)?, b)))
             .collect();
         scored.sort_by_key(|(score, (_, current))| (!*current, *score));
         scored
@@ -662,13 +787,13 @@ impl PaletteView {
     }
 
     fn move_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
-        let rows = self.rows(cx);
-        if rows.is_empty() {
+        if self.rows.is_empty() {
             return;
         }
-        let len = rows.len() as isize;
+        let len = self.rows.len() as isize;
         self.selected = (self.selected as isize + delta).rem_euclid(len) as usize;
-        let line = Self::lines(&rows)
+        let line = self
+            .lines
             .iter()
             .position(|l| matches!(l, Line::Row(i) if *i == self.selected))
             .unwrap_or(0);
@@ -679,8 +804,8 @@ impl PaletteView {
     }
 
     fn run_selected(&mut self, cx: &mut Context<Self>) {
-        let rows = self.rows(cx);
-        if let Some(row) = rows.get(self.selected.min(rows.len().saturating_sub(1))) {
+        let last = self.rows.len().saturating_sub(1);
+        if let Some(row) = self.rows.get(self.selected.min(last)) {
             cx.emit(PaletteEvent::Run(row.action.clone()));
         }
     }
@@ -726,6 +851,7 @@ impl PaletteView {
             if let Some(row) = self.workspaces.iter_mut().find(|w| w.index == index) {
                 row.name = name.clone();
             }
+            self.refresh_rows(cx);
             cx.emit(PaletteEvent::Run(PaletteAction::RenameWorkspace {
                 index,
                 name,
@@ -797,7 +923,7 @@ impl PaletteView {
             }))
     }
 
-    fn render_row(&self, i: usize, row: Row, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_row(&self, i: usize, row: &Row, cx: &mut Context<Self>) -> impl IntoElement {
         let selected = i == self.selected;
         let action = row.action.clone();
         let renaming = self
@@ -938,7 +1064,7 @@ impl PaletteView {
             })
     }
 
-    fn render_empty(&self, cx: &App) -> AnyElement {
+    fn render_empty(&self) -> AnyElement {
         let loading = match self.category {
             Category::Files => self.files.is_none(),
             Category::Branches => self.branches.is_none(),
@@ -950,7 +1076,7 @@ impl PaletteView {
             } else {
                 "Reading branches…"
             }
-        } else if self.category == Category::Branches && self.query_text(cx).is_empty() {
+        } else if self.category == Category::Branches && self.needle.text.is_empty() {
             "No local branches here"
         } else {
             "No matches"
@@ -982,12 +1108,7 @@ fn hint(keys: &[&'static str], label: &'static str) -> Div {
 
 impl Render for PaletteView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let rows = self.rows(cx);
-        if !rows.is_empty() && self.selected >= rows.len() {
-            self.selected = rows.len() - 1;
-        }
-        let lines = Self::lines(&rows);
-        let empty = rows.is_empty();
+        let empty = self.rows.is_empty();
         let mut list = v_flex()
             .id("palette-list")
             .flex_1()
@@ -996,7 +1117,7 @@ impl Render for PaletteView {
             .track_scroll(&self.scroll)
             .px_2()
             .pb_2();
-        for line in lines {
+        for line in &self.lines {
             list = match line {
                 Line::Header(group) => list.child(
                     div()
@@ -1007,13 +1128,13 @@ impl Render for PaletteView {
                         .text_size(px(12.))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(ui::muted())
-                        .child(group),
+                        .child(*group),
                 ),
-                Line::Row(i) => list.child(self.render_row(i, rows[i].clone(), cx)),
+                Line::Row(i) => list.child(self.render_row(*i, &self.rows[*i], cx)),
             };
         }
         if empty {
-            list = list.child(self.render_empty(cx));
+            list = list.child(self.render_empty());
         }
         let switch_keys: &[&'static str] = if cfg!(target_os = "macos") {
             &["⌃", "⌘", "K"]
@@ -1089,7 +1210,88 @@ impl Render for PaletteView {
 
 #[cfg(test)]
 mod tests {
-    use super::{fuzzy_score, parse_branches};
+    use super::{FileEntry, Needle, fuzzy_score, parse_branches, rank_files};
+
+    /// The scorer before it went allocation-free, kept to pin the ranking.
+    fn reference_score(query: &str, text: &str) -> Option<usize> {
+        if query.is_empty() {
+            return Some(0);
+        }
+        let text = text.to_lowercase();
+        if let Some(pos) = text.find(&query.to_lowercase()) {
+            return Some(pos);
+        }
+        let mut chars = text.char_indices();
+        let mut last = 0;
+        let mut gaps = 0;
+        for q in query.to_lowercase().chars() {
+            let (i, _) = chars.find(|(_, c)| *c == q)?;
+            gaps += i - last;
+            last = i;
+        }
+        Some(100 + gaps)
+    }
+
+    /// The file ranking before rows were cached, on raw paths.
+    fn reference_rank<'a>(files: &[&'a str], query: &str, cap: usize) -> Vec<&'a str> {
+        let mut scored: Vec<(usize, &str)> = files
+            .iter()
+            .filter_map(|path| {
+                let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+                let score = reference_score(query, name)
+                    .or_else(|| reference_score(query, path).map(|s| s + 50))?;
+                Some((score, *path))
+            })
+            .collect();
+        if !query.is_empty() {
+            scored.sort_by_key(|(score, path)| (*score, path.len()));
+        }
+        scored.into_iter().take(cap).map(|(_, path)| path).collect()
+    }
+
+    #[test]
+    fn prepared_scoring_ranks_like_the_reference() {
+        let files = [
+            "src/main.rs",
+            "crates/app/src/palette.rs",
+            "crates/app/src/files/changes.rs",
+            "crates/app/src/files/refs.rs",
+            "README.md",
+            "Cargo.toml",
+            "crates/app/Cargo.toml",
+            "docs/Ünïcode/Straße.txt",
+            "ΣΊΣΥΦΟΣ/notes.md",
+            "assets/İstanbul.png",
+            "a\\windows\\Path.TXT",
+            "tests/palette_test.rs",
+            "PAL/al/p.rs",
+        ];
+        let entries: Vec<FileEntry> = files
+            .iter()
+            .map(|p| FileEntry::new(p.to_string()))
+            .collect();
+        let queries = [
+            "", "pal", "PAL", "cs", "rs", "Straße", "σ", "ΣΟΣ", "İ", "i", "ünï", "md", "cargo",
+            "a/s/p", "path", "zzz", "c.r",
+        ];
+        for query in queries {
+            let needle = Needle::new(query);
+            for text in files {
+                assert_eq!(
+                    fuzzy_score(&needle.lower, text),
+                    reference_score(query, text),
+                    "{query:?} on {text:?}"
+                );
+            }
+            for cap in [3, 60] {
+                let ranked: Vec<&str> = rank_files(&entries, &needle.lower, cap)
+                    .into_iter()
+                    .map(|i| entries[i].path.as_str())
+                    .collect();
+                assert_eq!(ranked, reference_rank(&files, query, cap), "{query:?}");
+            }
+        }
+    }
 
     #[test]
     fn fuzzy_prefers_substrings_then_tight_subsequences() {

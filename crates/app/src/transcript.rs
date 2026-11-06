@@ -112,13 +112,46 @@ pub struct Usage {
     pub cost: f64,
 }
 
-#[derive(Default)]
 pub struct Transcript {
     pub items: Vec<Item>,
     /// Index into `items` of the assistant message being streamed.
     streaming: Option<usize>,
     pub running: bool,
     pub last_usage: Option<Usage>,
+    /// Changes not yet taken by the view: see [`Transcript::take_dirty`].
+    dirty: Option<Dirty>,
+    /// `!command` shells still running.
+    running_shells: usize,
+    /// Tool items still [`ToolStatus::Running`].
+    running_tools: usize,
+}
+
+impl Default for Transcript {
+    /// A fresh transcript reports itself replaced, so views drop what they
+    /// derived from the previous one.
+    fn default() -> Self {
+        Self {
+            items: Vec::new(),
+            streaming: None,
+            running: false,
+            last_usage: None,
+            dirty: Some(Dirty {
+                from: 0,
+                reset: true,
+            }),
+            running_shells: 0,
+            running_tools: 0,
+        }
+    }
+}
+
+/// What changed in `items` since the view last looked: every item at
+/// `from` or later may differ (or be new); earlier items are untouched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Dirty {
+    pub from: usize,
+    /// The whole list was replaced; indices no longer name the same items.
+    pub reset: bool,
 }
 
 /// What an applied event changed, for side effects the view performs.
@@ -130,6 +163,39 @@ pub struct Effects {
 }
 
 impl Transcript {
+    /// Take the changes since the last call (`None`: nothing changed).
+    pub fn take_dirty(&mut self) -> Option<Dirty> {
+        self.dirty.take()
+    }
+
+    /// Whether a `!command` shell is still running.
+    pub fn shells_running(&self) -> bool {
+        self.running_shells > 0
+    }
+
+    /// How many tool calls are still running.
+    pub fn running_tools(&self) -> usize {
+        self.running_tools
+    }
+
+    /// Item `ix` changed (or was added).
+    fn touch(&mut self, ix: usize) {
+        match &mut self.dirty {
+            Some(dirty) => dirty.from = dirty.from.min(ix),
+            None => {
+                self.dirty = Some(Dirty {
+                    from: ix,
+                    reset: false,
+                })
+            }
+        }
+    }
+
+    fn push(&mut self, item: Item) {
+        self.touch(self.items.len());
+        self.items.push(item);
+    }
+
     pub fn apply(&mut self, event: &Value) -> Effects {
         let mut effects = Effects::default();
         let Some(kind) = event.get("type").and_then(Value::as_str) else {
@@ -150,33 +216,41 @@ impl Transcript {
                 self.message_update(&event["assistantMessageEvent"]);
             }
             "message_end" => self.message_end(&event["message"]),
-            "tool_execution_start" => self.items.push(Item::Tool {
-                call_id: str_field(event, "toolCallId"),
-                name: str_field(event, "toolName"),
-                args: event["args"].clone(),
-                status: ToolStatus::Running,
-                output: String::new(),
-                details: Value::Null,
-                duration_ms: None,
-            }),
+            "tool_execution_start" => {
+                self.running_tools += 1;
+                self.push(Item::Tool {
+                    call_id: str_field(event, "toolCallId"),
+                    name: str_field(event, "toolName"),
+                    args: event["args"].clone(),
+                    status: ToolStatus::Running,
+                    output: String::new(),
+                    details: Value::Null,
+                    duration_ms: None,
+                })
+            }
             "tool_execution_update" => {
                 let id = str_field(event, "toolCallId");
-                if let Some(Item::Tool { output, .. }) = self.tool_mut(&id) {
+                if let Some((ix, Item::Tool { output, .. })) = self.tool_mut(&id) {
                     *output = content_text(&event["partialResult"]["content"]);
+                    self.touch(ix);
                 }
             }
             "tool_execution_end" => {
                 let id = str_field(event, "toolCallId");
                 let failed = event["isError"].as_bool().unwrap_or(false);
-                if let Some(Item::Tool {
-                    name,
-                    status,
-                    output,
-                    details,
-                    duration_ms,
-                    ..
-                }) = self.tool_mut(&id)
+                if let Some((
+                    ix,
+                    Item::Tool {
+                        name,
+                        status,
+                        output,
+                        details,
+                        duration_ms,
+                        ..
+                    },
+                )) = self.tool_mut(&id)
                 {
+                    let was_running = *status == ToolStatus::Running;
                     *status = if failed {
                         ToolStatus::Failed
                     } else {
@@ -186,6 +260,10 @@ impl Transcript {
                     *details = event["result"]["details"].clone();
                     *duration_ms = event["durationMs"].as_u64();
                     effects.files_touched = matches!(name.as_str(), "edit" | "write" | "bash");
+                    if was_running {
+                        self.running_tools = self.running_tools.saturating_sub(1);
+                    }
+                    self.touch(ix);
                 }
             }
             "auto_retry_start" => self.notice(
@@ -229,12 +307,13 @@ impl Transcript {
     }
 
     pub fn notice(&mut self, level: NoticeLevel, text: String) {
-        self.items.push(Item::Notice { level, text });
+        self.push(Item::Notice { level, text });
     }
 
     /// Start a `!command` shell item and return its index.
     pub fn start_shell(&mut self, command: String) -> usize {
-        self.items.push(Item::Shell {
+        self.running_shells += 1;
+        self.push(Item::Shell {
             command,
             output: String::new(),
             exit_code: None,
@@ -246,6 +325,7 @@ impl Transcript {
     pub fn shell_output(&mut self, index: usize, delta: &str) {
         if let Some(Item::Shell { output, .. }) = self.items.get_mut(index) {
             output.push_str(delta);
+            self.touch(index);
         }
     }
 
@@ -257,11 +337,15 @@ impl Transcript {
             ..
         }) = self.items.get_mut(index)
         {
+            if *running {
+                self.running_shells = self.running_shells.saturating_sub(1);
+            }
             *running = false;
             *exit_code = code;
             if let Some(text) = final_output.filter(|_| output.is_empty()) {
                 *output = text;
             }
+            self.touch(index);
         }
     }
 
@@ -269,6 +353,12 @@ impl Transcript {
     pub fn load_messages(&mut self, messages: &[Value]) {
         self.items.clear();
         self.streaming = None;
+        self.running_shells = 0;
+        self.running_tools = 0;
+        self.dirty = Some(Dirty {
+            from: 0,
+            reset: true,
+        });
         let mut results = std::collections::HashMap::new();
         for message in messages {
             if message["role"] == "toolResult" {
@@ -328,11 +418,11 @@ impl Transcript {
                     ),
                     _ => (String::new(), Vec::new()),
                 };
-                self.items.push(Item::User { text, images });
+                self.push(Item::User { text, images });
             }
             Some("assistant") => {
                 self.close_stream();
-                self.items.push(Item::Assistant {
+                self.push(Item::Assistant {
                     blocks: parse_blocks(&message["content"]),
                     streaming: true,
                     error: None,
@@ -344,9 +434,10 @@ impl Transcript {
     }
 
     fn message_update(&mut self, update: &Value) {
-        let Some(Item::Assistant { blocks, .. }) =
-            self.streaming.and_then(|i| self.items.get_mut(i))
-        else {
+        let Some(stream_ix) = self.streaming else {
+            return;
+        };
+        let Some(Item::Assistant { blocks, .. }) = self.items.get_mut(stream_ix) else {
             return;
         };
         let index = update["contentIndex"].as_u64().unwrap_or(0) as usize;
@@ -374,6 +465,7 @@ impl Transcript {
             Some("thinking_end") => ensure(blocks, Block::Thinking(str_field(update, "content"))),
             _ => {}
         }
+        self.touch(stream_ix);
     }
 
     fn message_end(&mut self, message: &Value) {
@@ -405,6 +497,7 @@ impl Transcript {
                 Some("aborted") => Some("Aborted".into()),
                 _ => None,
             };
+            self.touch(index);
         }
         if let Some(usage) = parse_usage(&message["usage"]) {
             self.last_usage = Some(usage);
@@ -419,25 +512,27 @@ impl Transcript {
         if text.trim().is_empty() {
             return;
         }
-        self.items.push(Item::Custom {
+        self.push(Item::Custom {
             kind: str_field(message, "customType"),
             text,
         });
     }
 
     fn close_stream(&mut self) {
-        if let Some(Item::Assistant { streaming, .. }) =
-            self.streaming.take().and_then(|i| self.items.get_mut(i))
+        if let Some(index) = self.streaming.take()
+            && let Some(Item::Assistant { streaming, .. }) = self.items.get_mut(index)
         {
             *streaming = false;
+            self.touch(index);
         }
     }
 
-    fn tool_mut(&mut self, id: &str) -> Option<&mut Item> {
+    fn tool_mut(&mut self, id: &str) -> Option<(usize, &mut Item)> {
         self.items
             .iter_mut()
+            .enumerate()
             .rev()
-            .find(|item| matches!(item, Item::Tool { call_id, .. } if call_id == id))
+            .find(|(_, item)| matches!(item, Item::Tool { call_id, .. } if call_id == id))
     }
 }
 
@@ -644,5 +739,83 @@ mod tests {
         assert_eq!(format_tokens(200_000), "200k");
         assert_eq!(format_tokens(1_500), "1.5k");
         assert_eq!(format_tokens(1_000_000), "1M");
+    }
+
+    #[test]
+    fn dirty_from_tracks_the_first_changed_item() {
+        let mut t = Transcript::default();
+        assert_eq!(
+            t.take_dirty(),
+            Some(Dirty {
+                from: 0,
+                reset: true
+            })
+        );
+        assert_eq!(t.take_dirty(), None);
+
+        apply_all(
+            &mut t,
+            &[
+                json!({"type":"message_start","message":{"role":"user","content":"hi"}}),
+                json!({"type":"tool_execution_start","toolCallId":"a","toolName":"bash","args":{}}),
+                json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
+            ],
+        );
+        let first = Dirty {
+            from: 0,
+            reset: false,
+        };
+        assert_eq!(t.take_dirty(), Some(first));
+
+        // Streaming only touches the streamed message.
+        t.apply(&json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"x"}}));
+        assert_eq!(t.take_dirty().map(|d| d.from), Some(2));
+
+        // A late tool update lowers the mark to the tool; later items stay included.
+        t.apply(&json!({"type":"message_update","assistantMessageEvent":{"type":"text_delta","contentIndex":0,"delta":"y"}}));
+        t.apply(&json!({"type":"tool_execution_update","toolCallId":"a","partialResult":{"content":[{"type":"text","text":"out"}]}}));
+        assert_eq!(t.take_dirty().map(|d| d.from), Some(1));
+
+        // Unknown events and updates for missing tools change nothing.
+        t.apply(&json!({"type":"queue_update"}));
+        t.apply(&json!({"type":"tool_execution_update","toolCallId":"zz","partialResult":{}}));
+        assert_eq!(t.take_dirty(), None);
+
+        t.notice(NoticeLevel::Info, "n".into());
+        assert_eq!(t.take_dirty().map(|d| d.from), Some(3));
+
+        t.load_messages(&[json!({"role":"user","content":"again"})]);
+        assert_eq!(
+            t.take_dirty(),
+            Some(Dirty {
+                from: 0,
+                reset: true
+            })
+        );
+    }
+
+    #[test]
+    fn running_counters_follow_tools_and_shells() {
+        let mut t = Transcript::default();
+        t.apply(
+            &json!({"type":"tool_execution_start","toolCallId":"a","toolName":"bash","args":{}}),
+        );
+        t.apply(
+            &json!({"type":"tool_execution_start","toolCallId":"b","toolName":"read","args":{}}),
+        );
+        assert_eq!(t.running_tools(), 2);
+        t.apply(
+            &json!({"type":"tool_execution_end","toolCallId":"a","toolName":"bash","result":{}}),
+        );
+        t.apply(
+            &json!({"type":"tool_execution_end","toolCallId":"a","toolName":"bash","result":{}}),
+        );
+        assert_eq!(t.running_tools(), 1);
+
+        let shell = t.start_shell("ls".into());
+        assert!(t.shells_running());
+        t.finish_shell(shell, Some(0), None);
+        t.finish_shell(shell, Some(0), None);
+        assert!(!t.shells_running());
     }
 }

@@ -99,10 +99,14 @@ fn set_dock_icon() {
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
 
-    let Some(mtm) = MainThreadMarker::new() else {
+    // Inside the bundle LaunchServices already shows `AppIcon.icns`.
+    let bundled = std::env::current_exe()
+        .is_ok_and(|exe| exe.to_string_lossy().contains(".app/Contents/MacOS/"));
+    let Some(mtm) = MainThreadMarker::new().filter(|_| !bundled) else {
         return;
     };
-    let png = include_bytes!("../../../packaging/icons/icon-1024.png");
+    // 512 px is the largest the Dock draws (256 pt at 2x).
+    let png = include_bytes!("../../../packaging/icons/icon-512.png");
     let data = NSData::with_bytes(png);
     if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
         let app = NSApplication::sharedApplication(mtm);
@@ -213,7 +217,8 @@ fn main() {
                 titlebar: Some(TitlebarOptions {
                     title: Some("Gentle Shell".into()),
                     appears_transparent: true,
-                    traffic_light_position: Some(point(px(14.), px(13.))),
+                    // Centered in the 36 px title bar (workspace.rs).
+                    traffic_light_position: Some(point(px(14.), px(11.))),
                 }),
                 app_id: Some("dev.gentle-shell.gpui".into()),
                 #[cfg(target_os = "linux")]

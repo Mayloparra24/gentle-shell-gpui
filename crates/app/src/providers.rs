@@ -76,26 +76,41 @@ impl ProvidersView {
         this
     }
 
+    /// Resolving the launcher can wait on the login-shell PATH probe, and
+    /// spawning starts Node: both run on the background executor.
     fn start(&mut self, cwd: PathBuf, cx: &mut Context<Self>) {
-        let spawned = pi_rpc::resolve_backend(&cwd)
-            .and_then(|spec| LoginHelper::spawn(&spec, &pi_rpc::resolve_homes()));
-        match spawned {
-            Ok((helper, rx)) => {
-                let _ = helper.list();
-                self.helper = Some(helper);
-                self._io = cx.spawn(async move |this, cx| {
-                    while let Ok(message) = rx.recv().await {
-                        if this
-                            .update(cx, |this, cx| this.handle(message, cx))
-                            .is_err()
-                        {
-                            break;
-                        }
+        self._io = cx.spawn(async move |this, cx| {
+            let spawned = cx
+                .background_executor()
+                .spawn(async move {
+                    pi_rpc::resolve_backend(&cwd)
+                        .and_then(|spec| LoginHelper::spawn(&spec, &pi_rpc::resolve_homes()))
+                })
+                .await;
+            let rx = this.update(cx, |this, cx| {
+                cx.notify();
+                match spawned {
+                    Ok((helper, rx)) => {
+                        let _ = helper.list();
+                        this.helper = Some(helper);
+                        Some(rx)
                     }
-                });
+                    Err(error) => {
+                        this.error = Some(format!("{error:#}"));
+                        None
+                    }
+                }
+            });
+            let Ok(Some(rx)) = rx else { return };
+            while let Ok(message) = rx.recv().await {
+                if this
+                    .update(cx, |this, cx| this.handle(message, cx))
+                    .is_err()
+                {
+                    break;
+                }
             }
-            Err(error) => self.error = Some(format!("{error:#}")),
-        }
+        });
     }
 
     fn handle(&mut self, message: LoginMessage, cx: &mut Context<Self>) {
@@ -144,6 +159,7 @@ impl ProvidersView {
                 if let Some(helper) = &self.helper {
                     let _ = helper.list();
                 }
+                crate::settings::forget_claude_auth();
                 cx.emit(ProvidersEvent::Changed);
             }
             LoginMessage::Error(message) => match &mut self.flow {
@@ -203,6 +219,7 @@ impl ProvidersView {
     fn logout(&mut self, provider: &ProviderInfo, cx: &mut Context<Self>) {
         if let Some(helper) = &self.helper {
             let _ = helper.logout(&provider.id);
+            crate::settings::forget_claude_auth();
         }
         cx.notify();
     }

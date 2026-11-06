@@ -18,3 +18,10 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# Shipped builds: whole-program optimization and no debug symbols. Thin LTO
+# keeps link time reasonable in CI while still pruning across crates.
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

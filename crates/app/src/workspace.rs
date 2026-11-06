@@ -125,7 +125,28 @@ struct Pane {
     path: Option<PathBuf>,
     /// Last conversation file seen, to save when it changes.
     session_file: Option<PathBuf>,
+    /// What the tab bar shows for this pane, kept here so drawing the chrome
+    /// never reads the views of tabs that aren't shown (reading an entity
+    /// while drawing makes its every notify redraw the window). Agents
+    /// refresh it on `SessionEvent::ChromeChanged`, everything on the title poll.
+    title: SharedString,
+    running: bool,
     _subscriptions: Vec<Subscription>,
+}
+
+impl Pane {
+    /// Re-read the title and busy state; whether either changed.
+    fn sync_chrome(&mut self, cx: &App) -> bool {
+        let title = (self.item.title)(cx);
+        let running = self
+            .session
+            .as_ref()
+            .is_some_and(|s| s.read(cx).is_running());
+        let changed = title != self.title || running != self.running;
+        self.title = title;
+        self.running = running;
+        changed
+    }
 }
 
 struct Tab {
@@ -221,9 +242,8 @@ pub struct Workspace {
     sidebar: Option<AnyView>,
     sidebar_visible: bool,
     save_task: Option<Task<()>>,
-    /// Last seen titles of the visible non-agent panes (their views can't be
-    /// observed through `AnyView`), polled once a second.
-    shown_titles: Vec<SharedString>,
+    /// Re-reads every pane's title and busy state once a second (non-agent
+    /// views can't be observed through `AnyView`), redrawing only on change.
     _title_poll: Task<()>,
     _lifecycle: Vec<Subscription>,
     /// The bell's notification center, shared by every tab.
@@ -276,7 +296,6 @@ impl Workspace {
             sidebar: None,
             sidebar_visible: saved.sidebar,
             save_task: None,
-            shown_titles: Vec::new(),
             notices: cx.new(|_| Notices::default()),
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {
@@ -304,6 +323,7 @@ impl Workspace {
         }
         this.space_mut().last_active = workspaces::now();
         this.focus_active(window, cx);
+        this.start_shown(window, cx);
         this.schedule_save(cx);
         this
     }
@@ -367,17 +387,18 @@ impl Workspace {
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| self.space().root.clone());
-        self.panes.insert(
-            id,
-            Pane {
-                item,
-                session: None,
-                cwd,
-                path: Some(path),
-                session_file: None,
-                _subscriptions: Vec::new(),
-            },
-        );
+        let mut pane = Pane {
+            item,
+            session: None,
+            cwd,
+            path: Some(path),
+            session_file: None,
+            title: SharedString::default(),
+            running: false,
+            _subscriptions: Vec::new(),
+        };
+        pane.sync_chrome(cx);
+        self.panes.insert(id, pane);
         self.place_preview(id, window, cx);
     }
 
@@ -506,7 +527,7 @@ impl Workspace {
             0.
         };
         let w = f32::from(viewport.width) - 12. - sidebar;
-        let h = f32::from(viewport.height) - 40. - 12.;
+        let h = f32::from(viewport.height) - 36. - 6.;
         let mut out = Vec::new();
         if let Some(tab) = self.tab() {
             leaf_sizes(&tab.tree, w, h, &mut out);
@@ -580,6 +601,7 @@ impl Workspace {
         self.current = index;
         self.space_mut().last_active = workspaces::now();
         self.focus_active(window, cx);
+        self.start_shown(window, cx);
         if changed {
             cx.emit(WorkspaceEvent::RootChanged(self.space().root.clone()));
         }
@@ -763,15 +785,18 @@ impl Workspace {
         }
     }
 
+    /// An agent pane; its backend starts now with `start_now` (the pane is in
+    /// the tab being shown), else the first time its tab is shown.
     fn new_agent_pane(
         &mut self,
         cwd: PathBuf,
         prompt: Option<String>,
         resume: Option<PathBuf>,
+        start_now: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> PaneId {
-        let session = cx.new(|cx| SessionView::new(cwd.clone(), prompt, window, cx));
+        let session = cx.new(|cx| SessionView::new(cwd.clone(), prompt, window, cx, start_now));
         if let Some(path) = resume.clone() {
             session.update(cx, |s, cx| s.resume_when_ready(path, cx));
         }
@@ -781,52 +806,56 @@ impl Workspace {
             let session = session.clone();
             Rc::new(move |cx: &App| SharedString::from(session.read(cx).title()))
         };
-        let subscriptions = vec![
-            // Tab titles and running dots follow each session.
-            cx.observe(&session, move |this, session, cx| {
-                let file = session.read(cx).session_file();
-                if let Some(pane) = this.panes.get_mut(&id)
-                    && pane.session_file != file
-                {
-                    pane.session_file = file;
-                    this.schedule_save(cx);
-                }
-                cx.notify();
-            }),
-            cx.subscribe_in(
-                &session,
-                window,
-                move |this, _, event: &SessionEvent, window, cx| match event {
-                    SessionEvent::OpenProviders => this.open_providers(window, cx),
-                    SessionEvent::Notice { level, message } => {
-                        let source = this.pane_title(id, cx);
-                        let (level, message) = (*level, message.clone());
-                        this.notices.update(cx, |store, cx| {
-                            store.push(level, message, source, Some(id), std::time::Instant::now());
-                            cx.notify();
-                        });
+        let subscriptions = vec![cx.subscribe_in(
+            &session,
+            window,
+            move |this, session, event: &SessionEvent, window, cx| match event {
+                // Tab titles, running dots and the saved conversation follow
+                // each session; its other changes don't touch the chrome.
+                SessionEvent::ChromeChanged => {
+                    let file = session.read(cx).session_file();
+                    let Some(pane) = this.panes.get_mut(&id) else {
+                        return;
+                    };
+                    let changed = pane.sync_chrome(cx);
+                    if pane.session_file != file {
+                        pane.session_file = file;
+                        this.schedule_save(cx);
+                    }
+                    if changed {
                         cx.notify();
                     }
-                },
-            ),
-        ];
-        self.panes.insert(
-            id,
-            Pane {
-                item: PaneItem {
-                    kind: PaneKind::Agent,
-                    view: session.clone().into(),
-                    focus,
-                    title,
-                    unsaved: None,
-                },
-                session: Some(session),
-                cwd,
-                path: None,
-                session_file: resume,
-                _subscriptions: subscriptions,
+                }
+                SessionEvent::OpenProviders => this.open_providers(window, cx),
+                SessionEvent::Notice { level, message } => {
+                    let source = this.pane_title(id);
+                    let (level, message) = (*level, message.clone());
+                    this.notices.update(cx, |store, cx| {
+                        store.push(level, message, source, Some(id), std::time::Instant::now());
+                        cx.notify();
+                    });
+                    cx.notify();
+                }
             },
-        );
+        )];
+        let mut pane = Pane {
+            item: PaneItem {
+                kind: PaneKind::Agent,
+                view: session.clone().into(),
+                focus,
+                title,
+                unsaved: None,
+            },
+            session: Some(session),
+            cwd,
+            path: None,
+            session_file: resume,
+            title: SharedString::default(),
+            running: false,
+            _subscriptions: subscriptions,
+        };
+        pane.sync_chrome(cx);
+        self.panes.insert(id, pane);
         id
     }
 
@@ -870,17 +899,18 @@ impl Workspace {
             ),
             _ => (target, None),
         };
-        self.panes.insert(
-            id,
-            Pane {
-                item,
-                session: None,
-                cwd,
-                path,
-                session_file: None,
-                _subscriptions: Vec::new(),
-            },
-        );
+        let mut pane = Pane {
+            item,
+            session: None,
+            cwd,
+            path,
+            session_file: None,
+            title: SharedString::default(),
+            running: false,
+            _subscriptions: Vec::new(),
+        };
+        pane.sync_chrome(cx);
+        self.panes.insert(id, pane);
         Some(id)
     }
 
@@ -894,7 +924,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<PaneId> {
         match kind {
-            PaneKind::Agent => Some(self.new_agent_pane(target, prompt, resume, window, cx)),
+            PaneKind::Agent => Some(self.new_agent_pane(target, prompt, resume, true, window, cx)),
             PaneKind::Terminal | PaneKind::File => self.new_factory_pane(kind, target, window, cx),
         }
     }
@@ -915,7 +945,8 @@ impl Workspace {
         match saved.kind {
             PaneKind::Agent => {
                 let resume = saved.session.clone().filter(|p| p.exists());
-                Some(self.new_agent_pane(cwd, None, resume, window, cx))
+                // Started once its tab is shown (see `start_shown`).
+                Some(self.new_agent_pane(cwd, None, resume, false, window, cx))
             }
             PaneKind::Terminal => {
                 PaneFactories::get(cx).terminal.as_ref()?;
@@ -948,8 +979,20 @@ impl Workspace {
         let space = self.space_mut();
         space.active = index.min(space.tabs.len().saturating_sub(1));
         self.focus_active(window, cx);
+        self.start_shown(window, cx);
         self.schedule_save(cx);
         cx.notify();
+    }
+
+    /// Start the backends of the shown tab's agents: restored tabs start the
+    /// first time they are shown rather than all at launch.
+    fn start_shown(&self, window: &mut Window, cx: &mut App) {
+        let Some(tab) = self.tab() else { return };
+        for id in tab.tree.leaves() {
+            if let Some(session) = self.panes.get(&id).and_then(|p| p.session.as_ref()) {
+                session.update(cx, |s, cx| s.ensure_started(window, cx));
+            }
+        }
     }
 
     fn focus_active(&self, window: &mut Window, cx: &mut App) {
@@ -1210,6 +1253,14 @@ impl Workspace {
             })
     }
 
+    /// Start [`Self::active_session`]'s backend when a screen opens on it: it
+    /// can sit in a tab not shown yet (when the shown tab has no agent).
+    fn start_active_session(&self, window: &mut Window, cx: &mut App) {
+        if let Some(session) = self.active_session() {
+            session.update(cx, |s, cx| s.ensure_started(window, cx));
+        }
+    }
+
     fn sessions(&self) -> Vec<Entity<SessionView>> {
         self.panes
             .values()
@@ -1282,21 +1333,13 @@ impl Workspace {
         }
     }
 
-    /// Re-renders when a visible terminal or file pane changed its title.
+    /// Re-renders when a pane's title or busy state changed.
     fn refresh_titles(&mut self, cx: &mut Context<Self>) {
-        let Some(tab) = self.tab() else {
-            return;
-        };
-        let titles: Vec<SharedString> = tab
-            .tree
-            .leaves()
-            .into_iter()
-            .filter_map(|id| self.panes.get(&id))
-            .filter(|p| p.item.kind != PaneKind::Agent)
-            .map(|p| (p.item.title)(cx))
-            .collect();
-        if titles != self.shown_titles {
-            self.shown_titles = titles;
+        let mut changed = false;
+        for pane in self.panes.values_mut() {
+            changed |= pane.sync_chrome(cx);
+        }
+        if changed {
             cx.notify();
         }
     }
@@ -1477,6 +1520,7 @@ impl Workspace {
             }
             return;
         }
+        self.start_active_session(window, cx);
         let commands = self
             .active_session()
             .map(|t| t.read(cx).commands())
@@ -1580,6 +1624,7 @@ impl Workspace {
     }
 
     fn open_sessions(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_active_session(window, cx);
         let cwd = self.active_cwd(cx);
         let current = self
             .active_session()
@@ -1614,6 +1659,7 @@ impl Workspace {
     }
 
     fn open_profiles(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_active_session(window, cx);
         let cwd = self.active_cwd(cx);
         let models = self
             .active_session()
@@ -1672,6 +1718,7 @@ impl Workspace {
     }
 
     fn open_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.start_active_session(window, cx);
         let cwd = self.active_cwd(cx);
         let view = cx.new(|cx| SettingsView::new(cwd, window, cx));
         let subscription = cx.subscribe_in(
@@ -1761,19 +1808,19 @@ impl Workspace {
 
     // ── Rendering ───────────────────────────────────────────────────────────
 
-    fn tab_running(&self, tab: &Tab, cx: &App) -> bool {
-        tab.tree.leaves().iter().any(|id| {
-            self.panes
-                .get(id)
-                .and_then(|p| p.session.as_ref())
-                .is_some_and(|s| s.read(cx).is_running())
-        })
+    // The chrome reads each pane's `title`/`running` snapshot, never the
+    // views themselves: see `Pane::title`.
+    fn tab_running(&self, tab: &Tab) -> bool {
+        tab.tree
+            .leaves()
+            .iter()
+            .any(|id| self.panes.get(id).is_some_and(|p| p.running))
     }
 
-    fn pane_title(&self, id: PaneId, cx: &App) -> SharedString {
+    fn pane_title(&self, id: PaneId) -> SharedString {
         self.panes
             .get(&id)
-            .map(|p| (p.item.title)(cx))
+            .map(|p| p.title.clone())
             .unwrap_or_default()
     }
 
@@ -1844,7 +1891,7 @@ impl Workspace {
             .min_w_0()
             .children(space.tabs.iter().enumerate().map(|(i, tab)| {
                 let active = i == space.active;
-                let running = self.tab_running(tab, cx);
+                let running = self.tab_running(tab);
                 let kind = self
                     .panes
                     .get(&tab.focused)
@@ -1910,7 +1957,7 @@ impl Workspace {
                             .text_ellipsis()
                             .whitespace_nowrap()
                             .when(active, |d| d.font_weight(FontWeight::MEDIUM))
-                            .child(self.pane_title(tab.focused, cx)),
+                            .child(self.pane_title(tab.focused)),
                     )
                     .when(count > 1, |d| {
                         d.child(
@@ -2142,7 +2189,7 @@ impl Workspace {
         };
         let tiled = tab.tree.len() > 1;
         let focused = tiled && tab.focused == id;
-        let title = (pane.item.title)(cx);
+        let title = pane.title.clone();
         let body = div()
             .id(("pane", id))
             .relative()
@@ -2177,12 +2224,22 @@ impl Workspace {
             )
             // The pink border alone marks focus: a straight accent line on top
             // can't follow the rounded corners now that panes have no header.
-            .child(div().flex_1().min_h_0().child(pane.item.view.clone()));
+            // Cached: a notify elsewhere (another pane, the chrome) reuses this
+            // pane's last frame instead of rebuilding it.
+            .child(
+                div().flex_1().min_h_0().child(
+                    pane.item
+                        .view
+                        .clone()
+                        .cached(StyleRefinement::default().size_full()),
+                ),
+            );
         // The grip: a pill straddling the pane's top edge (outside the
         // clipped body); drag onto another pane to swap the two.
         let grip = h_flex()
             .absolute()
-            .top(px(-7.))
+            // Inside the ~4 px gap under the title bar, not over the tabs.
+            .top(px(-4.))
             .left_0()
             .right_0()
             .justify_center()
@@ -2363,7 +2420,7 @@ impl Render for Workspace {
             .relative()
             .child(
                 TitleBar::new()
-                    .h(px(40.))
+                    .h(px(36.))
                     .bg(gpui_kit::transparent_black())
                     .child(
                         h_flex()
@@ -2680,7 +2737,8 @@ impl Render for Workspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .p_1p5()
+                    .px_1p5()
+                    .pb_1p5()
                     .gap_1p5()
                     .children(sidebar.map(|view| {
                         ui::appear(
@@ -2694,7 +2752,7 @@ impl Render for Workspace {
                                 .border_1()
                                 .border_color(gpui_kit::transparent_black())
                                 .overflow_hidden()
-                                .child(view),
+                                .child(view.cached(StyleRefinement::default().size_full())),
                         )
                     }))
                     .child(

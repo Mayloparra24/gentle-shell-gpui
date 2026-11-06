@@ -3,7 +3,9 @@
 //! package the launcher runs.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+use crate::file_cache::Stamp;
 use crate::launch::{LaunchSpec, extra_args};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,9 +30,41 @@ fn user_pi_home() -> PathBuf {
         .unwrap_or_else(|| home_dir().join(".pi").join("agent"))
 }
 
+/// `~/.gentle-shell/config.json`, where `gentle-shell home` persists the mode.
+pub(crate) fn launcher_config_path() -> PathBuf {
+    home_dir().join(".gentle-shell").join("config.json")
+}
+
+/// The last resolution and the config file stamp it read; everything else
+/// it depends on is this process's environment.
+static HOMES: Mutex<Option<(Option<Stamp>, Homes)>> = Mutex::new(None);
+
 /// Order: `--link`, `--isolated`, `--home <dir>` (from `GENTLE_SHELL_ARGS`),
-/// then `~/.gentle-shell/config.json`, then the isolated default.
+/// then `~/.gentle-shell/config.json`, then the isolated default. Cached
+/// until that config file changes.
 pub fn resolve_homes() -> Homes {
+    memo_by_stamp(&HOMES, &launcher_config_path(), resolve_homes_uncached)
+}
+
+/// `slot`'s value while `path` keeps the stamp it had when `compute` last ran.
+fn memo_by_stamp<T: Clone>(
+    slot: &Mutex<Option<(Option<Stamp>, T)>>,
+    path: &Path,
+    compute: impl FnOnce() -> T,
+) -> T {
+    let stamp = Stamp::of(path);
+    let mut cached = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, value)) = cached.as_ref()
+        && *at == stamp
+    {
+        return value.clone();
+    }
+    let value = compute();
+    *cached = Some((stamp, value.clone()));
+    value
+}
+
+fn resolve_homes_uncached() -> Homes {
     let args = extra_args();
     let isolated = || {
         std::env::var_os("GENTLE_SHELL_HOME")
@@ -84,7 +118,7 @@ enum ConfigMode {
 }
 
 fn read_config_mode() -> Option<ConfigMode> {
-    let raw = std::fs::read_to_string(home_dir().join(".gentle-shell").join("config.json")).ok()?;
+    let raw = std::fs::read_to_string(launcher_config_path()).ok()?;
     let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
     match value["mode"].as_str()? {
         "link" => Some(ConfigMode::Link),
@@ -131,4 +165,41 @@ pub fn pi_package(spec: &LaunchSpec) -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::File;
+    use std::time::{Duration, SystemTime};
+
+    fn set_mtime(path: &Path, secs: u64) {
+        let file = File::options().write(true).open(path).unwrap();
+        file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
+            .unwrap();
+    }
+
+    #[test]
+    fn memo_recomputes_only_when_the_config_changes() {
+        let path = std::env::temp_dir().join(format!("pi-rpc-homes-{}.json", std::process::id()));
+        let slot = Mutex::new(None);
+        let read = || std::fs::read_to_string(&path).ok();
+        assert_eq!(memo_by_stamp(&slot, &path, read), None);
+
+        std::fs::write(&path, "link").unwrap();
+        set_mtime(&path, 2_000_000);
+        assert_eq!(memo_by_stamp(&slot, &path, read).as_deref(), Some("link"));
+
+        // Same mtime and length: the cached resolution stands.
+        std::fs::write(&path, "path").unwrap();
+        set_mtime(&path, 2_000_000);
+        assert_eq!(memo_by_stamp(&slot, &path, read).as_deref(), Some("link"));
+
+        // `gentle-shell home` rewrote it.
+        set_mtime(&path, 2_000_001);
+        assert_eq!(memo_by_stamp(&slot, &path, read).as_deref(), Some("path"));
+
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(memo_by_stamp(&slot, &path, read), None);
+    }
 }

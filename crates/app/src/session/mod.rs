@@ -38,7 +38,25 @@ pub enum SessionEvent {
         level: NoticeLevel,
         message: String,
     },
+    /// Something the window chrome shows may have changed: [`SessionView::title`],
+    /// [`SessionView::is_running`], [`SessionView::session_file`],
+    /// [`SessionView::cwd`] or [`SessionView::model_choices`]. Streaming
+    /// output does not emit it, so the window need not redraw per token.
+    ChromeChanged,
 }
+
+/// What the window reads from a tab, to emit [`SessionEvent::ChromeChanged`]
+/// only when it differs.
+#[derive(PartialEq)]
+struct Chrome {
+    title: String,
+    running: bool,
+    session_file: Option<PathBuf>,
+    models: u64,
+}
+
+/// Least time between working-tree refreshes a turn's tool calls trigger.
+const GIT_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
 
 /// Whether the right rail is shown; one setting for every tab.
 #[derive(Clone, Copy)]
@@ -136,9 +154,26 @@ pub struct SessionView {
     pending_session: Option<PathBuf>,
     /// A new Gentle Shell was installed mid-turn: restart on it once idle.
     restart_pending: bool,
-    scroll: ScrollHandle,
+    /// The conversation's virtualized list and its per-item display caches.
+    list: view::TranscriptList,
+    /// The backend was started at least once (tabs start when first shown).
+    started: bool,
+    /// What the window was last told about: see [`SessionEvent::ChromeChanged`].
+    chrome: Option<Chrome>,
+    /// Bumped whenever `models` is replaced.
+    models_rev: u64,
+    /// When the working tree was last refreshed.
+    git_at: Option<Instant>,
+    /// Bumped per refresh; a deferred refresh runs only if none ran since.
+    git_seq: u64,
+    /// A deferred refresh is waiting.
+    git_scheduled: bool,
     /// The pane's own width, measured each frame; narrow layouts adapt to it.
     pane_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The whole pane's width (rail included), measured each frame.
+    root_width: std::rc::Rc<std::cell::Cell<f32>>,
+    /// The pane was wide enough for the rail last frame (for hysteresis).
+    rail_fits: bool,
     focus_handle: FocusHandle,
     _io: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -154,11 +189,15 @@ pub struct SessionView {
 impl EventEmitter<SessionEvent> for SessionView {}
 
 impl SessionView {
+    /// `start_now: false` defers the backend until [`Self::ensure_started`]
+    /// (tabs that are not shown yet); `prompt` and a resumed session still
+    /// run once it starts.
     pub fn new(
         cwd: PathBuf,
         prompt: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
+        start_now: bool,
     ) -> Self {
         let composer = cx.new(|cx| {
             TextareaState::new(window, cx)
@@ -246,6 +285,8 @@ impl SessionView {
             context_percent: None,
             cost: 0.0,
             pane_width: std::rc::Rc::new(std::cell::Cell::new(10_000.)),
+            root_width: std::rc::Rc::new(std::cell::Cell::new(0.)),
+            rail_fits: false,
             commands: Vec::new(),
             session_name: None,
             session_file: None,
@@ -260,7 +301,13 @@ impl SessionView {
             pending_prompt: prompt,
             pending_session: None,
             restart_pending: false,
-            scroll: ScrollHandle::new(),
+            list: view::TranscriptList::new(),
+            started: false,
+            chrome: None,
+            models_rev: 0,
+            git_at: None,
+            git_seq: 0,
+            git_scheduled: false,
             focus_handle: cx.focus_handle(),
             _io: Task::ready(()),
             _subscriptions: subscriptions,
@@ -269,9 +316,19 @@ impl SessionView {
             rate_limits: BTreeMap::new(),
             recent_toasts: HashMap::new(),
         };
-        this.start(window, cx);
-        this.animate_banner(cx);
+        if start_now {
+            this.ensure_started(window, cx);
+        }
         this
+    }
+
+    /// Start the backend unless it was started before. Idempotent.
+    pub fn ensure_started(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.started {
+            return;
+        }
+        self.start(window, cx);
+        self.animate_banner(cx);
     }
 
     /// Write the wordmark in over ~1.2 s, like the terminal intro.
@@ -288,7 +345,10 @@ impl SessionView {
                 if this
                     .update(cx, |this, cx| {
                         this.banner_reveal = eased;
-                        cx.notify();
+                        // Only the hero shows the banner: repaint just this pane, and only then.
+                        if this.hero_shown() {
+                            cx.notify();
+                        }
                     })
                     .is_err()
                 {
@@ -323,8 +383,12 @@ impl SessionView {
     }
 
     /// New credentials only reach a backend through a fresh runtime: restart
-    /// tabs without a conversation, tell the others.
+    /// tabs without a conversation, tell the others. A tab not started yet
+    /// picks them up when it starts.
     pub fn reload_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.started {
+            return;
+        }
         if self.transcript.items.is_empty() {
             self.start(window, cx);
         } else {
@@ -339,13 +403,21 @@ impl SessionView {
     /// Restart the backend in another folder; the conversation starts fresh.
     pub fn change_cwd(&mut self, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.cwd = cwd;
-        self.start(window, cx);
+        if self.started {
+            self.start(window, cx);
+        } else {
+            self.sync_chrome(cx);
+        }
     }
 
     /// Gentle Shell was updated on disk: run this tab on the new version,
     /// keeping its conversation (the session file is resumed on the new
     /// backend). A tab in the middle of a turn switches when the turn ends.
     pub fn restart_for_update(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A tab not started yet starts on the new version anyway.
+        if !self.started {
+            return;
+        }
         if self.transcript.running || !self.dialogs.is_empty() {
             self.restart_pending = true;
             self.transcript.notice(
@@ -361,7 +433,7 @@ impl SessionView {
 
     fn restart_backend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.restart_pending = false;
-        let resume = self.session_file.clone();
+        let resume = self.session_file();
         self.start(window, cx);
         if let Some(path) = resume {
             self.resume_when_ready(path, cx);
@@ -372,6 +444,7 @@ impl SessionView {
         if let Backend::Ready(process) = &self.backend {
             process.shutdown(Duration::from_secs(3));
         }
+        self.started = true;
         self.backend = Backend::Starting;
         self.models_loaded = false;
         self.transcript = Transcript::default();
@@ -406,7 +479,9 @@ impl SessionView {
                         this.backend = Backend::Ready(process);
                         this.version = version;
                         this.refresh_state(cx);
-                        if let Some(path) = this.pending_session.take() {
+                        // Kept until the switch lands, so the window saves this
+                        // path rather than the blank session it replaces.
+                        if let Some(path) = this.pending_session.clone() {
                             this.open_session(path, cx);
                         }
                         if let Some(prompt) = this.pending_prompt.take() {
@@ -427,15 +502,18 @@ impl SessionView {
                     return;
                 }
             };
-            while let Ok(incoming) = rx.recv().await {
+            while let Ok(first) = rx.recv().await {
+                // One update (and one frame) for everything already queued.
+                let batch = drain_queued(first, &rx);
                 if this
-                    .update_in(cx, |this, window, cx| this.handle(incoming, window, cx))
+                    .update_in(cx, |this, window, cx| this.handle_batch(batch, window, cx))
                     .is_err()
                 {
                     break;
                 }
             }
         });
+        self.sync_chrome(cx);
         cx.notify();
     }
 
@@ -460,6 +538,8 @@ impl SessionView {
             let result = process.request(command).await.map(|r| r.data);
             let _ = this.update(cx, |this, cx| {
                 then(this, result, cx);
+                this.sync_view(cx);
+                this.sync_chrome(cx);
                 cx.notify();
             });
         })
@@ -491,6 +571,7 @@ impl SessionView {
             cx,
             |this, result, _| {
                 this.models_loaded = true;
+                this.models_rev += 1;
                 if let Some(data) = this.report(result) {
                     this.models = data["models"]
                         .as_array()
@@ -543,6 +624,8 @@ impl SessionView {
     }
 
     fn refresh_git(&mut self, cx: &mut Context<Self>) {
+        self.git_seq += 1;
+        self.git_at = Some(Instant::now());
         let cwd = self.cwd.clone();
         cx.spawn(async move |this, cx| {
             let snapshot = cx
@@ -552,6 +635,32 @@ impl SessionView {
             let _ = this.update(cx, |this, cx| {
                 this.git = snapshot;
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// [`Self::refresh_git`] at most once per [`GIT_REFRESH_INTERVAL`]: a
+    /// call inside it defers one refresh to its end.
+    fn refresh_git_soon(&mut self, cx: &mut Context<Self>) {
+        if self.git_scheduled {
+            return;
+        }
+        let wait = git_refresh_wait(self.git_at.map(|at| at.elapsed()));
+        if wait.is_zero() {
+            self.refresh_git(cx);
+            return;
+        }
+        self.git_scheduled = true;
+        let seq = self.git_seq;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                this.git_scheduled = false;
+                // A refresh since (the turn ended) already covered it.
+                if this.git_seq == seq {
+                    this.refresh_git(cx);
+                }
             });
         })
         .detach();
@@ -569,8 +678,27 @@ impl SessionView {
         }
     }
 
+    /// Apply a batch of backend messages in order, then sync the view and
+    /// repaint once.
+    fn handle_batch(&mut self, batch: Vec<Incoming>, window: &mut Window, cx: &mut Context<Self>) {
+        let follow = self.list.at_bottom();
+        for incoming in batch {
+            self.handle(incoming, window, cx);
+            if self.restart_pending && !self.transcript.running && self.dialogs.is_empty() {
+                // The rest of the batch belongs to the backend being replaced.
+                self.restart_backend(window, cx);
+                break;
+            }
+        }
+        self.sync_view(cx);
+        if follow {
+            self.list.scroll_to_end();
+        }
+        self.sync_chrome(cx);
+        cx.notify();
+    }
+
     fn handle(&mut self, incoming: Incoming, window: &mut Window, cx: &mut Context<Self>) {
-        let follow = self.at_bottom();
         match incoming {
             Incoming::Event(event) => self.handle_event(&event, cx),
             Incoming::Ui(request) => self.handle_ui(request, window, cx),
@@ -586,14 +714,20 @@ impl SessionView {
                 self.dialogs.clear();
             }
         }
-        if self.restart_pending && !self.transcript.running && self.dialogs.is_empty() {
-            self.restart_backend(window, cx);
+    }
+
+    /// Tell the window when something it shows changed.
+    fn sync_chrome(&mut self, cx: &mut Context<Self>) {
+        let chrome = Chrome {
+            title: self.title(),
+            running: self.is_running(),
+            session_file: self.session_file(),
+            models: self.models_rev,
+        };
+        if self.chrome.as_ref() != Some(&chrome) {
+            self.chrome = Some(chrome);
+            cx.emit(SessionEvent::ChromeChanged);
         }
-        self.sync_markdown(cx);
-        if follow {
-            self.scroll.scroll_to_bottom();
-        }
-        cx.notify();
     }
 
     fn handle_event(&mut self, event: &Value, cx: &mut Context<Self>) {
@@ -658,8 +792,11 @@ impl SessionView {
             self.queued = 0;
             self.refresh_stats(cx);
         }
-        if effects.files_touched || effects.settled {
+        if effects.settled {
+            // Always once at turn end, whatever the tool calls scheduled.
             self.refresh_git(cx);
+        } else if effects.files_touched {
+            self.refresh_git_soon(cx);
         }
     }
 
@@ -803,8 +940,11 @@ impl SessionView {
         cx.notify();
     }
 
-    fn sync_markdown(&mut self, cx: &mut Context<Self>) {
-        for (item_ix, item) in self.transcript.items.iter().enumerate() {
+    /// Bring the rendered Markdown up to date for items `from..` (earlier
+    /// items have not changed since the last sync).
+    fn sync_markdown(&mut self, from: usize, cx: &mut Context<Self>) {
+        let items = self.transcript.items.get(from..).unwrap_or_default();
+        for (item_ix, item) in (from..).zip(items) {
             let Item::Assistant { blocks, .. } = item else {
                 continue;
             };
@@ -833,12 +973,6 @@ impl SessionView {
         }
     }
 
-    fn at_bottom(&self) -> bool {
-        let offset = self.scroll.offset().y;
-        let max = self.scroll.max_offset().y;
-        -offset >= max - px(48.)
-    }
-
     fn submit(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.composer.read(cx).value().trim().to_string();
         let shell = text.starts_with('!');
@@ -863,7 +997,7 @@ impl SessionView {
         }
         self.composer
             .update(cx, |state, cx| state.set_value("", window, cx));
-        self.scroll.scroll_to_bottom();
+        self.list.scroll_to_end();
 
         // Pi's TUI convention: `!cmd` runs and shares output, `!!cmd` keeps it out of context.
         if let Some(command) = text.strip_prefix('!') {
@@ -1096,11 +1230,16 @@ impl SessionView {
     /// RPC `switch_session` to a saved conversation.
     pub fn open_session(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let command = json!({"type": "switch_session", "sessionPath": path});
-        self.request(command, cx, |this, result, cx| {
-            if let Some(data) = this.report(result)
-                && data["cancelled"] != true
-            {
+        self.request(command, cx, move |this, result, cx| {
+            let switched = this
+                .report(result)
+                .is_some_and(|data| data["cancelled"] != true);
+            if this.pending_session.as_ref() == Some(&path) {
+                this.pending_session = None;
+            }
+            if switched {
                 this.reset_conversation();
+                this.session_file = Some(path);
                 this.refresh_state(cx);
             }
         });
@@ -1160,8 +1299,12 @@ impl SessionView {
         self.commands.clone()
     }
 
+    /// The conversation this tab shows: a resume still in flight (or waiting
+    /// for the backend to start) wins over the live session file.
     pub fn session_file(&self) -> Option<PathBuf> {
-        self.session_file.clone()
+        self.pending_session
+            .clone()
+            .or_else(|| self.session_file.clone())
     }
 
     pub fn model_choices(&self) -> Vec<(String, String, String, bool)> {
@@ -1327,5 +1470,64 @@ impl SessionView {
             state.set_cursor_position(Position::new(0, column), window, cx);
             state.focus(window, cx);
         });
+    }
+}
+
+/// `first` plus every message already queued behind it, in arrival order.
+fn drain_queued<T>(first: T, rx: &async_channel::Receiver<T>) -> Vec<T> {
+    let mut batch = Vec::with_capacity(rx.len() + 1);
+    batch.push(first);
+    while let Ok(next) = rx.try_recv() {
+        batch.push(next);
+    }
+    batch
+}
+
+/// How long a working-tree refresh must wait, given the time since the last one.
+fn git_refresh_wait(since_last: Option<Duration>) -> Duration {
+    since_last.map_or(Duration::ZERO, |since| {
+        GIT_REFRESH_INTERVAL.saturating_sub(since)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::{GIT_REFRESH_INTERVAL, drain_queued, git_refresh_wait};
+
+    #[test]
+    fn batches_drain_everything_queued_in_order() {
+        let (tx, rx) = async_channel::unbounded();
+        for n in 1..=4 {
+            tx.try_send(n).unwrap();
+        }
+        let first = rx.try_recv().unwrap();
+        assert_eq!(drain_queued(first, &rx), vec![1, 2, 3, 4]);
+        assert!(rx.is_empty());
+
+        // Later messages start the next batch.
+        tx.try_send(5).unwrap();
+        assert_eq!(drain_queued(rx.try_recv().unwrap(), &rx), vec![5]);
+
+        // A closed channel still yields what was queued before closing.
+        tx.try_send(6).unwrap();
+        tx.try_send(7).unwrap();
+        drop(tx);
+        assert_eq!(drain_queued(rx.try_recv().unwrap(), &rx), vec![6, 7]);
+    }
+
+    #[test]
+    fn git_refreshes_are_spaced_out() {
+        assert_eq!(git_refresh_wait(None), Duration::ZERO);
+        assert_eq!(
+            git_refresh_wait(Some(Duration::from_millis(500))),
+            Duration::from_millis(1000)
+        );
+        assert_eq!(git_refresh_wait(Some(GIT_REFRESH_INTERVAL)), Duration::ZERO);
+        assert_eq!(
+            git_refresh_wait(Some(Duration::from_secs(9))),
+            Duration::ZERO
+        );
     }
 }
