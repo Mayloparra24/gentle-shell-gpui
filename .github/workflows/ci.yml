@@ -1,12 +1,22 @@
 name: CI
 
+# Tests and lints only. Release builds, packaging and assets belong to
+# release.yml (on `v*` tags), so CI never repeats that work.
+
 on:
   push:
     branches: [main]
+    paths-ignore: ["**.md", "packaging/icons/**"]
   pull_request:
+    paths-ignore: ["**.md", "packaging/icons/**"]
+
+# A newer push to the same branch supersedes an older run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  test:
     strategy:
       fail-fast: false
       matrix:
@@ -15,6 +25,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: Linux system libraries
         if: runner.os == 'Linux'
@@ -22,25 +34,5 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
-      - run: cargo test --workspace
-      - run: cargo build --release
-      - name: Packaging smoke test
-        if: runner.os != 'Windows'
-        env:
-          GENTLE_BIN: target/release/gentle-shell-gpui
-        run: |
-          version="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)"
-          if [[ "$RUNNER_OS" == macOS ]]; then
-            packaging/macos/bundle.sh "$(rustc -vV | sed -n 's/^host: //p')" "$version"
-            codesign --verify --deep --strict "dist/Gentle Shell.app"
-          else
-            packaging/linux/package.sh x86_64-unknown-linux-gnu "$version"
-            tar -tzf "dist/gentle-shell-gpui-$version-linux-x86_64.tar.gz"
-          fi
-      - uses: actions/upload-artifact@v4
-        with:
-          name: gentle-shell-gpui-${{ runner.os }}
-          path: |
-            target/release/gentle-shell-gpui
-            target/release/gentle-shell-gpui.exe
-          if-no-files-found: ignore
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
