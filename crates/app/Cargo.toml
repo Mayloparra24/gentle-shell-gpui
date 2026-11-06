@@ -33,6 +33,12 @@ tar = "0.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
 
+# The Dock icon when the binary runs outside its `.app` (`cargo run`).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+
 # Embeds the exe icon and version info (see build.rs).
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3"

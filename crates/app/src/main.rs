@@ -90,6 +90,26 @@ fn window_icon() -> Option<std::sync::Arc<image::RgbaImage>> {
     Some(std::sync::Arc::new(icon))
 }
 
+/// macOS only reads `AppIcon.icns` for an app launched as a `.app` bundle;
+/// a bare binary (`cargo run`, `target/release/…`) would show the generic
+/// "exec" icon in the Dock, so set the rose at runtime too.
+#[cfg(target_os = "macos")]
+fn set_dock_icon() {
+    use objc2::{AllocAnyThread as _, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    let png = include_bytes!("../../../packaging/icons/icon-1024.png");
+    let data = NSData::with_bytes(png);
+    if let Some(image) = NSImage::initWithData(NSImage::alloc(), &data) {
+        let app = NSApplication::sharedApplication(mtm);
+        unsafe { app.setApplicationIconImage(Some(&image)) };
+    }
+}
+
 fn main() {
     // An explicit folder selects (or creates) the workspace rooted there;
     // without one the last workspace is restored.
@@ -114,6 +134,8 @@ fn main() {
             gpui_kit::init(cx);
             Theme::change(ThemeMode::Dark, None, cx);
             themes::init(cx);
+            #[cfg(target_os = "macos")]
+            set_dock_icon();
             app_update::init(cx);
 
             // Cmd on macOS, Ctrl elsewhere.
