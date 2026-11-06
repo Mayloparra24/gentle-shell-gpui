@@ -2192,28 +2192,9 @@ impl SessionView {
             .when(width >= NARROW, |this| {
                 this.children(self.render_usage_chip())
             })
-            .when_some(
-                self.agents.as_ref().filter(|a| !a.tasks.is_empty()),
-                |this, activity| {
-                    let active = activity.summary.running
-                        + activity.summary.waiting
-                        + activity.summary.queued;
-                    let color = if active > 0 {
-                        ui::warning()
-                    } else {
-                        ui::muted()
-                    };
-                    this.child(
-                        Button::new("agents-pill")
-                            .ghost()
-                            .xsmall()
-                            .text_color(color)
-                            .icon(Icon::new(IconName::Users))
-                            .label(format!("{active}/{}", activity.tasks.len()))
-                            .tooltip("Helpers (⌘⇧A)")
-                            .on_click(cx.listener(|this, _, _, cx| this.open_agents(None, cx))),
-                    )
-                },
+            .when(
+                self.agents.as_ref().is_some_and(|a| !a.tasks.is_empty()),
+                |this| this.child(self.render_helpers_chip(cx)),
             )
             .children(
                 self.rate_limits
@@ -2633,6 +2614,113 @@ impl SessionView {
                 .into_any_element()
             })
             .collect()
+    }
+
+    /// Helpers (subagents): "1/3" active of total; the card lists each with
+    /// its status, task and last step, and opens the full Agents window.
+    fn render_helpers_chip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (active, rows) = match &self.agents {
+            Some(activity) => (
+                activity.summary.running + activity.summary.waiting + activity.summary.queued,
+                activity
+                    .tasks
+                    .iter()
+                    .take(20)
+                    .map(|task| {
+                        let s = &task.summary;
+                        (
+                            s.agent.clone(),
+                            s.status.clone(),
+                            super::agents::status_color(&s.status),
+                            s.label.clone(),
+                            s.last_step.as_deref().map(|step| ui::first_line(step, 60)),
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            ),
+            None => (0, Vec::new()),
+        };
+        let total = rows.len();
+        let color = if active > 0 {
+            ui::warning()
+        } else {
+            ui::muted()
+        };
+        let weak = cx.entity().downgrade();
+        chip_popover(
+            "helpers",
+            IconName::Users,
+            color,
+            format!("{active}/{total}"),
+            "Helpers",
+            format!("{active} active"),
+            move || {
+                let mut items: Vec<AnyElement> = rows
+                    .iter()
+                    .map(|(agent, status, color, label, step)| {
+                        v_flex()
+                            .gap_0p5()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .min_w_0()
+                                    .text_size(px(12.))
+                                    .child(div().flex_none().size(px(6.)).rounded_full().bg(*color))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_color(ui::fg())
+                                            .child(agent.clone()),
+                                    )
+                                    .child(
+                                        div().flex_none().text_color(*color).child(status.clone()),
+                                    ),
+                            )
+                            .when_some(label.clone(), |d, label| {
+                                d.child(
+                                    div()
+                                        .pl_4()
+                                        .min_w_0()
+                                        .text_size(px(11.))
+                                        .text_color(ui::muted())
+                                        .child(label),
+                                )
+                            })
+                            .when_some(step.clone(), |d, step| {
+                                d.child(
+                                    div()
+                                        .pl_4()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(11.))
+                                        .font_family(ui::MONO)
+                                        .text_color(ui::faint())
+                                        .child(step),
+                                )
+                            })
+                            .into_any_element()
+                    })
+                    .collect();
+                let weak = weak.clone();
+                items.push(
+                    h_flex()
+                        .pt_1()
+                        .child(
+                            Button::new("helpers-open-agents")
+                                .ghost()
+                                .xsmall()
+                                .icon(Icon::new(IconName::Users))
+                                .label("Open Agents (⌘⇧A)")
+                                .on_click(move |_, _, cx| {
+                                    let _ = weak.update(cx, |this, cx| this.open_agents(None, cx));
+                                }),
+                        )
+                        .into_any_element(),
+                );
+                items
+            },
+        )
     }
 
     /// The last response's tokens: output on the chip, the breakdown on click.
