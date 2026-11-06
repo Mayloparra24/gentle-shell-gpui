@@ -1,0 +1,154 @@
+name: Release
+
+# Push a `v<version>` tag matching `[workspace.package] version` to publish a
+# GitHub release. `workflow_dispatch` is a dry run: it builds and packages
+# everything (incl. SHA256SUMS) as workflow artifacts but publishes nothing.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to package (defaults to, and must equal, the workspace version)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          workspace="$(sed -n '/^\[workspace\.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)"
+          if [[ -z "$workspace" ]]; then
+            echo "::error::no [workspace.package] version in Cargo.toml"
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            if [[ "$GITHUB_REF_NAME" != "v$workspace" ]]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match workspace version $workspace (expected v$workspace)"
+              exit 1
+            fi
+          elif [[ -n "$INPUT_VERSION" && "$INPUT_VERSION" != "$workspace" ]]; then
+            echo "::error::input version $INPUT_VERSION does not match workspace version $workspace"
+            exit 1
+          fi
+          echo "version=$workspace" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          # macos-13 was retired in Dec 2025; macos-15-intel is GitHub's x86_64 macOS image.
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+    runs-on: ${{ matrix.os }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+      - name: Linux system libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+      - name: Package macOS app
+        if: runner.os == 'macOS'
+        run: packaging/macos/bundle.sh "${{ matrix.target }}" "$VERSION"
+      - name: Package Linux tarball
+        if: runner.os == 'Linux'
+        run: packaging/linux/package.sh "${{ matrix.target }}" "$VERSION"
+      - name: Package Windows zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          cargo build --release --locked -p gentle-shell-gpui --target "${{ matrix.target }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Force `
+            -Path "target/${{ matrix.target }}/release/gentle-shell-gpui.exe" `
+            -DestinationPath "dist/gentle-shell-gpui-$env:VERSION-windows-x86_64.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: asset-${{ matrix.target }}
+          path: |
+            dist/gentle-shell-gpui-${{ env.VERSION }}-*.zip
+            dist/gentle-shell-gpui-${{ env.VERSION }}-*.tar.gz
+          if-no-files-found: error
+
+  release:
+    needs: [version, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: asset-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        working-directory: dist
+        run: |
+          expected=(
+            "gentle-shell-gpui-$VERSION-macos-aarch64.zip"
+            "gentle-shell-gpui-$VERSION-macos-x86_64.zip"
+            "gentle-shell-gpui-$VERSION-windows-x86_64.zip"
+            "gentle-shell-gpui-$VERSION-linux-x86_64.tar.gz"
+          )
+          for asset in "${expected[@]}"; do
+            [[ -f "$asset" ]] || { echo "::error::missing $asset"; exit 1; }
+          done
+          sha256sum "${expected[@]}" > SHA256SUMS
+          cat SHA256SUMS
+      - name: Upload dry-run bundle
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dry-run-${{ env.VERSION }}
+          path: dist/*
+          if-no-files-found: error
+      - name: Publish GitHub release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          [[ "$VERSION" == *-* ]] && flags+=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "Gentle Shell $VERSION" \
+            --generate-notes \
+            "${flags[@]}"

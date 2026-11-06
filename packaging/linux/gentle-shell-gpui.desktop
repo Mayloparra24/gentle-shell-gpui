@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Gentle Shell
+GenericName=AI Coding Shell
+Comment=Desktop front-end for Gentle Shell
+Exec=gentle-shell-gpui %f
+Icon=gentle-shell-gpui
+Terminal=false
+Categories=Development;IDE;
+Keywords=terminal;ai;agent;shell;
+StartupNotify=true
+StartupWMClass=dev.gentle-shell.gpui
