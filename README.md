@@ -33,7 +33,39 @@ The app does not reimplement Gentle Shell. Each tab starts `gentle-shell --mode 
 - Rust 1.88 or newer.
 - Linux also needs the GPUI system libraries, for example on Debian or Ubuntu: `libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev`.
 
-## Run
+## Install and run
+
+### From a release
+
+Download the asset for your system from [Releases](https://github.com/ismaelosuna7824/gentle-shell-gpui/releases) (names under [Packages and releases](#packages-and-releases)).
+
+- **macOS:** unzip and move `Gentle Shell.app` to `~/Applications` (or `/Applications`). The app is ad-hoc signed, not notarized, so the first launch is blocked: right-click the app → **Open** → **Open**, or allow it in System Settings → Privacy & Security → **Open Anyway**. From a terminal, `xattr -dr com.apple.quarantine ~/Applications/"Gentle Shell.app"` does the same. Later versions install from inside the app ([Updating the app](#updating-the-app)).
+- **Windows:** unzip and run `gentle-shell-gpui.exe`. SmartScreen may warn about an unknown publisher: **More info** → **Run anyway**.
+- **Linux:** extract the tarball and run `gentle-shell-gpui-<version>/gentle-shell-gpui`. Copy the `.desktop` file to `~/.local/share/applications/` (and fix its `Exec=` path) to get a launcher entry.
+
+### From source (no release installed)
+
+1. Install the [requirements](#requirements): Gentle Shell, Node.js, Rust (`curl https://sh.rustup.rs -sSf | sh`), and on Linux the system libraries.
+2. Build and run:
+
+   ```bash
+   git clone https://github.com/ismaelosuna7824/gentle-shell-gpui.git
+   cd gentle-shell-gpui
+   cargo run --release -- .
+   ```
+
+   The first build takes a few minutes. `.` opens the current folder as a workspace; pass any folder instead, or nothing to reopen the last workspace. `--prompt "first message"` starts a new agent tab with that message.
+3. Optional, macOS: to run it as a normal app (rose icon in the Dock, Finder, Spotlight), bundle it and copy it to `~/Applications`:
+
+   ```bash
+   packaging/macos/bundle.sh aarch64-apple-darwin 0.1.0   # x86_64-apple-darwin on Intel
+   cp -R "dist/Gentle Shell.app" ~/Applications/
+   open ~/Applications/"Gentle Shell.app"
+   ```
+
+A build from source never updates itself; `git pull` and run `cargo run --release` again.
+
+### Options
 
 ```bash
 cargo run --release -- [FOLDER] [--prompt "first message"]
@@ -82,6 +114,22 @@ The check cache and the skipped version are in `<data dir>/gentle-shell-gpui/app
 - Claude subscription windows come only from response headers inside the terminal UI.
 - Helpers and background jobs can only be stopped by the agent.
 - Auto permission mode may refuse actions: Gentle Shell does not count RPC input as a live human decision.
+
+## Not done yet
+
+Known gaps and things not tested yet, so you know what to expect:
+
+- **No release published yet.** The Release workflow, the Windows and Linux builds and the in-app updater have never run for real. The updater (download, checksum, replace, restart) can only be tested once two releases exist; the Windows and Linux code paths have only been type-checked on macOS.
+- **Signing:** macOS builds are ad-hoc signed, not notarized, and Windows builds are unsigned, hence the first-launch warnings above.
+- **Claude usage:** Usage & stats shows nothing for Claude through `pi-claude-bridge`. Gentle Shell keeps those 5h/7d windows in its terminal UI only; the app sees the bridge's high-usage warnings (the composer's `7d 57%` chip) but not the full windows. Reading Claude Code's login from the Keychain to ask Anthropic's usage endpoint is possible but not implemented.
+- **Quitting with unsaved files:** closing a pane or tab with unsaved edits asks first, but ⌘Q does not.
+- **Commit message generation** has no timeout or cancel; if `gentle-shell` hangs, the spinner stays.
+- **Worktrees and submodules** in the Branches tab are shown but have no actions.
+- **Symlinked folders:** a workspace opened through a symlink shows no change markers in the file tree (git reports the real path).
+- **Workspace switcher** (⌃⌘K) doesn't show that an agent is still working in another workspace.
+- **Hidden tabs** restored at launch start their backend only when shown, so their title shows the folder name until then.
+- **Markdown preview:** links to other `.md` files open in the default app, not in a pane, and `#anchor` links do nothing.
+- **Visual checks:** several screens were only checked from code, not on screen: the chips' cards, the App section of Configuration, the update pill, the Background subagents switch, and the Changes / Branches tabs with real repositories.
 
 ## Layout
 
