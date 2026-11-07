@@ -584,6 +584,16 @@ fn run_player(path: &Path) {
 mod tests {
     use super::*;
 
+    /// An absolute `file:` sound Gentle Shell accepts on this OS (Windows
+    /// needs a drive letter).
+    fn sound_file(name: &str) -> String {
+        if cfg!(windows) {
+            format!("file:C:\\s\\{name}")
+        } else {
+            format!("file:/s/{name}")
+        }
+    }
+
     fn policy_of(raw: &str) -> Policy {
         Policy::from_read(PathBuf::from("n.json"), Ok(raw.to_string()))
     }
@@ -632,7 +642,7 @@ mod tests {
 
     #[test]
     fn per_event_enablement_follows_master_and_null() {
-        let events = json!({"agent.completed": null, "context.high": "file:/tmp/x.wav"});
+        let events = json!({"agent.completed": null, "context.high": sound_file("x.wav")});
         let on = policy_of(&file_with(true, events.clone()));
         assert!(!on.plays(Alert::TurnEnded));
         assert!(on.plays(Alert::ContextHigh));
@@ -664,8 +674,13 @@ mod tests {
             assert!(!p.enabled());
         }
         // Integral floats and `%` alone are still valid, as in JS.
-        let ok = r#"{"schema":"gentle-shell.notifications/v1","enabled":true,"audio":{"backend":"auto","minimumIntervalMs":1000.0,"coalesceWindowMs":0,"events":{"agent.completed":"file:/a/100%.wav"}}}"#;
-        assert_eq!(policy_of(ok).state, FileState::Valid);
+        let ok = json!({
+            "schema": SCHEMA,
+            "enabled": true,
+            "audio": {"backend": "auto", "minimumIntervalMs": 1000.0, "coalesceWindowMs": 0,
+                "events": {"agent.completed": sound_file("100%.wav")}},
+        });
+        assert_eq!(policy_of(&ok.to_string()).state, FileState::Valid);
     }
 
     #[test]
@@ -682,14 +697,17 @@ mod tests {
     fn changes_keep_the_rest_of_the_file() {
         let raw = file_with(
             true,
-            json!({"agent.completed": "file:/s/done.wav", "subagent.failed": "builtin:error"}),
+            json!({"agent.completed": sound_file("done.wav"), "subagent.failed": "builtin:error"}),
         );
         let p = policy_of(&raw);
         let off = p.changed(Change::Event(Alert::TurnEnded, false));
         assert_eq!(off["audio"]["events"]["agent.completed"], Value::Null);
         assert_eq!(off["audio"]["events"]["subagent.failed"], "builtin:error");
         let on = p.changed(Change::Event(Alert::TurnEnded, true));
-        assert_eq!(on["audio"]["events"]["agent.completed"], "file:/s/done.wav");
+        assert_eq!(
+            on["audio"]["events"]["agent.completed"],
+            sound_file("done.wav")
+        );
         let attention = p.changed(Change::Event(Alert::NeedsYou, true));
         assert_eq!(
             attention["audio"]["events"]["agent.attention"],
@@ -699,10 +717,10 @@ mod tests {
         assert_eq!(disabled["enabled"], false);
         assert_eq!(
             disabled["audio"]["events"]["agent.completed"],
-            "file:/s/done.wav"
+            sound_file("done.wav")
         );
         for value in [off, on, attention, disabled] {
-            assert!(parse(&value.to_string(), false).is_some());
+            assert!(parse(&value.to_string(), cfg!(windows)).is_some());
         }
         // An invalid file is replaced by the preset plus the change.
         let replaced = policy_of("{").changed(Change::Enabled(true));
