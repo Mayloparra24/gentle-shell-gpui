@@ -404,8 +404,8 @@ impl SessionView {
     }
 
     /// New credentials only reach a backend through a fresh runtime: restart
-    /// tabs without a conversation, tell the others. A tab not started yet
-    /// picks them up when it starts.
+    /// the tab, resuming its conversation (mid-turn, once the turn ends). A
+    /// tab not started yet picks them up when it starts.
     pub fn reload_models(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if !self.started {
             return;
@@ -413,11 +413,11 @@ impl SessionView {
         if self.transcript.items.is_empty() {
             self.start(window, cx);
         } else {
-            self.transcript.notice(
-                NoticeLevel::Info,
-                "New sign-in saved. Open a new tab to use its models here.".into(),
+            self.restart_when_idle(
+                "New sign-in saved; this tab reloads its models when the current turn ends.",
+                window,
+                cx,
             );
-            cx.notify();
         }
     }
 
@@ -439,13 +439,19 @@ impl SessionView {
         if !self.started {
             return;
         }
+        self.restart_when_idle(
+            "Gentle Shell was updated; this tab switches to it when the current turn ends.",
+            window,
+            cx,
+        );
+    }
+
+    /// Restart the backend on the same conversation now, or, mid-turn or with
+    /// a dialog open, once that settles (`waiting` tells the user).
+    fn restart_when_idle(&mut self, waiting: &str, window: &mut Window, cx: &mut Context<Self>) {
         if self.transcript.running || !self.dialogs.is_empty() {
             self.restart_pending = true;
-            self.transcript.notice(
-                NoticeLevel::Info,
-                "Gentle Shell was updated; this tab switches to it when the current turn ends."
-                    .into(),
-            );
+            self.transcript.notice(NoticeLevel::Info, waiting.into());
             cx.notify();
         } else {
             self.restart_backend(window, cx);
