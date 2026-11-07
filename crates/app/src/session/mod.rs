@@ -21,6 +21,7 @@ use crate::ui;
 
 mod agents;
 mod attachments;
+mod builtins;
 mod view;
 
 pub use agents::AgentsPanel;
@@ -43,6 +44,9 @@ pub enum SessionEvent {
     /// [`SessionView::cwd`] or [`SessionView::model_choices`]. Streaming
     /// output does not emit it, so the window need not redraw per token.
     ChromeChanged,
+    /// A Gentle Shell command whose UI is terminal-only was run (typed or
+    /// from the palette): open the app's own screen for it instead.
+    OpenScreen(crate::commands::Screen),
 }
 
 /// What the window reads from a tab, to emit [`SessionEvent::ChromeChanged`]
@@ -175,6 +179,18 @@ pub struct SessionView {
     rate_limits: BTreeMap<String, view::RateLimit>,
     /// When each warning toast was last shown, to drop repeats.
     recent_toasts: HashMap<String, Instant>,
+    /// The `notify` output of the extension command last sent.
+    capture: Option<builtins::Capture>,
+    /// Numbers [`builtins::Capture`]s, to match Pi's replies.
+    capture_seq: u64,
+    /// A compaction (manual or automatic) is running.
+    compacting: bool,
+    /// `get_state.autoCompactionEnabled`.
+    auto_compaction: Option<bool>,
+    /// Context usage crossed the alert threshold.
+    context_latch: crate::alerts::ContextLatch,
+    /// This tab's window, for work that finishes outside a window update.
+    window_handle: AnyWindowHandle,
 }
 
 impl EventEmitter<SessionEvent> for SessionView {}
@@ -304,6 +320,12 @@ impl SessionView {
             model_search,
             rate_limits: BTreeMap::new(),
             recent_toasts: HashMap::new(),
+            capture: None,
+            capture_seq: 0,
+            compacting: false,
+            auto_compaction: None,
+            context_latch: crate::alerts::ContextLatch::default(),
+            window_handle: window.window_handle(),
         };
         if start_now {
             this.ensure_started(window, cx);
@@ -450,6 +472,9 @@ impl SessionView {
         self.todo.clear();
         self.session_name = None;
         self.title = None;
+        self.capture = None;
+        self.compacting = false;
+        self.context_latch.rearm();
         self.refresh_git(cx);
         let cwd = self.cwd.clone();
         self._io = cx.spawn_in(window, async move |this, cx| {
@@ -553,6 +578,7 @@ impl SessionView {
                 this.thinking = state["thinkingLevel"].as_str().unwrap_or("off").to_string();
                 this.session_name = state["sessionName"].as_str().map(str::to_string);
                 this.session_file = state["sessionFile"].as_str().map(PathBuf::from);
+                this.auto_compaction = state["autoCompactionEnabled"].as_bool();
             }
         });
         self.request(
@@ -603,10 +629,15 @@ impl SessionView {
         self.request(
             json!({"type": "get_session_stats"}),
             cx,
-            |this, result, _| {
+            |this, result, cx| {
                 if let Ok(stats) = result {
                     this.cost = stats["cost"].as_f64().unwrap_or(0.0);
                     this.context_percent = stats["contextUsage"]["percent"].as_f64();
+                    let threshold = crate::alerts::context_threshold(cx);
+                    if this.context_latch.observe(this.context_percent, threshold) {
+                        let active = this.window_active(cx);
+                        crate::alerts::fire(crate::alerts::Alert::ContextHigh, active, cx);
+                    }
                 }
             },
         );
@@ -689,7 +720,7 @@ impl SessionView {
 
     fn handle(&mut self, incoming: Incoming, window: &mut Window, cx: &mut Context<Self>) {
         match incoming {
-            Incoming::Event(event) => self.handle_event(&event, cx),
+            Incoming::Event(event) => self.handle_event(&event, window, cx),
             Incoming::Ui(request) => self.handle_ui(request, window, cx),
             Incoming::Stderr(line) => {
                 if self.stderr.len() == 40 {
@@ -719,12 +750,17 @@ impl SessionView {
         }
     }
 
-    fn handle_event(&mut self, event: &Value, cx: &mut Context<Self>) {
+    fn handle_event(&mut self, event: &Value, window: &mut Window, cx: &mut Context<Self>) {
         let effects = self.transcript.apply(event);
         match event["type"].as_str() {
             Some("queue_update") => {
                 let count = |key: &str| event[key].as_array().map_or(0, Vec::len);
                 self.queued = count("steering") + count("followUp");
+            }
+            Some("compaction_start") => self.compacting = true,
+            Some("compaction_end") => {
+                self.compacting = false;
+                self.refresh_stats(cx);
             }
             Some("session_info_changed") => {
                 self.session_name = event["name"].as_str().map(str::to_string);
@@ -780,6 +816,11 @@ impl SessionView {
             self.phase = None;
             self.queued = 0;
             self.refresh_stats(cx);
+            // A stopped turn needs no alert: the user just stopped it.
+            if event["aborted"] != true {
+                let active = window.is_window_active();
+                crate::alerts::fire(crate::alerts::Alert::TurnEnded, active, cx);
+            }
         }
         if effects.settled {
             // Always once at turn end, whatever the tool calls scheduled.
@@ -805,6 +846,11 @@ impl SessionView {
                 .detach();
             }
             let first = self.dialogs.is_empty();
+            crate::alerts::fire(
+                crate::alerts::Alert::NeedsYou,
+                window.is_window_active(),
+                cx,
+            );
             self.dialogs.push_back(Dialog {
                 id: request.id,
                 method: request.method,
@@ -835,6 +881,11 @@ impl SessionView {
                         },
                     );
                 } else {
+                    // An extension command's output also lands in the
+                    // conversation, as one result card.
+                    if let Some(capture) = &mut self.capture {
+                        capture.offer(level, &message, Instant::now());
+                    }
                     // Info goes to the notification center only; warnings and
                     // errors also toast.
                     if level != NoticeLevel::Info && (error || self.first_toast(&message)) {
@@ -934,30 +985,19 @@ impl SessionView {
     fn sync_markdown(&mut self, from: usize, cx: &mut Context<Self>) {
         let items = self.transcript.items.get(from..).unwrap_or_default();
         for (item_ix, item) in (from..).zip(items) {
-            let Item::Assistant { blocks, .. } = item else {
-                continue;
-            };
-            for (block_ix, block) in blocks.iter().enumerate() {
-                let Block::Text(text) = block else { continue };
-                match self.markdown.get_mut(&(item_ix, block_ix)) {
-                    Some((state, pushed)) if *pushed != text.len() => {
-                        let appended = text.is_char_boundary(*pushed) && *pushed < text.len();
-                        state.update(cx, |state, cx| {
-                            if appended {
-                                state.push_str(&text[*pushed..], cx);
-                            } else {
-                                state.set_text(text, cx);
-                            }
-                        });
-                        *pushed = text.len();
-                    }
-                    Some(_) => {}
-                    None => {
-                        let state = cx.new(|cx| TextViewState::markdown(text, cx));
-                        self.markdown
-                            .insert((item_ix, block_ix), (state, text.len()));
+            match item {
+                Item::Assistant { blocks, .. } => {
+                    for (block_ix, block) in blocks.iter().enumerate() {
+                        if let Block::Text(text) = block {
+                            sync_markdown_block(&mut self.markdown, (item_ix, block_ix), text, cx);
+                        }
                     }
                 }
+                // Helpers answer in Markdown, like the assistant.
+                Item::Custom { kind, text, .. } if view::markdown_custom(kind) => {
+                    sync_markdown_block(&mut self.markdown, (item_ix, 0), text, cx);
+                }
+                _ => {}
             }
         }
     }
@@ -1021,9 +1061,49 @@ impl SessionView {
             return;
         }
 
+        if self.attachments.is_empty() && self.intercept(&text, cx) {
+            cx.notify();
+            return;
+        }
+
         let images = std::mem::take(&mut self.attachments);
         self.send_prompt_with(text, images, cx);
         cx.notify();
+    }
+
+    /// Run `text` here instead of sending it when it is a Pi built-in or a
+    /// Gentle Shell command the app shows natively; false: send it.
+    fn intercept(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+        match builtins::classify(text) {
+            builtins::Submit::Builtin(builtin) => {
+                self.run_builtin(builtin, cx);
+                true
+            }
+            builtins::Submit::Open(screen) => {
+                cx.emit(SessionEvent::OpenScreen(screen));
+                true
+            }
+            builtins::Submit::Prompt => false,
+        }
+    }
+
+    fn run_builtin(&mut self, builtin: builtins::Builtin, cx: &mut Context<Self>) {
+        match builtin {
+            builtins::Builtin::Compact(instructions) => self.compact(instructions, cx),
+            builtins::Builtin::Name(name) if name.trim().is_empty() => {
+                let text = match &self.session_name {
+                    Some(name) => {
+                        format!("This session is named “{name}”. Rename it with /name <title>.")
+                    }
+                    None => "This session has no name yet. Name it with /name <title>.".into(),
+                };
+                self.note(text, cx);
+            }
+            builtins::Builtin::Name(name) => self.rename(name, cx),
+            builtins::Builtin::Copy => self.copy_last_answer(cx),
+            builtins::Builtin::Export(path) => self.export_html(path, cx),
+            builtins::Builtin::Reload => self.reload(cx),
+        }
     }
 
     fn send_prompt(&mut self, text: String, cx: &mut Context<Self>) {
@@ -1046,13 +1126,69 @@ impl SessionView {
             self.live
                 .expect_reply(&text, shown, self.transcript.items.len());
         }
-        self.request(command, cx, |this, result, _| {
-            if this.report(result).is_some() {
+        // An extension command may answer with notices: gather them.
+        let capture = text.trim_start().starts_with('/').then(|| {
+            if let Some(open) = self.capture.as_ref().map(|c| c.id) {
+                self.finish_capture(open);
+            }
+            self.capture_seq += 1;
+            self.capture = Some(builtins::Capture::new(self.capture_seq, &text));
+            self.capture_seq
+        });
+        self.request(command, cx, move |this, result, cx| {
+            let reply = this.report(result);
+            if reply.is_some() {
                 this.live.reply_acknowledged();
             } else {
                 this.live.reply_failed();
             }
+            if let Some(id) = capture {
+                let handled = reply.is_some_and(|data| data["disposition"] == "handled");
+                this.command_replied(id, handled, cx);
+            }
         });
+    }
+
+    /// Pi answered extension command `id`: a handled command's output is
+    /// final [`builtins::OUTPUT_GRACE`] later; anything else started a turn
+    /// (a prompt template or skill) and shows as one.
+    fn command_replied(&mut self, id: u64, handled: bool, cx: &mut Context<Self>) {
+        let Some(capture) = self.capture.as_mut().filter(|c| c.id == id) else {
+            return;
+        };
+        if !handled {
+            self.capture = None;
+            return;
+        }
+        capture.replied(Instant::now());
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(builtins::OUTPUT_GRACE).await;
+            let _ = this.update(cx, |this, cx| {
+                let follow = this.list.at_bottom();
+                if this.finish_capture(id) {
+                    this.sync_view(cx);
+                    if follow {
+                        this.list.scroll_to_end();
+                    }
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Close capture `id`, adding its output to the conversation; whether
+    /// anything was added.
+    fn finish_capture(&mut self, id: u64) -> bool {
+        let Some(capture) = self.capture.take_if(|c| c.id == id) else {
+            return false;
+        };
+        if capture.notices.is_empty() {
+            return false;
+        }
+        self.transcript
+            .command_output(capture.command, capture.notices);
+        true
     }
 
     /// A warning toast, as extension warnings show.
@@ -1242,9 +1378,156 @@ impl SessionView {
         });
     }
 
-    /// Run a slash command the way typing it would.
+    /// Run a slash command the way typing it would: built-ins and natively
+    /// shown commands run here, the rest goes to Pi.
     pub fn run_prompt(&mut self, text: String, cx: &mut Context<Self>) {
-        self.send_prompt(text, cx);
+        if !self.intercept(&text, cx) {
+            self.send_prompt(text, cx);
+        }
+        cx.notify();
+    }
+
+    /// RPC `set_session_name`; the tab title follows.
+    pub fn rename(&mut self, name: String, cx: &mut Context<Self>) {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let command = json!({"type": "set_session_name", "name": name});
+        self.request(command, cx, move |this, result, _| {
+            if this.report(result).is_some() {
+                // `sync_chrome` (after this) tells the window.
+                this.session_name = Some(name);
+            }
+        });
+    }
+
+    /// `/compact [instructions]`: RPC `compact`. Pi reports progress and the
+    /// result (or failure) as compaction events, shown in the conversation.
+    pub(super) fn compact(&mut self, instructions: Option<String>, cx: &mut Context<Self>) {
+        if self.compacting || self.process().is_none() {
+            return;
+        }
+        self.compacting = true;
+        let mut command = json!({"type": "compact"});
+        if let Some(instructions) = instructions {
+            command["customInstructions"] = instructions.into();
+        }
+        self.request(command, cx, |this, _, cx| {
+            // Success and failure both arrive as `compaction_end`.
+            this.compacting = false;
+            this.refresh_stats(cx);
+        });
+    }
+
+    pub(super) fn set_auto_compaction(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        let command = json!({"type": "set_auto_compaction", "enabled": enabled});
+        self.request(command, cx, move |this, result, _| {
+            if this.report(result).is_some() {
+                this.auto_compaction = Some(enabled);
+            }
+        });
+    }
+
+    /// `/copy`: RPC `get_last_assistant_text` to the clipboard.
+    fn copy_last_answer(&mut self, cx: &mut Context<Self>) {
+        self.request(
+            json!({"type": "get_last_assistant_text"}),
+            cx,
+            |this, result, cx| {
+                let Some(data) = this.report(result) else {
+                    return;
+                };
+                match data["text"].as_str().filter(|t| !t.trim().is_empty()) {
+                    Some(text) => this.copy_text(text.to_string(), cx),
+                    None => {
+                        this.toast(Notification::warning("There is no answer to copy yet."), cx)
+                    }
+                }
+            },
+        );
+    }
+
+    /// Put `text` on the clipboard and say so.
+    pub(super) fn copy_text(&mut self, text: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(text));
+        self.toast(Notification::success("Copied to the clipboard."), cx);
+    }
+
+    /// `/export [path]`: RPC `export_html` to `path`, or where the save
+    /// dialog says (`~/Downloads/<session>.html` suggested), then reveal it.
+    fn export_html(&mut self, path: Option<String>, cx: &mut Context<Self>) {
+        if let Some(path) = path {
+            self.export_to(expand_home(&path), cx);
+            return;
+        }
+        let directory = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .unwrap_or_else(|| self.cwd.clone());
+        let name = format!("{}.html", export_file_stem(&self.title()));
+        let chosen = cx.prompt_for_new_path(&directory, Some(&name));
+        cx.spawn(async move |this, cx| {
+            let Ok(Ok(Some(path))) = chosen.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| this.export_to(path, cx));
+        })
+        .detach();
+    }
+
+    fn export_to(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        let command = json!({"type": "export_html", "outputPath": path});
+        self.request(command, cx, move |this, result, cx| {
+            if let Some(data) = this.report(result) {
+                let written = data["path"].as_str().map_or(path, PathBuf::from);
+                cx.reveal_path(&written);
+                this.note(
+                    format!("Exported the conversation to {}", written.display()),
+                    cx,
+                );
+            }
+        });
+    }
+
+    /// `/reload`: a fresh backend on the same conversation (picks up new
+    /// extensions and settings); mid-turn it waits for the turn to end.
+    fn reload(&mut self, cx: &mut Context<Self>) {
+        if self.transcript.running || !self.dialogs.is_empty() {
+            self.restart_pending = true;
+            self.note(
+                "Gentle Shell reloads in this tab when the current turn ends.".into(),
+                cx,
+            );
+            return;
+        }
+        self.in_window(cx, |this, window, cx| this.restart_backend(window, cx));
+    }
+
+    /// Run `f` with this tab's window, after the current update.
+    fn in_window(
+        &self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+    ) {
+        let handle = self.window_handle;
+        cx.spawn(async move |this, cx| {
+            let _ = cx.update_window(handle, |_, window, cx| {
+                let _ = this.update(cx, |this, cx| f(this, window, cx));
+            });
+        })
+        .detach();
+    }
+
+    /// A toast in this tab's window, from code without one at hand.
+    fn toast(&self, note: Notification, cx: &mut Context<Self>) {
+        self.in_window(cx, move |_, window, cx| window.push_notification(note, cx));
+    }
+
+    /// Whether this tab's window is frontmost and focused (false inside an
+    /// update of that window: use `Window::is_window_active` there).
+    fn window_active(&self, cx: &mut App) -> bool {
+        cx.update_window(self.window_handle, |_, window, _| window.is_window_active())
+            .unwrap_or(false)
     }
 
     /// Run a Gentle Shell extension command (`/gentle:…`) over RPC without
@@ -1284,8 +1567,19 @@ impl SessionView {
         cx.notify();
     }
 
+    /// Commands for the `/` menu and the palette: Pi's built-ins the app
+    /// runs, then Gentle Shell's, without the ones that do nothing here.
     pub fn commands(&self) -> Vec<(String, String)> {
-        self.commands.clone()
+        builtins::BUILTINS
+            .iter()
+            .map(|(name, description)| (name.to_string(), description.to_string()))
+            .chain(
+                self.commands
+                    .iter()
+                    .filter(|(name, _)| !crate::commands::hidden(name))
+                    .cloned(),
+            )
+            .collect()
     }
 
     /// The conversation this tab shows: a resume still in flight (or waiting
@@ -1320,6 +1614,8 @@ impl SessionView {
         self.session_name = None;
         self.agents = None;
         self.live = view::Live::default();
+        self.capture = None;
+        self.context_latch.rearm();
     }
 
     /// Save `mode` as the default and start a fresh session so it applies
@@ -1479,11 +1775,75 @@ fn git_refresh_wait(since_last: Option<Duration>) -> Duration {
     })
 }
 
+/// Bring the Markdown rendered for `key` up to `text`, appending when it
+/// only grew (streaming).
+fn sync_markdown_block(
+    markdown: &mut HashMap<(usize, usize), (Entity<TextViewState>, usize)>,
+    key: (usize, usize),
+    text: &str,
+    cx: &mut Context<SessionView>,
+) {
+    match markdown.get_mut(&key) {
+        Some((state, pushed)) if *pushed != text.len() => {
+            let appended = text.is_char_boundary(*pushed) && *pushed < text.len();
+            state.update(cx, |state, cx| {
+                if appended {
+                    state.push_str(&text[*pushed..], cx);
+                } else {
+                    state.set_text(text, cx);
+                }
+            });
+            *pushed = text.len();
+        }
+        Some(_) => {}
+        None => {
+            let state = cx.new(|cx| TextViewState::markdown(text, cx));
+            markdown.insert(key, (state, text.len()));
+        }
+    }
+}
+
+/// `~/x` → under the home folder; other paths as given.
+fn expand_home(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/"), dirs::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => PathBuf::from(path),
+    }
+}
+
+/// A session title as a file name: path separators and other characters
+/// file systems reject become `-`.
+fn export_file_stem(title: &str) -> String {
+    let stem: String = title
+        .trim()
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '-',
+            c if c.is_control() => '-',
+            c => c,
+        })
+        .collect();
+    let stem = stem.trim_matches(['.', ' ']);
+    if stem.is_empty() {
+        "session".into()
+    } else {
+        stem.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use super::{GIT_REFRESH_INTERVAL, drain_queued, git_refresh_wait};
+    use super::{GIT_REFRESH_INTERVAL, drain_queued, export_file_stem, git_refresh_wait};
+
+    #[test]
+    fn export_names_are_safe_file_names() {
+        assert_eq!(export_file_stem("Fix the API"), "Fix the API");
+        assert_eq!(export_file_stem("a/b: c?"), "a-b- c-");
+        assert_eq!(export_file_stem("  ..  "), "session");
+        assert_eq!(export_file_stem(".hidden"), "hidden");
+    }
 
     #[test]
     fn batches_drain_everything_queued_in_order() {

@@ -291,6 +291,11 @@ impl FileTreeView {
         self.refs.update(cx, |view, cx| view.set_visible(refs, cx));
     }
 
+    /// Switch to the Changes tab (the `/gentle:changes` command).
+    pub fn show_changes(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.set_tab(Tab::Changes, window, cx);
+    }
+
     fn set_tab(&mut self, tab: Tab, window: &mut Window, cx: &mut Context<Self>) {
         if self.tab == tab {
             return;

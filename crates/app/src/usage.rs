@@ -1577,6 +1577,11 @@ impl UsageView {
         });
     }
 
+    /// Switch to the Local stats tab (the `/gentle:stats` command).
+    pub fn show_stats(&mut self, cx: &mut Context<Self>) {
+        self.set_tab(Tab::Stats, cx);
+    }
+
     fn set_tab(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
         if tab == Tab::Stats && matches!(self.stats, StatsState::Idle) {

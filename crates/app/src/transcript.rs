@@ -95,10 +95,18 @@ pub enum Item {
         level: NoticeLevel,
         text: String,
     },
-    /// A visible extension message, e.g. `gentle-agents.result` (a helper's answer).
+    /// A visible extension message, e.g. `gentle-agents.result` (a helper's
+    /// answer); `details` is the extension's display data.
     Custom {
         kind: String,
         text: String,
+        details: Value,
+    },
+    /// What an extension command (`/gentle:doctor`) reported through
+    /// `notify`, gathered into one result.
+    CommandOutput {
+        command: String,
+        notices: Vec<(NoticeLevel, String)>,
     },
 }
 
@@ -285,12 +293,20 @@ impl Transcript {
             "compaction_start" => self.notice(NoticeLevel::Info, "Compacting context…".into()),
             "compaction_end" => {
                 if let Some(error) = event["errorMessage"].as_str() {
+                    let error = error.strip_prefix("Compaction failed: ").unwrap_or(error);
                     self.notice(NoticeLevel::Error, format!("Compaction failed: {error}"));
+                } else if event["aborted"] == true {
+                    self.notice(NoticeLevel::Info, "Compaction cancelled".into());
                 } else if let Some(before) = event["result"]["tokensBefore"].as_u64() {
-                    self.notice(
-                        NoticeLevel::Info,
-                        format!("Context compacted from {}", format_tokens(before)),
-                    );
+                    let text = match event["result"]["estimatedTokensAfter"].as_u64() {
+                        Some(after) => format!(
+                            "Context compacted from {} to ~{}",
+                            format_tokens(before),
+                            format_tokens(after)
+                        ),
+                        None => format!("Context compacted from {}", format_tokens(before)),
+                    };
+                    self.notice(NoticeLevel::Info, text);
                 }
             }
             "extension_error" => self.notice(
@@ -308,6 +324,11 @@ impl Transcript {
 
     pub fn notice(&mut self, level: NoticeLevel, text: String) {
         self.push(Item::Notice { level, text });
+    }
+
+    /// An extension command's gathered `notify` output, as one result.
+    pub fn command_output(&mut self, command: String, notices: Vec<(NoticeLevel, String)>) {
+        self.push(Item::CommandOutput { command, notices });
     }
 
     /// Start a `!command` shell item and return its index.
@@ -515,6 +536,7 @@ impl Transcript {
         self.push(Item::Custom {
             kind: str_field(message, "customType"),
             text,
+            details: message["details"].clone(),
         });
     }
 
@@ -727,10 +749,11 @@ mod tests {
     #[test]
     fn visible_custom_messages_become_items() {
         let mut t = Transcript::default();
-        t.apply(&json!({"type":"message_end","message":{"role":"custom","customType":"gentle-agents.result","content":"Explorer found 3 files","display":true}}));
+        t.apply(&json!({"type":"message_end","message":{"role":"custom","customType":"gentle-agents.result","content":"Explorer found 3 files","display":true,"details":{"gentleAgents":{"agent":"explorer","status":"completed"}}}}));
         t.apply(&json!({"type":"message_end","message":{"role":"custom","customType":"gentle-todo-state","content":"hidden","display":false}}));
         assert_eq!(t.items.len(), 1);
-        assert!(matches!(&t.items[0], Item::Custom { kind, .. } if kind == "gentle-agents.result"));
+        assert!(matches!(&t.items[0], Item::Custom { kind, details, .. }
+            if kind == "gentle-agents.result" && details["gentleAgents"]["agent"] == "explorer"));
     }
 
     #[test]

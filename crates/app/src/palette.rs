@@ -14,6 +14,7 @@ use gpui_kit::component::{Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::commands::{self, Screen};
 use crate::ui;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -38,6 +39,8 @@ pub enum PaletteAction {
     ToggleSidebar,
     /// Send `/name` as a prompt in the active agent pane.
     Command(String),
+    /// A Gentle Shell command whose UI is terminal-only, opened natively.
+    Screen(Screen),
     SwitchWorkspace(usize),
     RenameWorkspace {
         index: usize,
@@ -467,6 +470,35 @@ fn screen_rows() -> Vec<Row> {
     ]
 }
 
+/// The row of a backend slash command: `None` for commands that do nothing
+/// over RPC; terminal-only ones open their native screen instead of running.
+fn command_row((name, detail): (String, String)) -> Option<Row> {
+    if commands::hidden(&name) {
+        return None;
+    }
+    let (group, icon) = if name.starts_with("skill:") {
+        ("Skills", IconName::Zap)
+    } else if name.starts_with("gentle:") {
+        ("Gentle commands", IconName::Command)
+    } else {
+        ("Commands", IconName::Command)
+    };
+    let action = match commands::route(&name) {
+        Some(screen) => PaletteAction::Screen(screen),
+        None => PaletteAction::Command(name.clone()),
+    };
+    Some(Row {
+        icon,
+        title: format!("/{name}"),
+        meta: String::new(),
+        detail,
+        group,
+        action,
+        workspace: None,
+        current: false,
+    })
+}
+
 impl PaletteView {
     pub fn new(input: PaletteInput, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let query =
@@ -481,25 +513,7 @@ impl PaletteView {
             }
         });
         let mut commands = screen_rows();
-        commands.extend(input.commands.into_iter().map(|(name, detail)| {
-            let (group, icon) = if name.starts_with("skill:") {
-                ("Skills", IconName::Zap)
-            } else if name.starts_with("gentle:") {
-                ("Gentle commands", IconName::Command)
-            } else {
-                ("Commands", IconName::Command)
-            };
-            Row {
-                icon,
-                title: format!("/{name}"),
-                meta: String::new(),
-                detail,
-                group,
-                action: PaletteAction::Command(name),
-                workspace: None,
-                current: false,
-            }
-        }));
+        commands.extend(input.commands.into_iter().filter_map(command_row));
 
         let root = input.root.clone();
         let files = cx.spawn(async move |this, cx| {
@@ -1205,7 +1219,38 @@ impl Render for PaletteView {
 
 #[cfg(test)]
 mod tests {
-    use super::{FileEntry, Needle, fuzzy_score, parse_branches, rank_files};
+    use super::{
+        FileEntry, Needle, PaletteAction, Screen, command_row, fuzzy_score, parse_branches,
+        rank_files,
+    };
+
+    fn action(name: &str) -> Option<PaletteAction> {
+        command_row((name.into(), "detail".into())).map(|row| row.action)
+    }
+
+    #[test]
+    fn backend_commands_skip_dead_ones_and_open_native_screens() {
+        assert_eq!(action("gentle:guide"), None);
+        assert_eq!(action("history"), None);
+        assert_eq!(action("gentle:panel"), None);
+        assert_eq!(
+            action("gentle:usage"),
+            Some(PaletteAction::Screen(Screen::Usage))
+        );
+        assert_eq!(
+            action("gentle:profiles"),
+            Some(PaletteAction::Screen(Screen::Profiles))
+        );
+        assert_eq!(
+            action("gentle:doctor"),
+            Some(PaletteAction::Command("gentle:doctor".into()))
+        );
+        let row = command_row(("gentle:stats".into(), "Local stats".into())).unwrap();
+        assert_eq!(
+            (row.title.as_str(), row.detail.as_str()),
+            ("/gentle:stats", "Local stats")
+        );
+    }
 
     /// The scorer before it went allocation-free, kept to pin the ranking.
     fn reference_score(query: &str, text: &str) -> Option<usize> {

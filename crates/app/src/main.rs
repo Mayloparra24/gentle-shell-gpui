@@ -1,7 +1,9 @@
 mod activity;
+mod alerts;
 mod app_update;
 mod assets;
 mod banner;
+mod commands;
 mod files;
 mod gentle_state;
 mod git;

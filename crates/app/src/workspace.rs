@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::input::{Escape, Input, InputEvent, InputState};
 use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::tooltip::Tooltip;
@@ -17,6 +18,8 @@ use gpui_kit::component::{Icon, Sizable as _, TitleBar, WindowExt as _, h_flex, 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::commands::Screen;
+use crate::files::FileTreeView;
 use crate::memory::{MemoryEvent, MemoryView};
 use crate::notices::{self, Notices};
 use crate::palette::{
@@ -200,6 +203,13 @@ struct PaneDrag {
     title: SharedString,
 }
 
+/// The inline name field of an agent tab being renamed (double-click).
+struct TabRename {
+    pane: PaneId,
+    input: Entity<InputState>,
+    _subscription: Subscription,
+}
+
 struct DragChip(SharedString);
 
 impl Render for DragChip {
@@ -247,6 +257,7 @@ pub struct Workspace {
     _lifecycle: Vec<Subscription>,
     /// The bell's notification center, shared by every tab.
     notices: Entity<Notices>,
+    renaming: Option<TabRename>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -293,6 +304,7 @@ impl Workspace {
             sidebar_visible: saved.sidebar,
             save_task: None,
             notices: cx.new(|_| Notices::default()),
+            renaming: None,
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {
                     cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -765,6 +777,72 @@ impl Workspace {
         space.tabs.get(space.active)
     }
 
+    /// Open the inline name field on tab `index` when its focused pane is an
+    /// agent; terminal and file tabs keep their titles.
+    fn start_tab_rename(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(pane) = self.space().tabs.get(index).map(|t| t.focused) else {
+            return;
+        };
+        if self.panes.get(&pane).is_none_or(|p| p.session.is_none()) {
+            return;
+        }
+        self.finish_tab_rename(false, window, cx);
+        let title = self.pane_title(pane).to_string();
+        let len = title.len();
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(title));
+        let subscription = cx.subscribe_in(
+            &input,
+            window,
+            |this, _, event: &InputEvent, window, cx| match event {
+                // Enter commits, and so does clicking away (like the file tree).
+                InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                    this.finish_tab_rename(true, window, cx)
+                }
+                _ => {}
+            },
+        );
+        input.update(cx, |state, cx| {
+            state.focus(window, cx);
+            state.set_selected_range(0..len, cx);
+        });
+        self.renaming = Some(TabRename {
+            pane,
+            input,
+            _subscription: subscription,
+        });
+        cx.notify();
+    }
+
+    fn cancel_tab_rename(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        self.finish_tab_rename(false, window, cx);
+    }
+
+    /// Close the tab's name field; with `commit`, a changed non-empty name
+    /// becomes the session's name (RPC `set_session_name`).
+    fn finish_tab_rename(&mut self, commit: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(rename) = self.renaming.take() else {
+            return;
+        };
+        let focused = rename.input.focus_handle(cx).is_focused(window);
+        let name = rename.input.read(cx).value().trim().to_string();
+        cx.notify();
+        let Some(pane) = self.panes.get(&rename.pane) else {
+            return;
+        };
+        // Enter and Escape hand the keyboard back to the agent; a click
+        // elsewhere keeps its new focus.
+        if focused {
+            pane.item.focus.focus(window, cx);
+        }
+        if commit
+            && !name.is_empty()
+            && name != pane.title
+            && let Some(session) = pane.session.clone()
+        {
+            session.update(cx, |s, cx| s.rename(name, cx));
+        }
+    }
+
     fn tab_mut(&mut self) -> Option<&mut Tab> {
         let space = self.space_mut();
         space.tabs.get_mut(space.active)
@@ -823,6 +901,9 @@ impl Workspace {
                     }
                 }
                 SessionEvent::OpenProviders => this.open_providers(window, cx),
+                SessionEvent::OpenScreen(screen) => {
+                    this.open_screen(*screen, Some(session.clone()), window, cx)
+                }
                 SessionEvent::Notice { level, message } => {
                     let source = this.pane_title(id);
                     let (level, message) = (*level, message.clone());
@@ -1590,6 +1671,7 @@ impl Workspace {
                     tab.update(cx, |s, cx| s.run_prompt(format!("/{name}"), cx));
                 }
             }
+            PaletteAction::Screen(screen) => self.open_screen(screen, tab, window, cx),
             PaletteAction::SwitchWorkspace(index) => self.switch_workspace(index, window, cx),
             PaletteAction::RenameWorkspace { index, name } => {
                 self.rename_workspace(index, name, cx)
@@ -1610,6 +1692,51 @@ impl Workspace {
             } => self.pick_workspace_folder(name, window, cx),
             PaletteAction::OpenFile(path) => self.open_file(path, window, cx),
             PaletteAction::SwitchBranch(branch) => self.confirm_switch_branch(branch, window, cx),
+        }
+    }
+
+    /// The native screen of a terminal-only Gentle Shell command; `session`
+    /// is the agent it concerns (the one that ran it, else the active one).
+    fn open_screen(
+        &mut self,
+        screen: Screen,
+        session: Option<Entity<SessionView>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match screen {
+            Screen::Usage => self.open_usage(window, cx),
+            Screen::Stats => {
+                self.open_usage(window, cx);
+                if let Some((Overlay::Usage(view), _)) = &self.overlay {
+                    view.update(cx, |view, cx| view.show_stats(cx));
+                }
+            }
+            // Background jobs have no window of their own: the Agents window
+            // is where the session's background work lives.
+            Screen::Agents | Screen::Jobs => {
+                if let Some(session) = session.or_else(|| self.active_session()) {
+                    session.update(cx, |s, cx| s.open_agents_panel(cx));
+                }
+            }
+            Screen::Profiles => self.open_profiles(window, cx),
+            Screen::Palette => {
+                self.close_overlay(window, cx);
+                self.open_palette(Category::Commands, window, cx);
+            }
+            Screen::Changes => {
+                let Some(tree) = self
+                    .sidebar
+                    .clone()
+                    .and_then(|view| view.downcast::<FileTreeView>().ok())
+                else {
+                    return;
+                };
+                if !self.sidebar_visible {
+                    self.toggle_sidebar(cx);
+                }
+                tree.update(cx, |tree, cx| tree.show_changes(window, cx));
+            }
         }
     }
 
@@ -1912,7 +2039,14 @@ impl Workspace {
                     })
                     // Keep clicks on tabs from turning into window drags.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, window, cx| this.activate(i, window, cx)))
+                    // A double-click on an agent tab renames its session.
+                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                        if event.click_count() >= 2 {
+                            this.start_tab_rename(i, window, cx);
+                        } else {
+                            this.activate(i, window, cx);
+                        }
+                    }))
                     .child(
                         div()
                             .size(px(14.))
@@ -1941,13 +2075,29 @@ impl Workspace {
                             }),
                     )
                     .child(
-                        div()
-                            .max_w(px(180.))
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .when(active, |d| d.font_weight(FontWeight::MEDIUM))
-                            .child(self.pane_title(tab.focused)),
+                        match self.renaming.as_ref().filter(|r| r.pane == tab.focused) {
+                            Some(rename) => div()
+                                .w(px(160.))
+                                .h(px(20.))
+                                .px_1()
+                                .flex()
+                                .items_center()
+                                .rounded(px(5.))
+                                .bg(ui::well())
+                                // Clicks in the field edit it rather than the tab.
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .on_action(cx.listener(Self::cancel_tab_rename))
+                                .child(Input::new(&rename.input).appearance(false).xsmall())
+                                .into_any_element(),
+                            None => div()
+                                .max_w(px(180.))
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .whitespace_nowrap()
+                                .when(active, |d| d.font_weight(FontWeight::MEDIUM))
+                                .child(self.pane_title(tab.focused))
+                                .into_any_element(),
+                        },
                     )
                     .when(count > 1, |d| {
                         d.child(

@@ -307,6 +307,9 @@ impl TranscriptList {
             let prepared = match item {
                 Item::Tool { .. } | Item::Shell { .. } => card_spec(item).map(Prepared::Card),
                 Item::Custom { text, .. } => Some(Prepared::Lines(line_count(text))),
+                Item::CommandOutput { notices, .. } => Some(Prepared::Lines(
+                    notices.iter().map(|(_, text)| line_count(text)).sum(),
+                )),
                 _ => None,
             };
             match prepared {
@@ -817,6 +820,11 @@ impl SessionView {
                 if let Some(error) = error {
                     column = column.child(notice_card(NoticeLevel::Error, error));
                 }
+                if !*streaming && has_text {
+                    column = column
+                        .group("assistant")
+                        .child(self.render_answer_actions(ix, cx));
+                }
                 column.into_any_element()
             }
             Item::Tool { .. } | Item::Shell { .. } => {
@@ -838,12 +846,23 @@ impl SessionView {
                 let duration = self.tool_duration(ix, spec.status, backend_ms);
                 self.render_card(ix, item, spec, duration, cx)
             }
-            Item::Custom { kind, text } => {
+            Item::Custom {
+                kind,
+                text,
+                details,
+            } => {
                 let lines = match self.list.prepared.get(&ix) {
                     Some(Prepared::Lines(lines)) => *lines,
                     _ => line_count(text),
                 };
-                self.render_custom(ix, kind, text, lines, cx)
+                self.render_custom(ix, kind, text, details, lines, cx)
+            }
+            Item::CommandOutput { command, notices } => {
+                let lines = match self.list.prepared.get(&ix) {
+                    Some(Prepared::Lines(lines)) => *lines,
+                    _ => notices.iter().map(|(_, text)| line_count(text)).sum(),
+                };
+                self.render_command_output(ix, command, notices, lines, cx)
             }
             Item::Notice { level, text } => notice_card(*level, text).into_any_element(),
         }
@@ -922,65 +941,95 @@ impl SessionView {
         ix: usize,
         kind: &str,
         text: &str,
+        details: &serde_json::Value,
         lines: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (icon, title, color) = match kind {
-            "gentle-agents.result" => (IconName::Bot, "Agent answer".to_string(), ui::success()),
-            "gentle-agents.message" | "gentle-agents.orchestrator-message" => {
-                (IconName::MessageSquare, "Message".to_string(), ui::info())
-            }
-            "gentle-jobs.notice" => (IconName::Activity, "Job".to_string(), ui::warning()),
-            other => (IconName::Info, other.to_string(), ui::muted()),
-        };
+        let look = custom_look(kind, details);
         let key = fold_key(ix, 0, OUTPUT);
         let open = self.expanded.contains(&key);
-        let (shown, hidden) = head_slice(text, lines, if open { 400 } else { INPUT_LINES });
-        // One text run: line endings normalized the way `str::lines` reads them.
-        let shown = if shown.contains('\r') {
-            shown.lines().collect::<Vec<_>>().join("\n")
-        } else {
-            shown.to_string()
-        };
         let more = lines.saturating_sub(INPUT_LINES);
+        let body = match look.body {
+            CustomBody::Markdown => self.markdown.get(&(ix, 0)).map(|(state, _)| {
+                div()
+                    .px_3()
+                    .pb_2()
+                    .text_size(px(13.))
+                    .text_color(ui::fg())
+                    .when(!open && more > 0, |d| {
+                        d.max_h(px(INPUT_LINES as f32 * 21.)).overflow_hidden()
+                    })
+                    .child(TextView::new(state).selectable(true))
+                    .into_any_element()
+            }),
+            CustomBody::Head | CustomBody::Tail => {
+                let max = if open { 400 } else { INPUT_LINES };
+                let (shown, hidden) = match look.body {
+                    CustomBody::Tail => tail_slice(text, lines, max),
+                    _ => head_slice(text, lines, max),
+                };
+                // One text run: line endings normalized the way `str::lines` reads them.
+                let shown = if shown.contains('\r') {
+                    shown.lines().collect::<Vec<_>>().join("\n")
+                } else {
+                    shown.to_string()
+                };
+                (!shown.is_empty()).then(|| {
+                    v_flex()
+                        .px_3()
+                        .pb_2()
+                        .gap_1()
+                        .when(open && hidden > 0, |this| {
+                            this.child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(ui::faint())
+                                    .child(format!("… {hidden} more lines not shown")),
+                            )
+                        })
+                        .child(
+                            div()
+                                .text_size(px(13.))
+                                .text_color(ui::muted())
+                                .whitespace_normal()
+                                .when(look.body == CustomBody::Tail, |d| {
+                                    d.font_family(ui::MONO).text_size(px(12.))
+                                })
+                                .child(shown),
+                        )
+                        .into_any_element()
+                })
+            }
+        };
+        let color = look.tone.color();
         ui::card()
             .w_full()
             .overflow_hidden()
+            .when(matches!(look.tone, Tone::Danger | Tone::Warning), |this| {
+                this.border_color(color.opacity(0.35))
+            })
             .child(
                 h_flex()
                     .px_3()
                     .py_2()
                     .gap_2()
-                    .child(Icon::new(icon).small().text_color(color))
+                    .min_w_0()
+                    .child(Icon::new(look.icon).small().text_color(color))
                     .child(
                         div()
+                            .min_w_0()
+                            .truncate()
                             .text_size(px(13.))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(ui::champagne())
-                            .child(title),
-                    ),
+                            .child(look.title),
+                    )
+                    .child(div().flex_1())
+                    .when_some(look.badge, |this, (badge, tone)| {
+                        this.child(ui::chip(badge, tone.color()).flex_shrink_0())
+                    }),
             )
-            .when(!shown.is_empty(), |this| {
-                this.child(
-                    div()
-                        .px_3()
-                        .pb_2()
-                        .text_size(px(13.))
-                        .text_color(ui::muted())
-                        .whitespace_normal()
-                        .child(shown),
-                )
-            })
-            .when(open && hidden > 0, |this| {
-                this.child(
-                    div()
-                        .px_3()
-                        .pb_1()
-                        .text_size(px(11.))
-                        .text_color(ui::faint())
-                        .child(format!("… {hidden} more lines not shown")),
-                )
-            })
+            .children(body)
             .when(more > 0, |this| {
                 this.child(div().pb_1().child(self.fold_toggle(
                     key,
@@ -994,6 +1043,146 @@ impl SessionView {
                 )))
             })
             .into_any_element()
+    }
+
+    /// An extension command's `notify` output as one card: the command as
+    /// typed, then each notice in order, warnings and errors tinted.
+    fn render_command_output(
+        &self,
+        ix: usize,
+        command: &str,
+        notices: &[(NoticeLevel, String)],
+        lines: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        const SHOWN_LINES: usize = 16;
+        let key = fold_key(ix, 0, OUTPUT);
+        let open = self.expanded.contains(&key);
+        let foldable = lines > SHOWN_LINES;
+        let worst = notices
+            .iter()
+            .map(|(level, _)| *level)
+            .max_by_key(|level| match level {
+                NoticeLevel::Info => 0,
+                NoticeLevel::Warning => 1,
+                NoticeLevel::Error => 2,
+            })
+            .unwrap_or(NoticeLevel::Info);
+        let accent = match worst {
+            NoticeLevel::Info => None,
+            NoticeLevel::Warning => Some(ui::warning()),
+            NoticeLevel::Error => Some(ui::danger()),
+        };
+        let rows = notices.iter().map(|(level, text)| {
+            let (icon, color) = match level {
+                NoticeLevel::Info => (None, ui::fg()),
+                NoticeLevel::Warning => (Some(IconName::TriangleAlert), ui::warning()),
+                NoticeLevel::Error => (Some(IconName::CircleX), ui::danger()),
+            };
+            h_flex()
+                .w_full()
+                .items_start()
+                .gap_1p5()
+                .when_some(icon, |this, icon| {
+                    this.child(
+                        div()
+                            .pt(px(2.))
+                            .child(Icon::new(icon).xsmall().text_color(color)),
+                    )
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .font_family(ui::MONO)
+                        .text_size(px(12.))
+                        .text_color(color)
+                        .whitespace_normal()
+                        .child(text.trim_end().to_string()),
+                )
+        });
+        ui::card()
+            .w_full()
+            .overflow_hidden()
+            .when_some(accent, |this, color| this.border_color(color.opacity(0.35)))
+            .child(
+                h_flex()
+                    .px_3()
+                    .py_2()
+                    .gap_2()
+                    .min_w_0()
+                    .child(
+                        Icon::new(IconName::SquareTerminal)
+                            .small()
+                            .text_color(accent.unwrap_or(ui::muted())),
+                    )
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .font_family(ui::MONO)
+                            .text_size(px(13.))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(ui::champagne())
+                            .child(command.to_string()),
+                    ),
+            )
+            .child(
+                div().px_3().pb_2().child(
+                    ui::well_box()
+                        .p_3()
+                        .gap_1p5()
+                        .when(foldable && !open, |d| {
+                            d.max_h(px(SHOWN_LINES as f32 * 18.)).overflow_hidden()
+                        })
+                        .children(rows),
+                ),
+            )
+            .when(foldable, |this| {
+                this.child(div().pb_1().child(self.fold_toggle(
+                    key,
+                    if open {
+                        "Show less".into()
+                    } else {
+                        format!("{} more lines", lines - SHOWN_LINES)
+                    },
+                    open,
+                    cx,
+                )))
+            })
+            .into_any_element()
+    }
+
+    /// Under a finished answer, shown on hover: copy it.
+    fn render_answer_actions(&self, ix: usize, cx: &mut Context<Self>) -> Div {
+        h_flex()
+            .h(px(20.))
+            .mt(px(-4.))
+            .invisible()
+            .group_hover("assistant", |s| s.visible())
+            .child(
+                Button::new(("copy-answer", ix))
+                    .ghost()
+                    .xsmall()
+                    .text_color(ui::faint())
+                    .icon(Icon::new(IconName::Copy))
+                    .tooltip("Copy answer")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        let Some(Item::Assistant { blocks, .. }) = this.transcript.items.get(ix)
+                        else {
+                            return;
+                        };
+                        let text = blocks
+                            .iter()
+                            .filter_map(|b| match b {
+                                Block::Text(t) if !t.trim().is_empty() => Some(t.trim()),
+                                _ => None,
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n\n");
+                        this.copy_text(text, cx);
+                    })),
+            )
     }
 
     fn render_card(
@@ -1563,9 +1752,14 @@ impl SessionView {
         if query.contains(char::is_whitespace) {
             return None;
         }
-        let matches: Vec<&(String, String)> = self
+        let builtins = super::builtins::BUILTINS.iter().copied();
+        let backend = self
             .commands
             .iter()
+            .filter(|(name, _)| !crate::commands::hidden(name))
+            .map(|(name, description)| (name.as_str(), description.as_str()));
+        let matches: Vec<(&str, &str)> = builtins
+            .chain(backend)
             .filter(|(name, _)| name.contains(query))
             .take(8)
             .collect();
@@ -1596,7 +1790,7 @@ impl SessionView {
                             .into_iter()
                             .enumerate()
                             .map(|(i, (name, description))| {
-                                let name = name.clone();
+                                let name = name.to_string();
                                 h_flex()
                                     .id(("command", i))
                                     .w_full()
@@ -1623,7 +1817,7 @@ impl SessionView {
                                             .whitespace_nowrap()
                                             .text_size(px(12.))
                                             .text_color(ui::muted())
-                                            .child(description.clone()),
+                                            .child(description.to_string()),
                                     )
                                     .on_click(cx.listener(move |this, _, window, cx| {
                                         this.insert_command(&name, window, cx)
@@ -2232,10 +2426,13 @@ impl SessionView {
             .child(right)
     }
 
-    /// `NN%` — thin pink bar — window size.
-    fn render_context_line(&self) -> impl IntoElement {
+    /// `NN%` (a chip: compact now, auto-compaction) — thin pink bar — window size.
+    fn render_context_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let window_tokens = self.model.as_ref().map(|m| m.context_window).unwrap_or(0);
         let percent = self.context_percent.unwrap_or(0.0).clamp(0.0, 100.0) as f32;
+        let high = self
+            .context_percent
+            .is_some_and(|p| p >= crate::alerts::context_threshold(cx));
         v_flex()
             .w_full()
             .px_3()
@@ -2246,10 +2443,7 @@ impl SessionView {
                     .font_family(ui::MONO)
                     .text_size(px(10.))
                     .text_color(ui::faint())
-                    .child(match self.context_percent {
-                        Some(p) => format!("{p:.0}%"),
-                        None => "–".into(),
-                    })
+                    .child(self.render_context_chip(high, cx))
                     .child(if window_tokens > 0 {
                         format_tokens(window_tokens)
                     } else {
@@ -2270,6 +2464,91 @@ impl SessionView {
                             .bg(ui::petal()),
                     ),
             )
+    }
+
+    /// The context percentage as a chip: compact now, toggle auto-compaction.
+    fn render_context_chip(&self, high: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let compacting = self.compacting;
+        let auto = self.auto_compaction;
+        let ready = matches!(self.backend, Backend::Ready(_));
+        let used = match self.context_percent {
+            Some(p) => format!("{p:.0}%"),
+            None => "–".into(),
+        };
+        let window = self
+            .model
+            .as_ref()
+            .map(|m| m.context_window)
+            .filter(|w| *w > 0)
+            .map(format_tokens);
+        let label = if compacting {
+            "compacting…".to_string()
+        } else {
+            used.clone()
+        };
+        let count = match &window {
+            Some(window) => format!("{used} of {window}"),
+            None => used,
+        };
+        let color = if high { ui::warning() } else { ui::faint() };
+        let weak = cx.entity().downgrade();
+        chip_popover(
+            "context",
+            IconName::Gauge,
+            color,
+            label,
+            "Context",
+            count,
+            move || {
+                let compact = weak.clone();
+                let toggle = weak.clone();
+                vec![
+                    div()
+                        .text_size(px(12.))
+                        .text_color(ui::muted())
+                        .whitespace_normal()
+                        .child(if high {
+                            "Context is nearly full. Compacting summarizes the conversation so far to free room."
+                        } else {
+                            "Compacting summarizes the conversation so far to free room. Add what to keep with /compact <instructions>."
+                        })
+                        .into_any_element(),
+                    h_flex()
+                        .pt_1()
+                        .child(
+                            Button::new("context-compact")
+                                .small()
+                                .primary()
+                                .icon(Icon::new(IconName::ChevronsDownUp))
+                                .label(if compacting { "Compacting…" } else { "Compact now" })
+                                .loading(compacting)
+                                .disabled(compacting || !ready)
+                                .on_click(move |_, _, cx| {
+                                    let _ = compact.update(cx, |this, cx| this.compact(None, cx));
+                                }),
+                        )
+                        .into_any_element(),
+                    h_flex()
+                        .id("context-auto-compaction")
+                        .gap_2()
+                        .pt_1()
+                        .cursor_pointer()
+                        .text_size(px(12.))
+                        .text_color(ui::fg())
+                        .when(auto.is_none() || !ready, |d| d.opacity(0.5))
+                        .child(checkbox_box(auto.unwrap_or(false)))
+                        .child("Compact automatically when nearly full")
+                        .when_some(auto.filter(|_| ready), |d, enabled| {
+                            d.on_click(move |_, _, cx| {
+                                let _ = toggle.update(cx, |this, cx| {
+                                    this.set_auto_compaction(!enabled, cx)
+                                });
+                            })
+                        })
+                        .into_any_element(),
+                ]
+            },
+        )
     }
 
     /// 64px numbered thumbnails of the images waiting to be sent, each with ×.
@@ -2453,7 +2732,7 @@ impl SessionView {
             .children(self.render_slash_menu(cx))
             .children(self.render_dialog(cx))
             .child(self.render_activity(cx))
-            .child(self.render_context_line())
+            .child(self.render_context_line(cx))
             .child(
                 v_flex()
                     .w_full()
@@ -3334,6 +3613,133 @@ fn number_badge(n: usize) -> Div {
         .child(format!("#{n}"))
 }
 
+/// A card's tint.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tone {
+    Success,
+    Danger,
+    Warning,
+    Info,
+    Muted,
+}
+
+impl Tone {
+    fn color(self) -> Hsla {
+        match self {
+            Tone::Success => ui::success(),
+            Tone::Danger => ui::danger(),
+            Tone::Warning => ui::warning(),
+            Tone::Info => ui::info(),
+            Tone::Muted => ui::muted(),
+        }
+    }
+}
+
+/// How a custom message's text shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CustomBody {
+    /// Its first lines, as plain text.
+    Head,
+    /// Rendered Markdown (a helper's answer).
+    Markdown,
+    /// Its last lines in monospace (a job's output).
+    Tail,
+}
+
+/// What a custom message's card shows besides its text, from its type and
+/// the extension's `details`.
+#[derive(Debug, PartialEq)]
+struct CustomLook {
+    icon: IconName,
+    title: String,
+    tone: Tone,
+    badge: Option<(String, Tone)>,
+    body: CustomBody,
+}
+
+/// Custom messages whose text is Markdown.
+pub(super) fn markdown_custom(kind: &str) -> bool {
+    kind == "gentle-agents.result"
+}
+
+fn custom_look(kind: &str, details: &serde_json::Value) -> CustomLook {
+    let look = |icon, title: &str, tone| CustomLook {
+        icon,
+        title: title.to_string(),
+        tone,
+        badge: None,
+        body: CustomBody::Head,
+    };
+    match kind {
+        // gentle-agents.ts `taskDetails`: `{gentleAgents: {agent, status, …}}`.
+        "gentle-agents.result" => {
+            let agent = &details["gentleAgents"];
+            let status = agent["status"].as_str().filter(|s| !s.is_empty());
+            let tone = match status {
+                None | Some("completed") => Tone::Success,
+                Some(_) => Tone::Danger,
+            };
+            CustomLook {
+                icon: IconName::Bot,
+                title: agent["agent"]
+                    .as_str()
+                    .filter(|a| !a.is_empty())
+                    .map_or("Agent answer".into(), str::to_string),
+                tone,
+                badge: status.map(|s| (s.replace('_', " "), tone)),
+                body: CustomBody::Markdown,
+            }
+        }
+        "gentle-agents.message" | "gentle-agents.orchestrator-message" => {
+            let agent = details["gentleAgents"]["agent"]
+                .as_str()
+                .filter(|a| !a.is_empty());
+            let title = agent.map_or("Message".into(), |a| format!("{a} message"));
+            look(IconName::MessageSquare, &title, Tone::Info)
+        }
+        // background-jobs-tools.ts: `{gentleJobs: {label, status, exitCode, kind, event}}`.
+        "gentle-jobs.notice" => {
+            let job = &details["gentleJobs"];
+            let fallback = if job["kind"] == "monitor" {
+                "Monitor"
+            } else {
+                "Background job"
+            };
+            let title = job["label"]
+                .as_str()
+                .or(job["command"].as_str())
+                .filter(|l| !l.is_empty())
+                .unwrap_or(fallback);
+            let exit = job["exitCode"].as_i64();
+            let (tone, badge) = if job["event"] == "events" {
+                (Tone::Info, None)
+            } else {
+                match (job["status"].as_str(), exit) {
+                    (Some("exited"), Some(0)) => (Tone::Success, Some("exit 0".to_string())),
+                    (_, Some(code)) => (Tone::Danger, Some(format!("exit {code}"))),
+                    (Some(status), None) => (Tone::Danger, Some(status.replace('_', " "))),
+                    (None, None) => (Tone::Muted, None),
+                }
+            };
+            CustomLook {
+                icon: IconName::Activity,
+                title: title.to_string(),
+                tone,
+                badge: badge.map(|b| (b, tone)),
+                body: CustomBody::Tail,
+            }
+        }
+        "gentle-pi.review-preflight" => look(IconName::ShieldCheck, "Review preflight", Tone::Info),
+        "gentle-pi.exploration-budget" => look(IconName::Gauge, "Exploration budget", Tone::Info),
+        "gentle-pi.verifier-settle-reminder" => look(
+            IconName::TriangleAlert,
+            "Verification reminder",
+            Tone::Warning,
+        ),
+        other => look(IconName::Info, other, Tone::Muted),
+    }
+}
+
 fn notice_card(level: NoticeLevel, text: &str) -> Div {
     let (icon, color) = match level {
         NoticeLevel::Info => (IconName::Info, ui::muted()),
@@ -3636,11 +4042,69 @@ fn limit_label(window: &str) -> String {
 mod tests {
     use std::time::Duration;
 
+    use super::{CustomBody, Tone, custom_look};
     use super::{
         ListUpdate, Row, Shape, Tail, checkbox_option, command_language, head_slice, label_stamp,
         language_for_path, limit_label, line_count, list_update, option_matches, parse_diff_line,
         parse_rate_limit, split_current, tail_slice, ticker_needed,
     };
+    use serde_json::json;
+
+    #[test]
+    fn custom_cards_read_extension_details() {
+        let answer = custom_look(
+            "gentle-agents.result",
+            &json!({"gentleAgents": {"agent": "explorer", "status": "completed"}}),
+        );
+        assert_eq!(answer.title, "explorer");
+        assert_eq!(answer.tone, Tone::Success);
+        assert_eq!(answer.badge, Some(("completed".into(), Tone::Success)));
+        assert_eq!(answer.body, CustomBody::Markdown);
+        let failed = custom_look(
+            "gentle-agents.result",
+            &json!({"gentleAgents": {"agent": "reviewer", "status": "timed_out"}}),
+        );
+        assert_eq!(failed.tone, Tone::Danger);
+        assert_eq!(failed.badge, Some(("timed out".into(), Tone::Danger)));
+        assert_eq!(
+            custom_look("gentle-agents.result", &json!(null)).title,
+            "Agent answer"
+        );
+
+        let job = custom_look(
+            "gentle-jobs.notice",
+            &json!({"gentleJobs": {"label": "npm test", "status": "exited", "exitCode": 1}}),
+        );
+        assert_eq!(job.title, "npm test");
+        assert_eq!(job.badge, Some(("exit 1".into(), Tone::Danger)));
+        assert_eq!(job.body, CustomBody::Tail);
+        let ok = custom_look(
+            "gentle-jobs.notice",
+            &json!({"gentleJobs": {"kind": "monitor", "status": "exited", "exitCode": 0}}),
+        );
+        assert_eq!(ok.title, "Monitor");
+        assert_eq!(ok.tone, Tone::Success);
+        let events = custom_look(
+            "gentle-jobs.notice",
+            &json!({"gentleJobs": {"label": "watch", "event": "events", "status": "running"}}),
+        );
+        assert_eq!((events.tone, events.badge), (Tone::Info, None));
+
+        assert_eq!(
+            custom_look("gentle-pi.review-preflight", &json!({})).title,
+            "Review preflight"
+        );
+        assert_eq!(
+            custom_look("gentle-pi.exploration-budget", &json!({})).title,
+            "Exploration budget"
+        );
+        let reminder = custom_look("gentle-pi.verifier-settle-reminder", &json!({}));
+        assert_eq!(
+            (reminder.title.as_str(), reminder.tone),
+            ("Verification reminder", Tone::Warning)
+        );
+        assert_eq!(custom_look("some.type", &json!({})).title, "some.type");
+    }
 
     #[test]
     fn diff_lines_split_sign_number_and_text() {
