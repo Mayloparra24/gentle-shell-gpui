@@ -1221,6 +1221,9 @@ mod tests {
         )
         .unwrap();
         zip.write_all(b"binary").unwrap();
+        // A `.app` carries symlinks, but only Unix builds extract them; off
+        // Unix a symlink is refused (see `refuses_symlinks_off_unix`).
+        #[cfg(unix)]
         zip.add_symlink("Gentle Shell.app/Contents/Current", "MacOS", options)
             .unwrap();
         zip.start_file("__MACOSX/._Gentle Shell.app", options)
@@ -1247,6 +1250,23 @@ mod tests {
             find_payload("macos", &out, "0.2.0").unwrap(),
             out.join("Gentle Shell.app")
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Windows release zips hold only the exe, so a symlink entry there is
+    /// refused instead of being written as something else.
+    #[cfg(not(unix))]
+    #[test]
+    fn refuses_symlinks_off_unix() {
+        use zip::write::SimpleFileOptions;
+        let dir = temp_dir("zip-link");
+        let archive = dir.join("a.zip");
+        let mut zip = zip::ZipWriter::new(fs::File::create(&archive).unwrap());
+        zip.add_symlink("link", "target", SimpleFileOptions::default())
+            .unwrap();
+        zip.finish().unwrap();
+        let error = extract_zip(&archive, &dir.join("out")).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         fs::remove_dir_all(&dir).unwrap();
     }
 
