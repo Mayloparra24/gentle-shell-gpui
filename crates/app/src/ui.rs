@@ -182,6 +182,11 @@ pub fn warning() -> Hsla {
 pub fn screen_bg() -> Hsla {
     themes::palette(|p| p.screen)
 }
+/// Floating cards, menus and the task island: solid at any transparency, so
+/// what is behind them never bleeds through.
+pub fn popover_bg() -> Hsla {
+    themes::palette(|p| p.popover)
+}
 /// The dimmed layer behind screens and dialogs.
 pub fn backdrop() -> Hsla {
     themes::palette(|p| p.backdrop)

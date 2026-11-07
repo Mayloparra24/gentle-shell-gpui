@@ -129,6 +129,12 @@ pub struct SessionView {
     mode: Option<crate::gentle_state::PermissionMode>,
     _agents_ticker: Task<()>,
     todo: Vec<TodoTask>,
+    /// The task island is unfolded (see [`view`] for the morph).
+    todo_open: bool,
+    /// Morph progress at `todo_motion_at`, and where it heads (0 folded, 1 open).
+    todo_motion_from: f32,
+    todo_motion_to: f32,
+    todo_motion_at: Instant,
     git: Option<GitSnapshot>,
     model: Option<ModelInfo>,
     models: Vec<ModelInfo>,
@@ -284,6 +290,10 @@ impl SessionView {
             mode: None,
             _agents_ticker: Task::ready(()),
             todo: Vec::new(),
+            todo_open: false,
+            todo_motion_from: 0.0,
+            todo_motion_to: 0.0,
+            todo_motion_at: Instant::now(),
             git: None,
             model: None,
             models: Vec::new(),
@@ -469,7 +479,7 @@ impl SessionView {
         self.jobs.clear();
         self.job_commands.clear();
         self.phase = None;
-        self.todo.clear();
+        self.apply_todo(Vec::new());
         self.session_name = None;
         self.title = None;
         self.capture = None;
@@ -692,10 +702,20 @@ impl SessionView {
                 && name == "todo"
                 && let Some(tasks) = tools::todo_tasks(details)
             {
-                self.todo = tasks;
+                self.apply_todo(tasks);
                 return;
             }
         }
+    }
+
+    /// Replace the task list. An emptied list folds the island away.
+    fn apply_todo(&mut self, tasks: Vec<TodoTask>) {
+        if tasks.is_empty() {
+            self.todo_open = false;
+            self.todo_motion_from = 0.0;
+            self.todo_motion_to = 0.0;
+        }
+        self.todo = tasks;
     }
 
     /// Apply a batch of backend messages in order, then sync the view and
@@ -794,7 +814,7 @@ impl SessionView {
                 if event["toolName"] == "todo"
                     && let Some(tasks) = tools::todo_tasks(details)
                 {
-                    self.todo = tasks;
+                    self.apply_todo(tasks);
                 }
                 if let Some(job) = crate::gentle_state::job_from_details(details) {
                     let label = self
@@ -1608,7 +1628,7 @@ impl SessionView {
         self.transcript = Transcript::default();
         self.markdown.clear();
         self.expanded.clear();
-        self.todo.clear();
+        self.apply_todo(Vec::new());
         self.jobs.clear();
         self.phase = None;
         self.session_name = None;
