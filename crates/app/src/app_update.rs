@@ -1057,14 +1057,16 @@ pub fn skip(cx: &mut App) {
     set_status(status, cx);
 }
 
-/// Schedule the relaunch, then quit through the normal path so every
-/// workspace is saved first.
+/// Schedule the relaunch, then quit. Workspaces are saved by the
+/// workspace's `on_app_quit` hook. Quit directly: `App::dispatch_action`
+/// routes through the active window, and from a click handler that window
+/// is already being updated, so the action would be dropped.
 pub fn restart(cx: &mut App) {
     let Status::Ready { release, relaunch } = status(cx).clone() else {
         return;
     };
     match spawn_relaunch(&relaunch) {
-        Ok(()) => cx.dispatch_action(&crate::workspace::Quit),
+        Ok(()) => cx.quit(),
         Err(e) => set_status(
             Status::Failed {
                 problem: Problem::new(format!(
