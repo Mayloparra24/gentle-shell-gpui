@@ -11,6 +11,7 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -19,6 +20,46 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::ui;
+
+// The native web view, one module per system with the same interface:
+// `NativeView::{new, place, load_url, reload}`, plus `pump` for a toolkit
+// loop GPUI doesn't run (`NEEDS_PUMP`).
+#[cfg(target_os = "linux")]
+#[path = "browser/linux.rs"]
+mod native;
+#[cfg(target_os = "macos")]
+#[path = "browser/macos.rs"]
+mod native;
+#[cfg(target_os = "windows")]
+#[path = "browser/windows.rs"]
+mod native;
+
+/// How often GTK's loop is pumped while the card is open (Linux).
+const PUMP_EVERY: Duration = Duration::from_millis(8);
+
+/// `bounds` (window coordinates) as `wry` takes them.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn logical_rect(bounds: Bounds<Pixels>) -> wry::Rect {
+    wry::Rect {
+        position: wry::dpi::LogicalPosition::new(
+            bounds.origin.x.as_f32() as f64,
+            bounds.origin.y.as_f32() as f64,
+        )
+        .into(),
+        size: wry::dpi::LogicalSize::new(
+            bounds.size.width.as_f32().max(1.) as f64,
+            bounds.size.height.as_f32().max(1.) as f64,
+        )
+        .into(),
+    }
+}
+
+/// The page's background before it paints: the card body's color.
+fn page_background() -> (u8, u8, u8, u8) {
+    let well = Rgba::from(ui::well());
+    let byte = |c: f32| (c.clamp(0., 1.) * 255.) as u8;
+    (byte(well.r), byte(well.g), byte(well.b), 255)
+}
 
 /// What Gentle Shell reported about its design canvas.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,18 +227,28 @@ pub struct BrowserPanel {
     drag: Option<Drag>,
     /// The window area the card lives in, as last laid out.
     area: Rc<Cell<(f32, f32)>>,
-    #[cfg(target_os = "macos")]
-    webview: Option<wry::WebView>,
-    /// Where the native view was last placed, and whether it showed.
-    #[cfg(target_os = "macos")]
-    placed: Option<(Bounds<Pixels>, bool)>,
+    /// The native web view, created when the card is first laid out.
+    view: Option<native::NativeView>,
     failed: Option<String>,
+    /// Pumps GTK's loop while the card is open (Linux).
+    _pump: Option<Task<()>>,
+    /// Re-places the view when the window moves (Windows hosts it in a popup
+    /// positioned in screen coordinates).
+    _window_moves: Option<Subscription>,
 }
 
 impl EventEmitter<BrowserEvent> for BrowserPanel {}
 
 impl BrowserPanel {
-    pub fn new(url: String) -> Self {
+    pub fn new(url: String, cx: &mut Context<Self>) -> Self {
+        let pump = native::NEEDS_PUMP.then(|| {
+            cx.spawn(async move |_, cx| {
+                loop {
+                    cx.background_executor().timer(PUMP_EVERY).await;
+                    native::pump();
+                }
+            })
+        });
         Self {
             url,
             frame: DEFAULT_FRAME,
@@ -205,24 +256,22 @@ impl BrowserPanel {
             covered: false,
             drag: None,
             area: Rc::new(Cell::new((0., 0.))),
-            #[cfg(target_os = "macos")]
-            webview: None,
-            #[cfg(target_os = "macos")]
-            placed: None,
+            view: None,
             failed: None,
+            _pump: pump,
+            _window_moves: None,
         }
     }
 
     /// Show `url`, or reload when it is already showing (the canvas was
     /// refreshed).
     pub fn navigate(&mut self, url: String, cx: &mut Context<Self>) {
-        #[cfg(target_os = "macos")]
-        if let Some(webview) = &self.webview {
-            let _ = if url == self.url {
-                webview.reload()
+        if let Some(view) = &self.view {
+            if url == self.url {
+                view.reload();
             } else {
-                webview.load_url(&url)
-            };
+                view.load_url(&url);
+            }
         }
         self.url = url;
         cx.notify();
@@ -237,9 +286,8 @@ impl BrowserPanel {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
-        #[cfg(target_os = "macos")]
-        if let Some(webview) = &self.webview {
-            let _ = webview.reload();
+        if let Some(view) = &self.view {
+            view.reload();
         }
         cx.notify();
     }
@@ -282,49 +330,25 @@ impl BrowserPanel {
         }
     }
 
-    /// Place the native view over the card's body (created on first use).
-    #[cfg(target_os = "macos")]
-    fn place_webview(&mut self, bounds: Bounds<Pixels>, window: &Window) {
-        let visible = !self.covered && self.failed.is_none();
-        if self.placed == Some((bounds, visible)) {
-            return;
+    /// Place the native view over the card's body, creating it on first use.
+    /// Returns whether it just failed, so the card can say why.
+    fn place_webview(&mut self, bounds: Bounds<Pixels>, window: &Window) -> bool {
+        if self.failed.is_some() {
+            return false;
         }
-        let rect = wry::Rect {
-            position: wry::dpi::LogicalPosition::new(
-                bounds.origin.x.as_f32() as f64,
-                bounds.origin.y.as_f32() as f64,
-            )
-            .into(),
-            size: wry::dpi::LogicalSize::new(
-                bounds.size.width.as_f32().max(1.) as f64,
-                bounds.size.height.as_f32().max(1.) as f64,
-            )
-            .into(),
-        };
-        if self.webview.is_none() {
-            let well = Rgba::from(ui::well());
-            let byte = |c: f32| (c.clamp(0., 1.) * 255.) as u8;
-            match wry::WebViewBuilder::new()
-                .with_url(&self.url)
-                .with_bounds(rect)
-                .with_background_color((byte(well.r), byte(well.g), byte(well.b), 255))
-                .with_visible(visible)
-                .build_as_child(window)
-            {
-                Ok(webview) => {
-                    round_corners(&webview);
-                    self.webview = Some(webview);
-                }
+        if self.view.is_none() {
+            match native::NativeView::new(window, &self.url, page_background()) {
+                Ok(view) => self.view = Some(view),
                 Err(error) => {
-                    self.failed = Some(format!("The browser could not start: {error}"));
-                    return;
+                    self.failed = Some(error);
+                    return true;
                 }
             }
-        } else if let Some(webview) = &self.webview {
-            let _ = webview.set_bounds(rect);
-            let _ = webview.set_visible(visible);
         }
-        self.placed = Some((bounds, visible));
+        if let Some(view) = &mut self.view {
+            view.place(window, bounds, !self.covered);
+        }
+        false
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -424,13 +448,7 @@ impl BrowserPanel {
 
     fn body(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let this = cx.entity();
-        let note = if let Some(failed) = &self.failed {
-            Some(failed.clone())
-        } else if !cfg!(target_os = "macos") {
-            Some("The canvas opened in your browser.".into())
-        } else {
-            None
-        };
+        let note = self.failed.clone();
         div()
             .flex_1()
             .min_h_0()
@@ -443,10 +461,11 @@ impl BrowserPanel {
             .child(
                 canvas(
                     move |bounds, window, cx| {
-                        #[cfg(target_os = "macos")]
-                        this.update(cx, |panel, _| panel.place_webview(bounds, window));
-                        #[cfg(not(target_os = "macos"))]
-                        let _ = (bounds, window, cx, &this);
+                        this.update(cx, |panel, cx| {
+                            if panel.place_webview(bounds, window) {
+                                cx.notify();
+                            }
+                        });
                     },
                     |_, _, _, _| {},
                 )
@@ -558,19 +577,6 @@ impl BrowserPanel {
     }
 }
 
-/// Round the native view's own layer: GPUI's rounding doesn't clip a native
-/// view, which would otherwise show square corners inside the card.
-#[cfg(target_os = "macos")]
-fn round_corners(webview: &wry::WebView) {
-    use wry::WebViewExtMacOS as _;
-    let view = webview.webview();
-    view.setWantsLayer(true);
-    if let Some(layer) = view.layer() {
-        layer.setCornerRadius(BODY_RADIUS as f64);
-        layer.setMasksToBounds(true);
-    }
-}
-
 /// A card floating above the window: a wide soft ambient shadow, a tighter
 /// key shadow and a faint rose glow. Picked up (`lifted`, while dragged) it
 /// rises: everything spreads further and drops lower.
@@ -591,7 +597,10 @@ fn floating_shadow(lifted: bool) -> Vec<BoxShadow> {
 }
 
 impl Render for BrowserPanel {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self._window_moves.is_none() {
+            self._window_moves = Some(cx.observe_window_bounds(window, |_, _, cx| cx.notify()));
+        }
         let area = self.area.clone();
         let size = area.get();
         if size.0 > 0. && !self.maximized {

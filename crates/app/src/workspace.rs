@@ -1708,20 +1708,16 @@ impl Workspace {
         }
     }
 
-    /// Show Gentle Design's canvas in the in-app browser (macOS; elsewhere
-    /// Gentle Shell's own browser tab is all there is), reload it when the
+    /// Show Gentle Design's canvas in the in-app browser, reload it when the
     /// canvas refreshes, and close it when the canvas stops.
     fn show_design_canvas(&mut self, canvas: crate::browser::CanvasNotice, cx: &mut Context<Self>) {
         use crate::browser::{BrowserEvent, BrowserPanel, CanvasNotice};
-        if !cfg!(target_os = "macos") {
-            return;
-        }
         match canvas {
             CanvasNotice::Stopped => self.browser = None,
             CanvasNotice::Open { url, .. } => match &self.browser {
                 Some((browser, _)) => browser.update(cx, |browser, cx| browser.navigate(url, cx)),
                 None => {
-                    let browser = cx.new(|_| BrowserPanel::new(url));
+                    let browser = cx.new(|cx| BrowserPanel::new(url, cx));
                     let subscription = cx.subscribe(&browser, |this, _, event, cx| match event {
                         BrowserEvent::Close => {
                             this.browser = None;

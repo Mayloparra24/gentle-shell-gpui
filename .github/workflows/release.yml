@@ -84,7 +84,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev
       - name: Package macOS app
         if: runner.os == 'macOS'
         run: packaging/macos/bundle.sh "${{ matrix.target }}" "$VERSION"
