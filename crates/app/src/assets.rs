@@ -69,7 +69,12 @@ gpui_kit::assets::icon_assets!(
         Tag,
         Cloud,
         FolderGit,
-        GitCommitHorizontal
+        GitCommitHorizontal,
+        // Effort levels (off, minimal, low, high; Brain, Zap and Flame above).
+        Moon,
+        Feather,
+        Leaf,
+        BrainCircuit
     ]
 );
 

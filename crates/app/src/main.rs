@@ -18,6 +18,7 @@ mod providers;
 mod session;
 mod sessions;
 mod settings;
+mod surge;
 mod terminal;
 mod themes;
 mod tools;

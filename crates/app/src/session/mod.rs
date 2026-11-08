@@ -47,6 +47,8 @@ pub enum SessionEvent {
     /// A Gentle Shell command whose UI is terminal-only was run (typed or
     /// from the palette): open the app's own screen for it instead.
     OpenScreen(crate::commands::Screen),
+    /// The thinking level was set to `max`: the window plays its surge.
+    MaxEffort,
 }
 
 /// What the window reads from a tab, to emit [`SessionEvent::ChromeChanged`]

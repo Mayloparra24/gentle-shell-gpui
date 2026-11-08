@@ -258,6 +258,11 @@ pub struct Workspace {
     /// The bell's notification center, shared by every tab.
     notices: Entity<Notices>,
     renaming: Option<TabRename>,
+    /// The max-effort surge playing over the window (its run number), and the
+    /// timer that clears it.
+    surge: Option<u64>,
+    surge_runs: u64,
+    _surge_end: Option<Task<()>>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -305,6 +310,9 @@ impl Workspace {
             save_task: None,
             notices: cx.new(|_| Notices::default()),
             renaming: None,
+            surge: None,
+            surge_runs: 0,
+            _surge_end: None,
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {
                     cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -904,6 +912,7 @@ impl Workspace {
                 SessionEvent::OpenScreen(screen) => {
                     this.open_screen(*screen, Some(session.clone()), window, cx)
                 }
+                SessionEvent::MaxEffort => this.play_surge(cx),
                 SessionEvent::Notice { level, message } => {
                     let source = this.pane_title(id);
                     let (level, message) = (*level, message.clone());
@@ -1693,6 +1702,24 @@ impl Workspace {
             PaletteAction::OpenFile(path) => self.open_file(path, window, cx),
             PaletteAction::SwitchBranch(branch) => self.confirm_switch_branch(branch, window, cx),
         }
+    }
+
+    /// Play the max-effort surge over the window; choosing max again
+    /// restarts it.
+    fn play_surge(&mut self, cx: &mut Context<Self>) {
+        self.surge_runs += 1;
+        let run = self.surge_runs;
+        self.surge = Some(run);
+        self._surge_end = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(crate::surge::DURATION).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.surge == Some(run) {
+                    this.surge = None;
+                    cx.notify();
+                }
+            });
+        }));
+        cx.notify();
     }
 
     /// The native screen of a terminal-only Gentle Shell command; `session`
@@ -2868,5 +2895,8 @@ impl Render for Workspace {
                 Overlay::Settings(view) => view.clone().into_any_element(),
                 Overlay::Profiles(view) => view.clone().into_any_element(),
             }))
+            .when_some(self.surge, |root, run| {
+                root.child(crate::surge::overlay(run))
+            })
     }
 }

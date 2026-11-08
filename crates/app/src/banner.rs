@@ -177,6 +177,12 @@ pub fn read_config(config_home: &Path) -> BannerConfig {
     }
 }
 
+/// The rose's dots (x, y in dot units) and its size, for other effects that
+/// draw it (the max-effort surge).
+pub fn rose() -> (&'static [(u16, u16)], (u16, u16)) {
+    (&ART.rose, ART.rose_size)
+}
+
 /// The banner at `scale` px per wordmark pixel. `reveal` in 0..=1 writes the
 /// wordmark left to right and fades the rose in, like the terminal intro.
 pub fn banner(config: BannerConfig, scale: f32, reveal: f32) -> impl IntoElement {

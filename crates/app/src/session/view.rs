@@ -2329,7 +2329,7 @@ impl SessionView {
             .ghost()
             .xsmall()
             .text_color(ui::muted())
-            .icon(Icon::new(IconName::Brain))
+            .icon(Icon::new(effort_icon(&current)))
             .tooltip("Effort: how long the model thinks")
             .when(!narrow, |b| b.label(current.clone()))
             .child(effort_meter(index, levels.len()));
@@ -2346,7 +2346,11 @@ impl SessionView {
                     .child(
                         h_flex()
                             .gap_2()
-                            .child(Icon::new(IconName::Brain).small().text_color(ui::petal()))
+                            .child(
+                                Icon::new(effort_icon(&current))
+                                    .small()
+                                    .text_color(ui::petal()),
+                            )
                             .child(ui::section_label("Effort"))
                             .child(div().flex_1())
                             .child(
@@ -2375,7 +2379,9 @@ impl SessionView {
                                     .child(detail),
                             ),
                     )
-                    .child(effort_slider(&levels, fraction, from, moves, &weak))
+                    .child(effort_slider(
+                        &levels, &current, fraction, from, moves, &weak,
+                    ))
                     .child(effort_labels(&levels, index, &weak));
                 ui::island(cx)
                     .w_full()
@@ -2401,6 +2407,8 @@ impl SessionView {
                 if this.report(result).is_none() {
                     this.thinking = previous;
                     cx.notify();
+                } else if this.thinking == "max" {
+                    cx.emit(super::SessionEvent::MaxEffort);
                 }
             },
         );
@@ -4492,10 +4500,24 @@ fn effort_meter(index: usize, count: usize) -> Div {
         }))
 }
 
+/// Each level's mark, from resting to all-out.
+fn effort_icon(level: &str) -> IconName {
+    match level {
+        "off" => IconName::Moon,
+        "minimal" => IconName::Feather,
+        "low" => IconName::Leaf,
+        "high" => IconName::BrainCircuit,
+        "xhigh" => IconName::Zap,
+        "max" => IconName::Flame,
+        _ => IconName::Brain,
+    }
+}
+
 /// The slider: a pill whose rose fill glides with the knob, twinkling pixel
 /// sparkles inside it, and one hit zone per stop (click or drag across).
 fn effort_slider(
     levels: &[String],
+    current: &str,
     fraction: f32,
     from: f32,
     moves: u64,
@@ -4572,7 +4594,7 @@ fn effort_slider(
             },
         ])
         .child(
-            Icon::new(IconName::Brain)
+            Icon::new(effort_icon(current))
                 .xsmall()
                 .text_color(effort_deep()),
         )
