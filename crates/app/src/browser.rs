@@ -6,8 +6,8 @@
 //! in real time.
 //!
 //! The web view is a native view above everything GPUI draws, so it hides
-//! while a screen covers the window and while the card is dragged (a native
-//! view would swallow the drag's mouse events).
+//! while a screen covers the window. It stays up while the card is dragged:
+//! AppKit keeps sending the drag to the view the mouse went down in.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -98,6 +98,9 @@ const TITLE_BAR: f32 = 36.;
 const HEADER: f32 = 38.;
 /// The grab band along each edge, inside the card.
 const GRIP: f32 = 6.;
+/// The body's corner radius: the card's 18 px less the grip inset, so its
+/// corners follow the card's.
+const BODY_RADIUS: f32 = 12.;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Edges {
@@ -282,7 +285,7 @@ impl BrowserPanel {
     /// Place the native view over the card's body (created on first use).
     #[cfg(target_os = "macos")]
     fn place_webview(&mut self, bounds: Bounds<Pixels>, window: &Window) {
-        let visible = !self.covered && self.drag.is_none() && self.failed.is_none();
+        let visible = !self.covered && self.failed.is_none();
         if self.placed == Some((bounds, visible)) {
             return;
         }
@@ -308,7 +311,10 @@ impl BrowserPanel {
                 .with_visible(visible)
                 .build_as_child(window)
             {
-                Ok(webview) => self.webview = Some(webview),
+                Ok(webview) => {
+                    round_corners(&webview);
+                    self.webview = Some(webview);
+                }
                 Err(error) => {
                     self.failed = Some(format!("The browser could not start: {error}"));
                     return;
@@ -422,8 +428,6 @@ impl BrowserPanel {
             Some(failed.clone())
         } else if !cfg!(target_os = "macos") {
             Some("The canvas opened in your browser.".into())
-        } else if self.drag.is_some() {
-            Some(String::new())
         } else {
             None
         };
@@ -433,7 +437,7 @@ impl BrowserPanel {
             .mx(px(GRIP))
             .mb(px(GRIP))
             .relative()
-            .rounded(px(12.))
+            .rounded(px(BODY_RADIUS))
             .bg(ui::well())
             .overflow_hidden()
             .child(
@@ -554,6 +558,38 @@ impl BrowserPanel {
     }
 }
 
+/// Round the native view's own layer: GPUI's rounding doesn't clip a native
+/// view, which would otherwise show square corners inside the card.
+#[cfg(target_os = "macos")]
+fn round_corners(webview: &wry::WebView) {
+    use wry::WebViewExtMacOS as _;
+    let view = webview.webview();
+    view.setWantsLayer(true);
+    if let Some(layer) = view.layer() {
+        layer.setCornerRadius(BODY_RADIUS as f64);
+        layer.setMasksToBounds(true);
+    }
+}
+
+/// A card floating above the window: a wide soft ambient shadow, a tighter
+/// key shadow and a faint rose glow. Picked up (`lifted`, while dragged) it
+/// rises: everything spreads further and drops lower.
+fn floating_shadow(lifted: bool) -> Vec<BoxShadow> {
+    let lift = if lifted { 1.6 } else { 1. };
+    let shadow = |alpha: f32, y: f32, blur: f32, spread: f32, color: Hsla| BoxShadow {
+        color: color.opacity(alpha),
+        offset: point(px(0.), px(y * lift)),
+        blur_radius: px(blur * lift),
+        spread_radius: px(spread),
+        inset: false,
+    };
+    vec![
+        shadow(0.5, 28., 70., -6., ui::backdrop()),
+        shadow(0.45, 10., 24., -2., ui::backdrop()),
+        shadow(if lifted { 0.16 } else { 0.1 }, 0., 40., 2., ui::petal()),
+    ]
+}
+
 impl Render for BrowserPanel {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let area = self.area.clone();
@@ -566,6 +602,7 @@ impl Render for BrowserPanel {
             .flex()
             .flex_col()
             .occlude()
+            .shadow(floating_shadow(self.drag.is_some()))
             .map(|card| {
                 if self.maximized {
                     card.left(px(MAX_INSET))

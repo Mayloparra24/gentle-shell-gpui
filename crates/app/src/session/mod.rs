@@ -268,11 +268,13 @@ impl SessionView {
                     this.model_query_changed(cx);
                 }
             }),
-            // The model picker's ↑/↓/Enter must beat its focused search field.
+            // The model picker's and the `/` menu's ↑/↓/Enter must beat the
+            // focused search field and composer.
             cx.intercept_keystrokes(move |event, window, cx| {
                 let consumed = weak
                     .update(cx, |this, cx| {
                         this.model_picker_key(&event.keystroke, window, cx)
+                            || this.slash_menu_key(&event.keystroke, window, cx)
                     })
                     .unwrap_or(false);
                 if consumed {
