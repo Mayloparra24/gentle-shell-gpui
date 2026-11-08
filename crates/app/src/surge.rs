@@ -1,6 +1,9 @@
-//! The max-effort surge: a pixel comet laps the window's edge, the edge
-//! flares, and Gentle Shell's pixel rose blooms in the middle with a burst
-//! of sparks. Paint only, over everything; it never takes input.
+//! The max-effort surge. A pixel comet laps the window's edge, shedding
+//! sparks and drawing a shimmering outline; the edge flares; the window
+//! shakes harder and harder while energy spirals into a glowing core; then
+//! the core hatches: a flash, a shockwave, one last jolt, and Gentle Shell's
+//! pixel rose bursts out with a rebound and a shower of sparks. Paint only
+//! (plus the root's shake offset); it never takes input.
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
@@ -10,24 +13,40 @@ use gpui_kit::*;
 use crate::{banner, ui};
 
 /// The whole show, start to fade.
-pub const DURATION: Duration = Duration::from_millis(2200);
+pub const DURATION: Duration = Duration::from_millis(4400);
+
+// The timeline, as fractions of `DURATION`.
+/// The comet finishes its lap.
+const LAP_END: f32 = 0.42;
+/// The window starts to tremble and energy gathers in the middle.
+const SHAKE_START: f32 = 0.46;
+/// The core hatches and the rose bursts out.
+const BLOOM: f32 = 0.64;
+/// The hard jolt as the rose bursts out lasts this long.
+const JOLT: f32 = 0.08;
 
 /// The comet's path: this far inside the window, following its corners.
 const INSET: f32 = 3.;
 const RADIUS: f32 = 11.;
-/// The comet finishes its lap at this point of the timeline.
-const LAP_END: f32 = 0.5;
 /// Trail pixels, their spacing along the edge and their size.
-const TRAIL: usize = 120;
+const TRAIL: usize = 140;
 const STEP: f32 = 4.;
 const PIXEL: f32 = 6.;
 /// The line the comet leaves behind: dot spacing and size along the edge.
 const LINE_STEP: f32 = 2.;
 const LINE: f32 = 2.5;
-/// Sparks in the rose's burst.
-const SPARKS: usize = 40;
+/// Sparks the comet's head sheds, and how long each lives (timeline units).
+const SHED: usize = 90;
+const SHED_LIFE: f32 = 0.09;
+/// Energy pixels spiralling into the core while the window shakes.
+const MOTES: usize = 36;
+/// Sparks in the hatching burst.
+const SPARKS: usize = 56;
+/// Peak tremble, in px; the jolt reaches `JOLT_GAIN` times that.
+const SHAKE: f32 = 7.;
+const JOLT_GAIN: f32 = 1.6;
 
-/// The surge for run `run` (a new run restarts it).
+/// The surge's paint for run `run` (a new run restarts it).
 pub fn overlay(run: u64) -> impl IntoElement {
     div().absolute().inset_0().with_animation(
         ElementId::NamedInteger("max-surge".into(), run),
@@ -44,9 +63,36 @@ pub fn overlay(run: u64) -> impl IntoElement {
     )
 }
 
+/// The window's shake offset `elapsed` into a run. The window's root applies
+/// it in place (it re-renders each frame while a surge plays) rather than
+/// wrapping itself in an animation, which would re-key every element inside.
+pub fn shake_at(elapsed: Duration) -> (f32, f32) {
+    shake(elapsed.as_secs_f32() / DURATION.as_secs_f32())
+}
+
+/// The window's offset at `t`: a tremble that builds up before the hatch,
+/// one hard jolt as the rose bursts out, then stillness.
+fn shake(t: f32) -> (f32, f32) {
+    let (amp, speed) = if (SHAKE_START..BLOOM).contains(&t) {
+        let build = (t - SHAKE_START) / (BLOOM - SHAKE_START);
+        (SHAKE * build * build, 260.)
+    } else if (BLOOM..BLOOM + JOLT).contains(&t) {
+        let after = (t - BLOOM) / JOLT;
+        (SHAKE * JOLT_GAIN * (1. - after).powi(2), 200.)
+    } else {
+        return (0., 0.);
+    };
+    // Two detuned waves per axis read as a rumble, not a wobble.
+    let k = t * speed;
+    let dx = amp * (0.6 * k.sin() + 0.4 * (k * 2.3 + 1.).sin());
+    let dy = amp * (0.6 * (k * 1.3 + 2.).sin() + 0.4 * (k * 2.9).sin());
+    (dx, dy)
+}
+
 fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
     let petal = ui::petal();
     let spark = hsla(petal.h, 0.9, 0.93, 1.);
+    let wine = hsla(petal.h, petal.s * 0.7, petal.l * 0.4, 1.);
     let w = bounds.size.width.as_f32() - 2. * INSET;
     let h = bounds.size.height.as_f32() - 2. * INSET;
     if w <= 2. * RADIUS || h <= 2. * RADIUS {
@@ -54,26 +100,63 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
     }
     let ox = bounds.origin.x.as_f32() + INSET;
     let oy = bounds.origin.y.as_f32() + INSET;
+    let cx = ox + w / 2.;
+    let cy = oy + h / 2.;
     let square = |x: f32, y: f32, side: f32| {
         Bounds::new(
             point(px(x - side / 2.), px(y - side / 2.)),
             size(px(side), px(side)),
         )
     };
+    let glow = |window: &mut Window, x: f32, y: f32, rings: &[(f32, f32)], color: Hsla| {
+        for &(side, alpha) in rings {
+            window.paint_quad(
+                fill(square(x, y, side), color.opacity(alpha)).corner_radii(px(side / 2.)),
+            );
+        }
+    };
+    let length = perimeter(w, h, RADIUS);
+    let lap = |t: f32| ease_in_out((t / LAP_END).clamp(0., 1.)) * length;
 
-    // 1. The comet laps the edge. The path it covered stays lit as a thin
-    //    line (it draws the window's outline), and pixels trail its head,
-    //    dimming and shrinking.
-    let comet_fade = 1. - ((t - LAP_END) / 0.15).clamp(0., 1.);
+    // 1. The comet. The path it covered stays lit as a shimmering line (a
+    //    wave of light runs along it); its tail fades from white through rose
+    //    to wine; its head sheds sparks that drift into the window.
+    let comet_fade = 1. - ((t - LAP_END) / 0.12).clamp(0., 1.);
     if comet_fade > 0. {
-        let length = perimeter(w, h, RADIUS);
-        let head = ease_in_out((t / LAP_END).min(1.)) * length;
-        let line = petal.opacity(0.6 * comet_fade);
+        let head = lap(t);
         let mut along = 0.;
         while along < head {
             let (x, y) = perimeter_point(w, h, RADIUS, along);
-            window.paint_quad(fill(square(ox + x, oy + y, LINE), line));
+            let wave = 0.5 + 0.5 * (along / 38. - t * 70.).sin();
+            window.paint_quad(fill(
+                square(ox + x, oy + y, LINE),
+                petal.opacity((0.35 + 0.45 * wave) * comet_fade),
+            ));
             along += LINE_STEP;
+        }
+        for i in 0..SHED {
+            let born = i as f32 / SHED as f32 * LAP_END;
+            let age = (t - born) / SHED_LIFE;
+            if !(0. ..1.).contains(&age) {
+                continue;
+            }
+            let (x, y) = perimeter_point(w, h, RADIUS, lap(born));
+            let (sx, sy) = (ox + x, oy + y);
+            // Drift toward the middle, a little sideways, slowing down.
+            let (vx, vy) = (cx - sx, cy - sy);
+            let norm = vx.hypot(vy).max(1.);
+            let (dx, dy) = (vx / norm, vy / norm);
+            let side_kick = ((i * 29 % 13) as f32 / 13. - 0.5) * 0.8;
+            let travel = (26. + (i * 41 % 23) as f32 * 1.6) * ease_out(age);
+            let color = if i % 3 == 0 { spark } else { petal };
+            window.paint_quad(fill(
+                square(
+                    sx + (dx - dy * side_kick) * travel,
+                    sy + (dy + dx * side_kick) * travel,
+                    if i % 4 == 0 { 4. } else { 3. },
+                ),
+                color.opacity((1. - age) * comet_fade),
+            ));
         }
         for i in (0..TRAIL).rev() {
             let along = head - i as f32 * STEP;
@@ -82,80 +165,169 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
             }
             let (x, y) = perimeter_point(w, h, RADIUS, along);
             let k = 1. - i as f32 / TRAIL as f32;
-            let color = if i < 6 { spark } else { petal };
+            let color = if k > 0.94 {
+                spark
+            } else if k > 0.45 {
+                petal
+            } else {
+                wine
+            };
             window.paint_quad(fill(
-                square(ox + x, oy + y, PIXEL * (0.4 + 0.6 * k)),
-                color.opacity(k * k * comet_fade),
+                square(ox + x, oy + y, PIXEL * (0.35 + 0.65 * k)),
+                color.opacity(k.powf(1.6) * comet_fade),
             ));
         }
-        // The head's glow.
         let (x, y) = perimeter_point(w, h, RADIUS, head);
-        for (side, alpha) in [(56., 0.06), (34., 0.14), (20., 0.3), (11., 0.6)] {
-            window.paint_quad(
-                fill(
-                    square(ox + x, oy + y, side),
-                    petal.opacity(alpha * comet_fade),
-                )
-                .corner_radii(px(side / 2.)),
-            );
-        }
+        let pulse = 1. + 0.15 * (t * 90.).sin();
+        glow(
+            window,
+            ox + x,
+            oy + y,
+            &[
+                (64. * pulse, 0.05 * comet_fade),
+                (38. * pulse, 0.13 * comet_fade),
+                (22., 0.3 * comet_fade),
+                (12., 0.65 * comet_fade),
+            ],
+            petal,
+        );
+        window.paint_quad(fill(square(ox + x, oy + y, 5.), spark.opacity(comet_fade)));
     }
 
-    // 2. The lap closes and the whole edge flares, then fades.
-    let flare = bump(t, LAP_END - 0.05, LAP_END + 0.05, 0.95);
+    // 2. The lap closes and the edge flares; it glows on, beating with the
+    //    tremble, until the hatch.
+    let flare = bump(t, LAP_END - 0.04, LAP_END + 0.04, BLOOM + 0.1);
     if flare > 0. {
+        let beat = if (SHAKE_START..BLOOM).contains(&t) {
+            0.75 + 0.25 * (t * 120.).sin()
+        } else {
+            1.
+        };
         let edge = Bounds::new(point(px(ox), px(oy)), size(px(w), px(h)));
-        for (width, alpha) in [(14., 0.10), (7., 0.22), (2., 0.85)] {
+        for (width, alpha) in [(22., 0.06), (12., 0.12), (6., 0.25), (2., 0.9)] {
             window.paint_quad(
-                outline(edge, petal.opacity(alpha * flare), BorderStyle::Solid)
-                    .border_widths(px(width))
-                    .corner_radii(px(RADIUS)),
+                outline(
+                    edge,
+                    petal.opacity(alpha * flare * beat),
+                    BorderStyle::Solid,
+                )
+                .border_widths(px(width))
+                .corner_radii(px(RADIUS)),
             );
         }
     }
 
-    // 3. The rose blooms in the middle, in a soft halo.
-    let bloom = bump(t, 0.48, 0.64, 1.);
-    let cx = ox + w / 2.;
-    let cy = oy + h / 2.;
-    if bloom > 0. {
+    // 3. Energy gathers: pixels spiral into a core that swells and pulses.
+    if (SHAKE_START..BLOOM).contains(&t) {
+        let build = (t - SHAKE_START) / (BLOOM - SHAKE_START);
+        let reach = w.min(h) * 0.48;
+        for i in 0..MOTES {
+            // Each mote starts at its own moment and falls in along a spiral.
+            let delay = (i * 7 % MOTES) as f32 / MOTES as f32 * 0.6;
+            let p = ((build - delay) / 0.4).clamp(0., 1.);
+            if p <= 0. || p >= 1. {
+                continue;
+            }
+            let angle = i as f32 / MOTES as f32 * TAU + p * 2.4;
+            let r = reach * (1. - ease_in_out(p));
+            let color = if i % 2 == 0 { spark } else { petal };
+            window.paint_quad(fill(
+                square(cx + angle.cos() * r, cy + angle.sin() * r, 4.),
+                color.opacity(0.3 + 0.7 * p),
+            ));
+        }
+        let core = 6. + 34. * build * build;
+        let pulse = 1. + 0.18 * (t * 140.).sin() * build;
+        glow(
+            window,
+            cx,
+            cy,
+            &[
+                (core * 4. * pulse, 0.05 + 0.08 * build),
+                (core * 2.2 * pulse, 0.12 + 0.15 * build),
+                (core * pulse, 0.5 + 0.4 * build),
+            ],
+            petal,
+        );
+        window.paint_quad(fill(square(cx, cy, core * 0.35), spark.opacity(0.9)));
+    }
+
+    // 4. The hatch: a flash across the window and a shockwave ring.
+    let flash = bump(t, BLOOM - 0.005, BLOOM + 0.01, BLOOM + 0.09);
+    if flash > 0. {
+        window.paint_quad(fill(bounds, spark.opacity(0.32 * flash)));
+    }
+    let wave = (t - BLOOM) / 0.22;
+    if (0. ..1.).contains(&wave) {
+        let r = w.hypot(h) * 0.55 * ease_out(wave);
+        for (width, alpha) in [(18., 0.12), (6., 0.35), (2., 0.9)] {
+            window.paint_quad(
+                outline(
+                    square(cx, cy, 2. * r),
+                    petal.opacity(alpha * (1. - wave)),
+                    BorderStyle::Solid,
+                )
+                .border_widths(px(width))
+                .corner_radii(px(r)),
+            );
+        }
+    }
+
+    // 5. The rose bursts out, overshooting and settling, in a soft halo,
+    //    then holds and fades. It is white-hot for an instant.
+    let shown = if t < BLOOM {
+        0.
+    } else if t < BLOOM + 0.03 {
+        (t - BLOOM) / 0.03
+    } else if t < 0.88 {
+        1.
+    } else {
+        1. - ease_in_out((t - 0.88) / 0.12)
+    };
+    if shown > 0. {
         let (dots, (rose_w, rose_h)) = banner::rose();
-        let grow = ease_out(((t - 0.48) / 0.52).clamp(0., 1.));
-        let height = w.min(h) * 0.42 * (0.85 + 0.15 * grow);
+        let grow = ui::spring(((t - BLOOM) / 0.16).clamp(0., 1.));
+        let height = w.min(h) * 0.46 * (0.35 + 0.65 * grow);
         let dot = height / rose_h as f32;
         let left = cx - rose_w as f32 * dot / 2.;
         let top = cy - height / 2.;
-        let halo = height * 0.75;
-        for ring in 0..10 {
-            let side = halo * (1. - ring as f32 * 0.08);
+        let halo = height * 0.8;
+        for ring in 0..12 {
+            let side = halo * (1. - ring as f32 * 0.07);
             window.paint_quad(
-                fill(square(cx, cy, side), petal.opacity(0.035 * bloom))
-                    .corner_radii(px(side / 2.)),
+                fill(square(cx, cy, side), petal.opacity(0.03 * shown)).corner_radii(px(side / 2.)),
             );
         }
         let side = px((dot * 0.6).max(1.));
-        let ink = petal.opacity(bloom);
+        let heat = (1. - (t - BLOOM) / 0.08).clamp(0., 1.);
+        let ink = hsla(
+            petal.h,
+            petal.s + (spark.s - petal.s) * heat,
+            petal.l + (spark.l - petal.l) * heat,
+            shown,
+        );
         for &(x, y) in dots {
             let origin = point(px(left + x as f32 * dot), px(top + y as f32 * dot));
             window.paint_quad(fill(Bounds::new(origin, size(side, side)), ink));
         }
     }
 
-    // 4. Sparks burst out of the rose.
-    let burst = ((t - 0.52) / 0.48).clamp(0., 1.);
-    if burst > 0. && burst < 1. {
-        let reach = w.min(h) * 0.45;
+    // 6. Sparks shower out of the hatch and fall a little as they fade.
+    let burst = (t - BLOOM) / (1. - BLOOM);
+    if (0. ..1.).contains(&burst) {
+        let reach = w.min(h) * 0.55;
         for i in 0..SPARKS {
             // Fixed pseudo-random spread so every run looks the same.
             let jitter = ((i * 37 % 11) as f32 / 11.) - 0.5;
-            let angle = i as f32 / SPARKS as f32 * TAU + jitter * 0.3;
-            let speed = 0.55 + ((i * 53 % 17) as f32 / 17.) * 0.45;
-            let r = reach * (0.18 + 0.82 * ease_out(burst) * speed);
+            let angle = i as f32 / SPARKS as f32 * TAU + jitter * 0.35;
+            let speed = 0.45 + ((i * 53 % 17) as f32 / 17.) * 0.55;
+            let r = reach * (0.1 + 0.9 * ease_out(burst) * speed);
+            let fall = 90. * burst * burst;
             let side = if i % 3 == 0 { 5. } else { 3. };
             let color = if i % 2 == 0 { spark } else { petal };
             window.paint_quad(fill(
-                square(cx + angle.cos() * r, cy + angle.sin() * r, side),
-                color.opacity((1. - burst).powf(1.5)),
+                square(cx + angle.cos() * r, cy + angle.sin() * r + fall, side),
+                color.opacity((1. - burst).powf(1.3)),
             ));
         }
     }
@@ -231,7 +403,9 @@ fn ease_in_out(t: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{bump, perimeter, perimeter_point};
+    use super::{
+        BLOOM, JOLT, JOLT_GAIN, SHAKE, SHAKE_START, bump, perimeter, perimeter_point, shake,
+    };
 
     fn close(a: (f32, f32), b: (f32, f32)) -> bool {
         (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01
@@ -263,6 +437,31 @@ mod tests {
             let on_corner = ((x - cx).hypot(y - cy) - r).abs() < 0.01;
             assert!(on_side || on_corner, "({x}, {y}) is off the edge");
         }
+    }
+
+    #[test]
+    fn the_window_trembles_harder_before_the_hatch_then_stills() {
+        let peak = |from: f32, to: f32| {
+            (0..200)
+                .map(|i| {
+                    let (dx, dy) = shake(from + (to - from) * i as f32 / 200.);
+                    dx.abs().max(dy.abs())
+                })
+                .fold(0., f32::max)
+        };
+        // Still during the comet and after the jolt.
+        assert_eq!(shake(0.2), (0., 0.));
+        assert_eq!(shake(BLOOM + JOLT + 0.01), (0., 0.));
+        assert_eq!(shake(0.99), (0., 0.));
+        // The tremble builds: its last stretch is stronger than its first.
+        let span = BLOOM - SHAKE_START;
+        assert!(
+            peak(BLOOM - span * 0.25, BLOOM) > 2. * peak(SHAKE_START, SHAKE_START + span * 0.25)
+        );
+        // The jolt is the hardest moment, within its limit.
+        let jolt = peak(BLOOM, BLOOM + JOLT * 0.3);
+        assert!(jolt > peak(SHAKE_START, BLOOM));
+        assert!(jolt <= SHAKE * JOLT_GAIN);
     }
 
     #[test]

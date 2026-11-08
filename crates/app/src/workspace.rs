@@ -258,9 +258,9 @@ pub struct Workspace {
     /// The bell's notification center, shared by every tab.
     notices: Entity<Notices>,
     renaming: Option<TabRename>,
-    /// The max-effort surge playing over the window (its run number), and the
-    /// timer that clears it.
-    surge: Option<u64>,
+    /// The max-effort surge playing over the window (its run number and when
+    /// it started), and the timer that clears it.
+    surge: Option<(u64, std::time::Instant)>,
     surge_runs: u64,
     _surge_end: Option<Task<()>>,
 }
@@ -1709,11 +1709,11 @@ impl Workspace {
     fn play_surge(&mut self, cx: &mut Context<Self>) {
         self.surge_runs += 1;
         let run = self.surge_runs;
-        self.surge = Some(run);
+        self.surge = Some((run, std::time::Instant::now()));
         self._surge_end = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(crate::surge::DURATION).await;
             let _ = this.update(cx, |this, cx| {
-                if this.surge == Some(run) {
+                if this.surge.is_some_and(|(playing, _)| playing == run) {
                     this.surge = None;
                     cx.notify();
                 }
@@ -2554,6 +2554,16 @@ impl Render for Workspace {
         let has_sidebar = self.sidebar.is_some();
         // Below this the screen buttons fold into one overflow menu.
         let narrow = window.viewport_size().width < px(900.);
+        // While the surge plays, the window shakes before the rose hatches:
+        // the root moves in place and asks for the next frame, so the element
+        // tree (and every element's state) stays the same.
+        let (shake_x, shake_y) = match self.surge {
+            Some((_, started)) => {
+                window.request_animation_frame();
+                crate::surge::shake_at(started.elapsed())
+            }
+            None => (0., 0.),
+        };
         v_flex()
             .size_full()
             .text_color(ui::fg())
@@ -2577,6 +2587,8 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_close_overlay))
             .key_context("GentleWorkspace")
             .relative()
+            .left(px(shake_x))
+            .top(px(shake_y))
             .child(
                 TitleBar::new()
                     .h(px(36.))
@@ -2895,7 +2907,7 @@ impl Render for Workspace {
                 Overlay::Settings(view) => view.clone().into_any_element(),
                 Overlay::Profiles(view) => view.clone().into_any_element(),
             }))
-            .when_some(self.surge, |root, run| {
+            .when_some(self.surge, |root, (run, _)| {
                 root.child(crate::surge::overlay(run))
             })
     }
