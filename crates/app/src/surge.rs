@@ -26,15 +26,17 @@ const BLOOM: f32 = 0.64;
 const JOLT: f32 = 0.08;
 
 /// The comet's path: this far inside the window, following its corners.
-const INSET: f32 = 3.;
+const INSET: f32 = 6.;
 const RADIUS: f32 = 11.;
 /// Trail pixels, their spacing along the edge and their size.
-const TRAIL: usize = 140;
+const TRAIL: usize = 180;
 const STEP: f32 = 4.;
-const PIXEL: f32 = 6.;
-/// The line the comet leaves behind: dot spacing and size along the edge.
+const PIXEL: f32 = 10.;
+/// The line the comet leaves behind: dot spacing, core size, and the soft
+/// glow around it (size, spaced every other dot).
 const LINE_STEP: f32 = 2.;
-const LINE: f32 = 2.5;
+const LINE: f32 = 4.;
+const LINE_GLOW: f32 = 14.;
 /// Sparks the comet's head sheds, and how long each lives (timeline units).
 const SHED: usize = 90;
 const SHED_LIFE: f32 = 0.09;
@@ -108,10 +110,14 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
             size(px(side), px(side)),
         )
     };
-    let glow = |window: &mut Window, x: f32, y: f32, rings: &[(f32, f32)], color: Hsla| {
-        for &(side, alpha) in rings {
+    // A round glow `side` across that fades smoothly to its edge: `layers`
+    // stacked discs, each adding a slice of `alpha`, so no ring shows.
+    let soft = |window: &mut Window, x: f32, y: f32, side: f32, alpha: f32, layers: usize| {
+        for layer in 0..layers {
+            let s = side * (1. - layer as f32 / layers as f32);
             window.paint_quad(
-                fill(square(x, y, side), color.opacity(alpha)).corner_radii(px(side / 2.)),
+                fill(square(x, y, s), petal.opacity(alpha / layers as f32))
+                    .corner_radii(px(s / 2.)),
             );
         }
     };
@@ -125,14 +131,25 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
     if comet_fade > 0. {
         let head = lap(t);
         let mut along = 0.;
+        let mut dot = 0;
         while along < head {
             let (x, y) = perimeter_point(w, h, RADIUS, along);
             let wave = 0.5 + 0.5 * (along / 38. - t * 70.).sin();
+            if dot % 2 == 0 {
+                window.paint_quad(
+                    fill(
+                        square(ox + x, oy + y, LINE_GLOW),
+                        petal.opacity((0.05 + 0.07 * wave) * comet_fade),
+                    )
+                    .corner_radii(px(LINE_GLOW / 2.)),
+                );
+            }
             window.paint_quad(fill(
                 square(ox + x, oy + y, LINE),
-                petal.opacity((0.35 + 0.45 * wave) * comet_fade),
+                petal.opacity((0.5 + 0.5 * wave) * comet_fade),
             ));
             along += LINE_STEP;
+            dot += 1;
         }
         for i in 0..SHED {
             let born = i as f32 / SHED as f32 * LAP_END;
@@ -172,26 +189,18 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
             } else {
                 wine
             };
-            window.paint_quad(fill(
-                square(ox + x, oy + y, PIXEL * (0.35 + 0.65 * k)),
-                color.opacity(k.powf(1.6) * comet_fade),
-            ));
+            let side = PIXEL * (0.3 + 0.7 * k);
+            let alpha = k.powf(1.6) * comet_fade;
+            if i % 3 == 0 {
+                soft(window, ox + x, oy + y, side * 3.2, 0.22 * alpha, 4);
+            }
+            window.paint_quad(fill(square(ox + x, oy + y, side), color.opacity(alpha)));
         }
         let (x, y) = perimeter_point(w, h, RADIUS, head);
         let pulse = 1. + 0.15 * (t * 90.).sin();
-        glow(
-            window,
-            ox + x,
-            oy + y,
-            &[
-                (64. * pulse, 0.05 * comet_fade),
-                (38. * pulse, 0.13 * comet_fade),
-                (22., 0.3 * comet_fade),
-                (12., 0.65 * comet_fade),
-            ],
-            petal,
-        );
-        window.paint_quad(fill(square(ox + x, oy + y, 5.), spark.opacity(comet_fade)));
+        soft(window, ox + x, oy + y, 130. * pulse, 0.45 * comet_fade, 14);
+        soft(window, ox + x, oy + y, 34., 0.6 * comet_fade, 6);
+        window.paint_quad(fill(square(ox + x, oy + y, 9.), spark.opacity(comet_fade)));
     }
 
     // 2. The lap closes and the edge flares; it glows on, beating with the
@@ -238,17 +247,8 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
         }
         let core = 6. + 34. * build * build;
         let pulse = 1. + 0.18 * (t * 140.).sin() * build;
-        glow(
-            window,
-            cx,
-            cy,
-            &[
-                (core * 4. * pulse, 0.05 + 0.08 * build),
-                (core * 2.2 * pulse, 0.12 + 0.15 * build),
-                (core * pulse, 0.5 + 0.4 * build),
-            ],
-            petal,
-        );
+        soft(window, cx, cy, core * 4. * pulse, 0.3 + 0.3 * build, 14);
+        soft(window, cx, cy, core * pulse, 0.6 + 0.35 * build, 6);
         window.paint_quad(fill(square(cx, cy, core * 0.35), spark.opacity(0.9)));
     }
 
