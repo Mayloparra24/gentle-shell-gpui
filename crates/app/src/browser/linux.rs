@@ -53,7 +53,8 @@ impl NativeView {
         url: &str,
         background: (u8, u8, u8, u8),
     ) -> Result<Self, String> {
-        let id = match window.window_handle().map(|handle| handle.as_raw()) {
+        // GPUI's own `Window::window_handle` shadows the trait's.
+        let id = match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
             Ok(RawWindowHandle::Xcb(handle)) => handle.window.get() as c_ulong,
             Ok(RawWindowHandle::Xlib(handle)) => handle.window,
             _ => {

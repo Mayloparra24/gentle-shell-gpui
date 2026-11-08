@@ -80,7 +80,8 @@ fn register_class() {
 }
 
 fn owner_hwnd(window: &Window) -> Option<HWND> {
-    match window.window_handle().ok()?.as_raw() {
+    // GPUI's own `Window::window_handle` shadows the trait's.
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
         RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut c_void)),
         _ => None,
     }
