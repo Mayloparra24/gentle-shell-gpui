@@ -1920,7 +1920,7 @@ dependencies = [
 
 [[package]]
 name = "gentle-shell-gpui"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -4737,7 +4737,7 @@ dependencies = [
 
 [[package]]
 name = "pi-rpc"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-channel",
