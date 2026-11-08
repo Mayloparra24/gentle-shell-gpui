@@ -61,6 +61,9 @@ struct Chrome {
 
 /// Least time between working-tree refreshes a turn's tool calls trigger.
 const GIT_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
+/// Thinking levels a reasoning model has before the backend lists its own
+/// (`xhigh` / `max` appear only for models that support them).
+const DEFAULT_THINKING_LEVELS: [&str; 5] = ["off", "minimal", "low", "medium", "high"];
 
 enum Backend {
     Starting,
@@ -140,6 +143,9 @@ pub struct SessionView {
     models: Vec<ModelInfo>,
     models_loaded: bool,
     thinking: String,
+    /// What the current model accepts (`get_available_thinking_levels`), low
+    /// to high; the effort slider has one stop per level.
+    thinking_levels: Vec<String>,
     context_percent: Option<f64>,
     cost: f64,
     commands: Vec<(String, String)>,
@@ -299,6 +305,10 @@ impl SessionView {
             models: Vec::new(),
             models_loaded: false,
             thinking: "off".into(),
+            thinking_levels: DEFAULT_THINKING_LEVELS
+                .iter()
+                .map(|l| l.to_string())
+                .collect(),
             context_percent: None,
             cost: 0.0,
             pane_width: std::rc::Rc::new(std::cell::Cell::new(10_000.)),
@@ -613,6 +623,7 @@ impl SessionView {
                 }
             },
         );
+        self.refresh_thinking_levels(cx);
         self.request(json!({"type": "get_commands"}), cx, |this, result, _| {
             if let Some(data) = this.report(result) {
                 this.commands = data["commands"]
@@ -1732,6 +1743,7 @@ impl SessionView {
             if this.report(result).is_some() {
                 this.model = Some(model);
                 this.refresh_stats(cx);
+                this.refresh_thinking_levels(cx);
                 this.request(json!({"type": "get_state"}), cx, |this, result, _| {
                     if let Ok(state) = result {
                         this.thinking =
@@ -1742,15 +1754,23 @@ impl SessionView {
         });
     }
 
-    fn cycle_thinking(&mut self, cx: &mut Context<Self>) {
+    /// The levels the current model accepts; until they arrive (or if the
+    /// backend can't say) the slider keeps the last list.
+    fn refresh_thinking_levels(&mut self, cx: &mut Context<Self>) {
         self.request(
-            json!({"type": "cycle_thinking_level"}),
+            json!({"type": "get_available_thinking_levels"}),
             cx,
             |this, result, _| {
-                if let Some(data) = this.report(result)
-                    && let Some(level) = data["level"].as_str()
-                {
-                    this.thinking = level.to_string();
+                if let Ok(data) = result {
+                    let levels: Vec<String> = data["levels"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|l| l.as_str().map(str::to_string))
+                        .collect();
+                    if !levels.is_empty() {
+                        this.thinking_levels = levels;
+                    }
                 }
             },
         );
