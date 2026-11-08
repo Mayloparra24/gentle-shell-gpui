@@ -50,9 +50,11 @@ pub(super) struct Live {
     model_cursor: usize,
     model_query: String,
     model_scroll: ScrollHandle,
-    /// Where the effort knob springs from (0..=1 along the slider), and a
-    /// counter that restarts its animation on every change.
+    /// Where the effort knob springs from (0..=1 along the slider), when the
+    /// level last changed, and a counter that restarts its animation on
+    /// every change.
     effort_from: f32,
+    effort_moved_at: Option<Instant>,
     effort_moves: u64,
     /// Re-renders running timers while something is live.
     ticker: Option<Task<()>>,
@@ -2322,7 +2324,12 @@ impl SessionView {
         let current = self.thinking.clone();
         let index = effort_index(&levels, &current);
         let fraction = effort_fraction(&levels, &current);
-        let from = self.live.effort_from;
+        // Glide only right after a change: the card's elements are rebuilt
+        // each time it opens, and a finished glide must not replay then.
+        let from = match self.live.effort_moved_at {
+            Some(at) if at.elapsed() < EFFORT_MOTION => self.live.effort_from,
+            _ => fraction,
+        };
         let moves = self.live.effort_moves;
         let weak = cx.entity().downgrade();
         let trigger = Button::new("thinking")
@@ -2397,6 +2404,7 @@ impl SessionView {
             return;
         }
         self.live.effort_from = effort_fraction(&self.thinking_levels, &self.thinking);
+        self.live.effort_moved_at = Some(Instant::now());
         self.live.effort_moves += 1;
         let previous = std::mem::replace(&mut self.thinking, level.clone());
         cx.notify();
