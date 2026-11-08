@@ -149,14 +149,16 @@ pub fn bell(store: &Entity<Notices>, on_select: OnSelect, cx: &App) -> impl Into
         })
         .w(px(380.))
         .p_0()
-        .content(move |_, _, cx| panel(&store, on_select.clone(), cx).into_any_element())
+        .content(move |_, _, cx| {
+            ui::popover_in(
+                ElementId::Name("notices-in".into()),
+                panel(&store, on_select.clone(), cx),
+            )
+            .into_any_element()
+        })
 }
 
-fn panel(
-    store: &Entity<Notices>,
-    on_select: OnSelect,
-    cx: &mut Context<PopoverState>,
-) -> impl IntoElement + use<> {
+fn panel(store: &Entity<Notices>, on_select: OnSelect, cx: &mut Context<PopoverState>) -> Div {
     let notices = store.read(cx);
     let unread = notices.unread();
     let now = Instant::now();

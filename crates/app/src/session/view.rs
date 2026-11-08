@@ -400,6 +400,11 @@ const TODO_PILL: f32 = 36.;
 const TODO_FRAME: f32 = 2.;
 /// Air between the island and the top of the conversation.
 const TODO_TOP: f32 = 10.;
+/// Conversations wider than this dock the island to the top-right; narrower
+/// ones keep it centered over the transcript.
+const TODO_WIDE: f32 = 800.;
+/// Right inset when the island is docked.
+const TODO_EDGE: f32 = 24.;
 /// Folded width; it widens toward its card width as it unfolds.
 const TODO_PILL_W: f32 = 200.;
 const TODO_CARD_W: f32 = 420.;
@@ -412,12 +417,14 @@ const TODO_ROW_GAP: f32 = 2.;
 /// Unfold/fold duration; the morph is eased out and interruptible.
 const TODO_MOTION: Duration = Duration::from_millis(360);
 
-/// A gentle overshoot (about 3%) so opening settles instead of stopping dead.
-fn spring_out(t: f32) -> f32 {
-    let t = t.clamp(0., 1.);
-    let c1 = 0.7;
-    let c3 = c1 + 1.;
-    1. + c3 * (t - 1.).powi(3) + c1 * (t - 1.).powi(2)
+/// The island's left edge: centered while the conversation is narrow, docked
+/// to the top-right once there is room beside the messages.
+fn todo_left(pane: f32, width: f32) -> f32 {
+    if pane >= TODO_WIDE {
+        (pane - width - TODO_EDGE).max(0.)
+    } else {
+        (pane - width) / 2.
+    }
 }
 
 /// Exact height of the list's content, so the island can size its unfold.
@@ -2049,7 +2056,7 @@ impl SessionView {
                 let _ = weak.update(cx, |this, cx| this.set_model_picker(*open, window, cx));
             })
             .w(px(380.))
-            .p_0()
+            .appearance(false)
             .content(move |_, _, cx| {
                 let weak = content_weak.clone();
                 let mut list = v_flex()
@@ -2057,7 +2064,7 @@ impl SessionView {
                     .max_h(px(340.))
                     .overflow_y_scroll()
                     .track_scroll(&scroll)
-                    .p_1();
+                    .px(px(6.));
                 let mut provider = "";
                 for (i, model) in models.iter().enumerate() {
                     if model.provider != provider {
@@ -2088,12 +2095,10 @@ impl SessionView {
                             .gap_2()
                             .px_3()
                             .py_1p5()
-                            .rounded_lg()
+                            .rounded(px(ui::ISLAND_ROW))
                             .cursor_pointer()
                             .hover(|s| s.bg(ui::surface_hover()))
-                            .when(i == cursor, |this| {
-                                this.bg(ui::surface_hover()).child(accent_bar())
-                            })
+                            .when(i == cursor, |this| this.bg(ui::surface_hover()))
                             .child(
                                 div()
                                     .flex_1()
@@ -2106,13 +2111,16 @@ impl SessionView {
                                     .child(model.name.clone()),
                             )
                             .when(model.context_window > 0, |this| {
-                                this.child(ui::chip(
-                                    format_tokens(model.context_window),
-                                    ui::muted(),
-                                ))
+                                this.child(
+                                    ui::chip(format_tokens(model.context_window), ui::muted())
+                                        .border_0()
+                                        .rounded_full(),
+                                )
                             })
                             .when(model.reasoning, |this| {
-                                this.child(ui::chip("reasoning", ui::petal()))
+                                this.child(
+                                    ui::chip("reasoning", ui::petal()).border_0().rounded_full(),
+                                )
                             })
                             .when(is_current, |this| {
                                 this.child(
@@ -2141,20 +2149,26 @@ impl SessionView {
                     );
                 }
                 let sign_in = weak.clone();
-                v_flex()
+                let content = v_flex()
                     .w_full()
                     .font_family(cx.theme().font_family.clone())
                     .text_color(ui::fg())
                     .child(
-                        div().p_2().border_b_1().border_color(ui::border()).child(
-                            ui::field()
+                        div().p(px(6.)).child(
+                            h_flex()
+                                .items_center()
+                                .gap_2()
+                                .h(px(36.))
+                                .px_3()
+                                .rounded(px(ui::ISLAND_ROW))
+                                .bg(ui::well())
                                 .child(Icon::new(IconName::Search).xsmall().text_color(ui::faint()))
                                 .child(div().flex_1().child(Input::new(&search).appearance(false))),
                         ),
                     )
                     .child(list)
                     .child(
-                        div().p_1().border_t_1().border_color(ui::border()).child(
+                        div().p(px(6.)).child(
                             Button::new("picker-sign-in")
                                 .ghost()
                                 .small()
@@ -2172,7 +2186,14 @@ impl SessionView {
                                     });
                                 }),
                         ),
-                    )
+                    );
+                ui::island(cx)
+                    .w_full()
+                    .child(ui::popover_in(
+                        ElementId::Name("model-picker-in".into()),
+                        content,
+                    ))
+                    .into_any_element()
             })
     }
 
@@ -2195,7 +2216,7 @@ impl SessionView {
             .anchor(Anchor::BottomRight)
             .trigger(trigger)
             .w(px(340.))
-            .p_0()
+            .appearance(false)
             .content(move |_, _, cx| {
                 let rows = PermissionMode::ALL
                     .into_iter()
@@ -2211,12 +2232,10 @@ impl SessionView {
                             .gap_3()
                             .px_2()
                             .py_2()
-                            .rounded_lg()
+                            .rounded(px(ui::ISLAND_ROW))
                             .cursor_pointer()
                             .hover(|s| s.bg(ui::surface_hover()))
-                            .when(is_current, |this| {
-                                this.bg(ui::surface_hover()).child(accent_bar())
-                            })
+                            .when(is_current, |this| this.bg(ui::surface_hover()))
                             .child(
                                 div()
                                     .size(px(28.))
@@ -2259,9 +2278,9 @@ impl SessionView {
                                 },
                             ))
                     });
-                v_flex()
+                let content = v_flex()
                     .w_full()
-                    .p_1()
+                    .p(px(6.))
                     .font_family(cx.theme().font_family.clone())
                     .child(
                         div()
@@ -2273,16 +2292,20 @@ impl SessionView {
                     .children(rows)
                     .child(
                         div()
-                            .mt_1()
                             .px_2()
-                            .pt_2()
+                            .pt_1p5()
                             .pb_1()
-                            .border_t_1()
-                            .border_color(ui::border())
                             .text_size(px(11.))
                             .text_color(ui::faint())
                             .child("Applies from the next session"),
-                    )
+                    );
+                ui::island(cx)
+                    .w_full()
+                    .child(ui::popover_in(
+                        ElementId::Name("mode-popover-in".into()),
+                        content,
+                    ))
+                    .into_any_element()
             })
     }
 
@@ -2320,7 +2343,7 @@ impl SessionView {
         let pane = self.pane_width.get();
         let full_w = (pane - 32.).clamp(TODO_PILL_W, TODO_CARD_W);
         let w = TODO_PILL_W + (full_w - TODO_PILL_W) * t;
-        let left = (pane - w) / 2.;
+        let left = todo_left(pane, w);
 
         let badge = div()
             .size(px(22.))
@@ -2455,8 +2478,11 @@ impl SessionView {
         Some(
             card.with_animation(
                 "todo-island-appear",
-                Animation::new(Duration::from_millis(320)).with_easing(spring_out),
-                |card, t| card.opacity(t.min(1.)).mt(px(-8. * (1. - t))),
+                Animation::new(Duration::from_millis(320)),
+                |card, t| {
+                    let s = ui::spring(t);
+                    card.opacity(s.min(1.)).mt(px(-8. * (1. - s)))
+                },
             )
             .into_any_element(),
         )
@@ -2469,7 +2495,7 @@ impl SessionView {
         // Opening springs a touch past the target, like the iOS island; closing
         // just eases out so the card never shrinks below the pill.
         let eased = if self.todo_motion_to > self.todo_motion_from {
-            spring_out(t)
+            ui::spring(t)
         } else {
             1. - (1. - t).powi(3)
         };
@@ -4101,41 +4127,46 @@ fn chip_popover(
         .anchor(Anchor::BottomRight)
         .trigger(trigger)
         .w(px(360.))
-        .p_0()
-        .content(move |_, _, _| {
-            v_flex()
-                .p_3()
-                .gap_2()
-                .child(
-                    h_flex()
-                        .gap_2()
-                        .child(Icon::new(icon).small().text_color(color))
-                        .child(
-                            div()
-                                .text_sm()
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(ui::fg())
-                                .child(title.clone()),
-                        )
-                        .child(div().flex_1())
-                        .when(!count.is_empty(), |d| {
-                            d.child(
-                                div()
-                                    .text_xs()
-                                    .font_family(ui::MONO)
-                                    .text_color(ui::muted())
-                                    .child(count.clone()),
-                            )
-                        }),
-                )
-                .child(
+        .appearance(false)
+        .content(move |_, _, cx| {
+            ui::island(cx)
+                .w_full()
+                .child(ui::popover_in(
+                    ElementId::Name(format!("{id}-content-in").into()),
                     v_flex()
-                        .id(SharedString::from(format!("{id}-popover-list")))
-                        .max_h(px(380.))
-                        .overflow_y_scroll()
-                        .gap_1p5()
-                        .children(body()),
-                )
+                        .p_3()
+                        .gap_2()
+                        .child(
+                            h_flex()
+                                .gap_2()
+                                .child(Icon::new(icon).small().text_color(color))
+                                .child(
+                                    div()
+                                        .text_sm()
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(ui::fg())
+                                        .child(title.clone()),
+                                )
+                                .child(div().flex_1())
+                                .when(!count.is_empty(), |d| {
+                                    d.child(
+                                        div()
+                                            .text_xs()
+                                            .font_family(ui::MONO)
+                                            .text_color(ui::muted())
+                                            .child(count.clone()),
+                                    )
+                                }),
+                        )
+                        .child(
+                            v_flex()
+                                .id(SharedString::from(format!("{id}-popover-list")))
+                                .max_h(px(380.))
+                                .overflow_y_scroll()
+                                .gap_1p5()
+                                .children(body()),
+                        ),
+                ))
                 .into_any_element()
         })
 }
@@ -4373,7 +4404,7 @@ mod tests {
         ListUpdate, Row, Shape, TODO_LIST_PAD, TODO_ROW, TODO_ROW_GAP, TODO_ROW_NOTE, Tail,
         checkbox_option, command_language, head_slice, label_stamp, language_for_path, limit_label,
         line_count, list_update, option_matches, parse_diff_line, parse_rate_limit, split_current,
-        tail_slice, ticker_needed, todo_content_height,
+        tail_slice, ticker_needed, todo_content_height, todo_left,
     };
     use serde_json::json;
 
@@ -4606,6 +4637,17 @@ mod tests {
         assert_eq!(limit_label("seven_day"), "7d");
         assert_eq!(limit_label("five_hour"), "5h");
         assert_eq!(limit_label("seven_day_opus"), "7d opus");
+    }
+
+    #[test]
+    fn todo_island_centers_narrow_and_docks_right_wide() {
+        // Narrow: centered over the conversation.
+        assert_eq!(todo_left(500., 200.), 150.);
+        // Wide: right edge pinned 24 px from the conversation's edge.
+        assert_eq!(todo_left(1200., 420.), 756.);
+        assert_eq!(todo_left(1200., 200.), 976.);
+        // Just below the breakpoint it is still centered.
+        assert_eq!(todo_left(799., 420.), (799. - 420.) / 2.);
     }
 
     #[test]

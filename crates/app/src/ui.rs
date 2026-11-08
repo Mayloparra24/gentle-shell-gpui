@@ -7,10 +7,11 @@
 
 use std::time::Duration;
 
+use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Animation, AnimationElement, AnimationExt as _, App, Div, ElementId, FontWeight, Hsla,
-    ParentElement as _, SharedString, Styled, div, ease_out_quint, px, rgb,
+    Animation, AnimationElement, AnimationExt as _, App, BoxShadow, Div, ElementId, FontWeight,
+    Hsla, ParentElement as _, SharedString, Styled, div, ease_out_quint, point, px, rgb,
 };
 
 use crate::themes::{self, Theme, mix};
@@ -374,7 +375,7 @@ pub fn screen(width: Option<f32>) -> (Div, Div) {
         .items_center()
         .justify_center()
         .p(px(32.))
-        .bg(backdrop());
+        .child(scrim("screen-scrim"));
     let panel = div()
         .flex()
         .flex_col()
@@ -419,6 +420,34 @@ pub fn field() -> Div {
         .border_color(border_strong())
 }
 
+/// The todo island's floating card: solid, a soft outline, a deep shadow and
+/// round corners. Composer menus (model, permissions, chip cards) open in it
+/// with `Popover::appearance(false)`, so they match the island instead of
+/// the stock popover frame. It sets the UI font and text color itself, as
+/// that frame did: a menu opened from a monospace bar must not inherit it.
+/// Rows inside should round to [`ISLAND_ROW`].
+pub fn island(cx: &App) -> Div {
+    div()
+        .font_family(cx.theme().font_family.clone())
+        .text_color(fg())
+        .bg(popover_bg())
+        .rounded(px(18.))
+        .border_1()
+        .border_color(border_strong().opacity(0.8))
+        .overflow_hidden()
+        .shadow(vec![BoxShadow {
+            color: backdrop().opacity(0.34),
+            offset: point(px(0.), px(10.)),
+            blur_radius: px(30.),
+            spread_radius: px(2.),
+            inset: false,
+        }])
+}
+
+/// Corner radius of a row inside an [`island`] with 6 px padding, so the
+/// row's corners follow the card's.
+pub const ISLAND_ROW: f32 = 12.;
+
 /// Segmented toggle (tabs inside a well): one shared look for every
 /// "This project / All", "Agents / Activity", "Pro / Max" switch.
 pub fn segmented(
@@ -461,6 +490,14 @@ pub fn segmented(
 
 // ── Motion ─────────────────────────────────────────────────────────────────
 
+/// A gentle spring with a ~3% overshoot, for anything that opens or unfolds.
+pub fn spring(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    let c1 = 0.7;
+    let c3 = c1 + 1.;
+    1. + c3 * (t - 1.).powi(3) + c1 * (t - 1.).powi(2)
+}
+
 /// Fade and rise into place once, when first rendered.
 pub fn appear(id: impl Into<ElementId>, element: Div) -> AnimationElement<Div> {
     element.with_animation(
@@ -470,12 +507,32 @@ pub fn appear(id: impl Into<ElementId>, element: Div) -> AnimationElement<Div> {
     )
 }
 
-/// Screens open with a quick fade and settle.
+/// Screens, dialogs and menus open with the same soft spring: they rise a
+/// little, settle with a gentle overshoot, and fade in without a hard pop.
 pub fn pop_in(id: impl Into<ElementId>, element: Div) -> AnimationElement<Div> {
-    element.with_animation(
+    element.with_animation(id, Animation::new(Duration::from_millis(340)), |el, t| {
+        // The spring runs in the animator: GPUI's easing must stay in 0..=1.
+        let s = spring(t);
+        // `top` on a relative element slides visually without nudging the
+        // siblings it shares a flex row or column with.
+        el.opacity(s.min(1.)).relative().top(px((1. - s) * 12.))
+    })
+}
+
+/// Fade a popover's content in just behind its surface, without changing the
+/// surface's measured size (so the positioner never jumps).
+pub fn popover_in(id: impl Into<ElementId>, element: Div) -> AnimationElement<Div> {
+    element.with_animation(id, Animation::new(Duration::from_millis(300)), |el, t| {
+        el.opacity(spring(t).min(1.))
+    })
+}
+
+/// The dimmed sheet behind a screen. It fades in with the panel's spring.
+pub fn scrim(id: impl Into<ElementId>) -> AnimationElement<Div> {
+    div().absolute().inset_0().bg(backdrop()).with_animation(
         id,
-        Animation::new(Duration::from_millis(180)).with_easing(ease_out_quint()),
-        |el, t| el.opacity(t).mt(px((1.0 - t) * 10.0)),
+        Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
+        |el, t| el.opacity(t),
     )
 }
 
@@ -541,6 +598,16 @@ pub fn format_duration(ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spring_settles_with_a_soft_overshoot() {
+        assert!(spring(0.).abs() < 1e-6);
+        assert!((spring(1.) - 1.).abs() < 1e-6);
+        let peak = (0..=100)
+            .map(|i| spring(i as f32 / 100.))
+            .fold(0., f32::max);
+        assert!(peak > 1.0 && peak < 1.05, "peak was {peak}");
+    }
 
     #[test]
     fn tail_keeps_last_lines() {

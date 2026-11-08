@@ -1206,10 +1206,10 @@ impl Render for PaletteView {
             .items_center()
             .justify_center()
             .p(px(32.))
-            .bg(ui::backdrop())
             .occlude()
             .capture_key_down(cx.listener(Self::on_key_down))
             .on_click(cx.listener(|_, _, _, cx| cx.emit(PaletteEvent::Close)))
+            .child(ui::scrim("palette-scrim"))
             .child(ui::pop_in(
                 "palette-in",
                 div().flex().max_h_full().child(panel),
