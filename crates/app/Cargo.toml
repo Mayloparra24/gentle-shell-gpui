@@ -38,6 +38,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+# The in-app browser for the Gentle Design canvas (WKWebView as a child view).
+wry = { version = "0.57", default-features = false }
 
 # Embeds the exe icon and version info (see build.rs).
 [target.'cfg(windows)'.build-dependencies]

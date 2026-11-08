@@ -49,6 +49,9 @@ pub enum SessionEvent {
     OpenScreen(crate::commands::Screen),
     /// The thinking level was set to `max`: the window plays its surge.
     MaxEffort,
+    /// Gentle Design's canvas opened, refreshed or stopped: the window shows
+    /// it in its in-app browser.
+    DesignCanvas(crate::browser::CanvasNotice),
 }
 
 /// What the window reads from a tab, to emit [`SessionEvent::ChromeChanged`]
@@ -841,6 +844,21 @@ impl SessionView {
                         .remove(&transcript::str_field(event, "toolCallId"));
                     crate::gentle_state::upsert_job(&mut self.jobs, job, label.as_deref());
                 }
+                if event["toolName"] == "gentle_design" {
+                    let canvas = if details["stopped"] == true {
+                        Some(crate::browser::CanvasNotice::Stopped)
+                    } else {
+                        details["url"]
+                            .as_str()
+                            .map(|url| crate::browser::CanvasNotice::Open {
+                                url: url.to_string(),
+                                refreshed: details["refreshed"] == true,
+                            })
+                    };
+                    if let Some(canvas) = canvas {
+                        cx.emit(SessionEvent::DesignCanvas(canvas));
+                    }
+                }
             }
             Some("message_end") if event["message"]["role"] == "custom" => {
                 if let Some(job) =
@@ -909,6 +927,9 @@ impl SessionView {
                     Some("warning") => NoticeLevel::Warning,
                     _ => NoticeLevel::Info,
                 };
+                if let Some(canvas) = crate::browser::canvas_notice(&message) {
+                    cx.emit(SessionEvent::DesignCanvas(canvas));
+                }
                 let error = level == NoticeLevel::Error;
                 // Usage warnings repeat every turn: keep them as a composer chip.
                 if !error && let Some((percent, window_key)) = view::parse_rate_limit(&message) {

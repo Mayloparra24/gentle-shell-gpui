@@ -263,6 +263,8 @@ pub struct Workspace {
     surge: Option<(u64, std::time::Instant)>,
     surge_runs: u64,
     _surge_end: Option<Task<()>>,
+    /// The in-app browser showing Gentle Design's canvas, if open.
+    browser: Option<(Entity<crate::browser::BrowserPanel>, Subscription)>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -312,6 +314,7 @@ impl Workspace {
             renaming: None,
             surge: None,
             surge_runs: 0,
+            browser: None,
             _surge_end: None,
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {
@@ -913,6 +916,7 @@ impl Workspace {
                     this.open_screen(*screen, Some(session.clone()), window, cx)
                 }
                 SessionEvent::MaxEffort => this.play_surge(cx),
+                SessionEvent::DesignCanvas(canvas) => this.show_design_canvas(canvas.clone(), cx),
                 SessionEvent::Notice { level, message } => {
                     let source = this.pane_title(id);
                     let (level, message) = (*level, message.clone());
@@ -1702,6 +1706,33 @@ impl Workspace {
             PaletteAction::OpenFile(path) => self.open_file(path, window, cx),
             PaletteAction::SwitchBranch(branch) => self.confirm_switch_branch(branch, window, cx),
         }
+    }
+
+    /// Show Gentle Design's canvas in the in-app browser (macOS; elsewhere
+    /// Gentle Shell's own browser tab is all there is), reload it when the
+    /// canvas refreshes, and close it when the canvas stops.
+    fn show_design_canvas(&mut self, canvas: crate::browser::CanvasNotice, cx: &mut Context<Self>) {
+        use crate::browser::{BrowserEvent, BrowserPanel, CanvasNotice};
+        if !cfg!(target_os = "macos") {
+            return;
+        }
+        match canvas {
+            CanvasNotice::Stopped => self.browser = None,
+            CanvasNotice::Open { url, .. } => match &self.browser {
+                Some((browser, _)) => browser.update(cx, |browser, cx| browser.navigate(url, cx)),
+                None => {
+                    let browser = cx.new(|_| BrowserPanel::new(url));
+                    let subscription = cx.subscribe(&browser, |this, _, event, cx| match event {
+                        BrowserEvent::Close => {
+                            this.browser = None;
+                            cx.notify();
+                        }
+                    });
+                    self.browser = Some((browser, subscription));
+                }
+            },
+        }
+        cx.notify();
     }
 
     /// Play the max-effort surge over the window; choosing max again
@@ -2554,6 +2585,11 @@ impl Render for Workspace {
         let has_sidebar = self.sidebar.is_some();
         // Below this the screen buttons fold into one overflow menu.
         let narrow = window.viewport_size().width < px(900.);
+        // The browser's native view would cover a screen opened over it.
+        if let Some((browser, _)) = &self.browser {
+            let covered = self.overlay.is_some();
+            browser.update(cx, |browser, cx| browser.set_covered(covered, cx));
+        }
         // While the surge plays, the window shakes before the rose hatches:
         // the root moves in place and asks for the next frame, so the element
         // tree (and every element's state) stays the same.
@@ -2898,6 +2934,7 @@ impl Render for Workspace {
                             .child(self.render_body(window, cx)),
                     ),
             )
+            .children(self.browser.as_ref().map(|(browser, _)| browser.clone()))
             .children(self.overlay.as_ref().map(|(overlay, _)| match overlay {
                 Overlay::Providers(view) => view.clone().into_any_element(),
                 Overlay::Sessions(view) => view.clone().into_any_element(),

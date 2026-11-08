@@ -74,7 +74,10 @@ gpui_kit::assets::icon_assets!(
         Moon,
         Feather,
         Leaf,
-        BrainCircuit
+        BrainCircuit,
+        // In-app browser panel.
+        Maximize2,
+        Minimize2
     ]
 );
 

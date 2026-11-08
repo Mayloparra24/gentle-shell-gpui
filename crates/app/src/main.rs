@@ -3,6 +3,7 @@ mod alerts;
 mod app_update;
 mod assets;
 mod banner;
+mod browser;
 mod commands;
 mod files;
 mod gentle_state;
