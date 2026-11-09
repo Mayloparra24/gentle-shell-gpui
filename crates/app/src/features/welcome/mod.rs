@@ -76,7 +76,6 @@ impl WelcomeView {
         &self.focus
     }
 
-    /// An install is running: the screen stays open until it ends.
     /// An install or the entrance is running: the screen stays until it ends.
     pub fn busy(&self, cx: &App) -> bool {
         self.finale.is_some() || self.setup.read(cx).busy()

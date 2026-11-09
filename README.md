@@ -138,19 +138,26 @@ Known gaps and things not tested yet, so you know what to expect:
 - **Markdown preview:** links to other `.md` files open in the default app, not in a pane, and `#anchor` links do nothing.
 - **Visual checks:** several screens were only checked from code, not on screen: the chips' cards, the App section of Configuration, the update pill, the Background subagents switch, and the Changes / Branches tabs with real repositories.
 
-## Arquitectura y estructura
+## Architecture and structure
 
-La aplicación sigue un monolito modular por funcionalidades. Las fronteras, reglas de dependencias, estrategia de pruebas y decisiones de evolución están documentadas en [`docs/architecture.md`](docs/architecture.md); los cambios de arquitectura relevantes se registran en [`docs/adr/`](docs/adr/).
+The app is a modular monolith organized by feature. The developer documentation lives in [`docs/`](docs/README.md):
+
+- [`docs/architecture.md`](docs/architecture.md): boundaries, dependency rules, testing, and where each thing goes.
+- [`docs/design-system.md`](docs/design-system.md): colors, typography, components, animations and screen patterns.
+- [`docs/integrations.md`](docs/integrations.md): how the app talks to Gentle Shell and other services.
+- [`docs/development.md`](docs/development.md): building, isolated testing, CI and releases.
+- [`docs/adr/`](docs/adr/): architecture decisions.
+
+[`AGENTS.md`](AGENTS.md) is the short entry point for new developers and AI agents.
 
 | Crate / module | Role |
 | --- | --- |
-| `crates/core` | Pure logic with no GPUI or IO: transcript and subagent activity models, tool summaries, permission mode / jobs / ODD phase, slash-command routing, notifications.json policy. |
-| `crates/pi-rpc` | Launcher and home resolution (matching Gentle Shell's launcher), the JSONL client, typed extension UI requests, and the sign-in helper. |
-| `app/session` | One tab: RPC state, transcript, composer and its status chips, agents panel. |
-| `app/workspace.rs` | The window, tabs, and window-level screens. |
-| `app/{providers,profiles,sessions,usage,palette}.rs` | The native screens. |
-| `app/{git,banner}.rs` | Pure state rebuilt from events and files. |
-| `app/themes.rs` | Theme catalog, default choice (saved choice, then Pi's `theme` setting, then Gentleman-Cute) and persistence; `ui.rs` resolves it into the palette. |
+| `crates/core` | Pure logic with no GPUI or IO (`gentle-core`): transcript and subagent activity, tool summaries, permission mode / jobs / ODD phase, slash-command routing, notifications policy, profiles routing, usage parsing, git parsers, session summaries, fuzzy ranking, versions. |
+| `crates/pi-rpc` | Launcher and home resolution (matching Gentle Shell's launcher, bundled installs included), the JSONL client, typed extension UI requests, and the sign-in helper. |
+| `crates/app/src/main.rs`, `app/`, `cli.rs` | Startup, the composition root (GPUI, keys, menus, window) and the command line. |
+| `crates/app/src/features/` | One folder per feature: `session` (one tab), `workspace` (window, tabs, screens), `welcome`, `onboarding`, `setup`, `providers`, `profiles`, `settings`, `usage`, `sessions`, `palette`, `memory`, `git`, `files`, `terminal`, `browser`, `notices`, `alerts`, `updates`, `app_update`, `workspaces`. |
+| `crates/app/src/shared/` | `ui.rs` (design system), `themes.rs` (theme catalog and persistence), `banner.rs`, `assets.rs`, `surge.rs`, `pane.rs`, `gentle_state.rs`. |
+| `crates/app/src/platform/` | Single instance and OS-specific icons. |
 
 ```bash
 cargo test

@@ -1,274 +1,274 @@
-# Arquitectura
+# Architecture
 
-Gentle Shell GPUI es una aplicación de escritorio nativa escrita en Rust. Su arquitectura es un **monolito modular por funcionalidades**: se despliega como una sola aplicación, pero mantiene fronteras explícitas entre la interfaz, la lógica pura y las integraciones externas.
+Gentle Shell GPUI is a native desktop application written in Rust. Its architecture is a **modular monolith by feature**: it ships as a single application, but keeps explicit boundaries between the UI, pure logic and external integrations.
 
-## Objetivos
+## Goals
 
-- Mantener el comportamiento observable durante los refactors.
-- Hacer que cada funcionalidad tenga una API pública pequeña y detalles internos privados.
-- Separar las reglas y transformaciones puras de GPUI, procesos, archivos y APIs del sistema operativo.
-- Evitar abstracciones sin una necesidad actual: no se crea un crate por pantalla ni un trait con una sola implementación sólo para simular desacoplamiento.
-- Permitir pruebas deterministas de estado, transiciones, parsers y casos límite.
+- Preserve observable behavior during refactors.
+- Give each feature a small public API and private internal details.
+- Separate pure rules and transformations from GPUI, processes, files and operating system APIs.
+- Avoid abstractions without a current need: no crate per screen, and no trait with a single implementation just to simulate decoupling.
+- Allow deterministic tests of state, transitions, parsers and edge cases.
 
-## Componentes actuales
+## Current components
 
 ```mermaid
 flowchart TD
-    Main["app: arranque y composición"] --> Features["Funcionalidades GPUI"]
-    Features --> State["Estado de las funcionalidades"]
-    Features --> Core["core: lógica pura"]
+    Main["app: startup and composition"] --> Features["GPUI features"]
+    Features --> State["Feature state"]
+    Features --> Core["core: pure logic"]
     State --> Core
-    Features --> Rpc["pi-rpc: proceso y protocolo JSONL"]
-    Features --> Platform["Plataforma: Git, terminal, archivos, navegador y actualizaciones"]
-    Features --> Shared["UI compartida, temas y recursos"]
+    Features --> Rpc["pi-rpc: process and JSONL protocol"]
+    Features --> Platform["Platform: Git, terminal, files, browser and updates"]
+    Features --> Shared["Shared UI, themes and assets"]
     Rpc --> Backend["Gentle Shell"]
-    Platform --> OS["Sistema operativo"]
+    Platform --> OS["Operating system"]
 ```
 
-| Componente | Responsabilidad |
+| Component | Responsibility |
 | --- | --- |
-| `crates/app` | Binario, composición, estado de las funcionalidades, vistas GPUI y los efectos (archivos, procesos, sonido) de la lógica que vive en `core`. |
-| `crates/core` (`gentle-core`) | Lógica pura sin GPUI ni IO: modelos del transcript y de la actividad de subagentes, resúmenes de herramientas, modo de permisos, jobs y fase ODD, enrutado de comandos `/`, política de `notifications.json`, modelos de uso y estadísticas, y el modelo de perfiles y enrutado de modelos. |
-| `crates/pi-rpc` | Resolución y lanzamiento del backend, transporte JSONL, autenticación y tipos del protocolo. |
-| `packaging` | Empaquetado e integración de distribución por sistema operativo. |
+| `crates/app` | Binary, composition, feature state, GPUI views, and the effects (files, processes, sound) of the logic that lives in `core`. |
+| `crates/core` (`gentle-core`) | Pure logic with no GPUI or IO: transcript and subagent activity models, tool summaries, permission mode, jobs and ODD phase, `/` command routing, `notifications.json` policy, usage and statistics models, and the profile and model routing model. |
+| `crates/pi-rpc` | Backend resolution and launch, JSONL transport, authentication and protocol types. |
+| `packaging` | Packaging and distribution integration per operating system. |
 
-`crates/pi-rpc` es una frontera estable: no conoce GPUI, ventanas, pestañas ni componentes visuales. `crates/app` depende de él, nunca al contrario.
+`crates/pi-rpc` is a stable boundary: it knows nothing about GPUI, windows, tabs or visual components. `crates/app` depends on it, never the other way around.
 
-`crates/core` no depende de nada del proyecto (ni de `app` ni de `pi-rpc`) ni de GPUI; sus únicas dependencias son `serde`, `serde_json` y `regex`. Compila igual en macOS, Windows y Linux: no contiene código específico de plataforma salvo la sintaxis de rutas `file:` de la política, elegida con `cfg!(windows)` en compilación. Cuando un módulo mezclaba lógica pura y efectos, la parte pura vive en `core` y la parte con efectos queda en `app` y la llama:
+`crates/core` depends on nothing in the project (neither `app` nor `pi-rpc`) and not on GPUI; its only dependencies are `serde`, `serde_json` and `regex`. It compiles the same on macOS, Windows and Linux: it contains no platform-specific code except the syntax of the policy's `file:` paths, chosen with `cfg!(windows)` at compile time. When a module mixed pure logic and effects, the pure part lives in `core`, and the effectful part stays in `app` and calls it:
 
-| `core` | Queda en `app` |
+| `core` | Stays in `app` |
 | --- | --- |
-| `transcript`, `activity`, `tools`, `commands` | `session/agents.rs`: `now_ms` (reloj del sistema). |
-| `gentle_state`: `PermissionMode`, jobs, inferencia de fase | `shared/gentle_state.rs`: leer y guardar `permission-mode.json`. |
-| `notifications`: `Alert`, validación y cambios de la política; `alert_timing`: `Gate` y `ContextLatch` | `alerts/`: caché y escritura del archivo, reproducción, tonos incluidos, aviso a la ventana. |
-| `text::first_line` | `shared/ui.rs`: el resto de utilidades de presentación. |
-| `usage`: modelos y parsers de ventanas de suscripción (Codex, NaN), agrupación, claim de cuenta; registros de sesión, agregación de estadísticas, fechas ISO y días civiles | `usage/`: leer `auth.json`, resolver claves (`$VAR`, `!comando`), peticiones HTTP, recorrer y cachear archivos de sesión, reloj y desplazamiento horario local. |
-| `profiles`: modelo de enrutado, formato de `profiles.json`, pins, frontmatter de agentes, notas | `profiles/`: homes y descubrimiento de agentes, escrituras atómicas, enrutado guardado y materializado, settings de Pi, archivos de pin y worktree, Make default. |
-| `fuzzy`: puntuación difusa y ranking de archivos | `palette/`: recorrer archivos, leer ramas con git. |
-| `sessions`: resumen de sesión, nombre de carpeta por cwd, orden, fechas ISO y tiempo relativo | `sessions/`: buscar y leer archivos `.jsonl` (el escaneo por líneas va unido a la lectura), caché. |
-| `git`: parsers de status (v1 y v2), numstat, refs, stash, worktrees, submódulos, ahead/behind; recorte de diffs | `git/`: ejecutar `git`, contar líneas de archivos no rastreados, operaciones de stage, commit, push y ramas. |
-| `version`: versiones estables, comparación y oferta de actualización de Gentle Shell | `updates/`: caché del launcher, consulta a npm, reloj. |
-| `engram`: modelo de observaciones y codificación de consultas | `memory/`: peticiones HTTP a Engram. |
-| `workspaces`: nombres únicos de workspace | `workspaces/`: modelo guardado (usa `PaneTree`), lectura y escritura de `workspaces.json`. |
+| `transcript`, `activity`, `tools`, `commands` | `session/agents.rs`: `now_ms` (system clock). |
+| `gentle_state`: `PermissionMode`, jobs, phase inference | `shared/gentle_state.rs`: reading and saving `permission-mode.json`. |
+| `notifications`: `Alert`, policy validation and changes; `alert_timing`: `Gate` and `ContextLatch` | `alerts/`: file cache and writing, playback, bundled tones, notifying the window. |
+| `text::first_line` | `shared/ui.rs`: the remaining presentation utilities. |
+| `usage`: subscription window models and parsers (Codex, NaN), grouping, account claim; session records, statistics aggregation, ISO dates and civil days | `usage/`: reading `auth.json`, resolving keys (`$VAR`, `!command`), HTTP requests, walking and caching session files, clock and local time offset. |
+| `profiles`: routing model, `profiles.json` format, pins, agent frontmatter, notes | `profiles/`: homes and agent discovery, atomic writes, saved and materialized routing, Pi settings, pin and worktree files, Make default. |
+| `fuzzy`: fuzzy scoring and file ranking | `palette/`: walking files, reading branches with git. |
+| `sessions`: session summary, folder name from cwd, ordering, ISO dates and relative time | `sessions/`: finding and reading `.jsonl` files (line scanning is tied to reading), cache. |
+| `git`: status parsers (v1 and v2), numstat, refs, stash, worktrees, submodules, ahead/behind; diff trimming | `git/`: running `git`, counting lines of untracked files, stage, commit, push and branch operations. |
+| `version`: stable versions, comparison and Gentle Shell update offer | `updates/`: launcher cache, npm query, clock. |
+| `engram`: observation model and query encoding | `memory/`: HTTP requests to Engram. |
+| `workspaces`: unique workspace names | `workspaces/`: saved model (uses `PaneTree`), reading and writing `workspaces.json`. |
 
-## Organización
+## Layout
 
 ```text
 crates/
 ├── app/
 │   └── src/
-│       ├── main.rs              # arranque: CLI, instancia única, PATH de toolchains, adopción de config
-│       ├── app/                 # composition root (mod.rs): GPUI, temas, atajos, menús, ventana; integration.rs registra paneles y sidebar
-│       ├── cli.rs               # argumentos (`[FOLDER] [-p TEXT]`) y carpeta inicial
-│       ├── features/            # una carpeta por funcionalidad; su entrada es mod.rs
+│       ├── main.rs              # startup: CLI, single instance, toolchain PATH, config adoption
+│       ├── app/                 # composition root (mod.rs): GPUI, themes, shortcuts, menus, window; integration.rs registers panels and sidebar
+│       ├── cli.rs               # arguments (`[FOLDER] [-p TEXT]`) and initial folder
+│       ├── features/            # one folder per feature; its entry point is mod.rs
 │       │   ├── session/  workspace/  workspaces/  sessions/  palette/  profiles/  settings/  usage/  setup/
 │       │   ├── browser/  files/  terminal/  git/  providers/  memory/  onboarding/  notices/  alerts/
 │       │   └── app_update/  updates/  welcome/
-│       ├── platform/            # integración con el SO: instancia única, íconos del Dock y de la ventana
-│       └── shared/              # piezas usadas por varias funcionalidades sin lógica propia:
+│       ├── platform/            # OS integration: single instance, Dock and window icons
+│       └── shared/              # pieces used by several features, with no logic of their own:
 │                                # ui, themes, assets, banner, surge, pane, gentle_state
-├── core/                        # lógica pura compartida (gentle-core)
+├── core/                        # shared pure logic (gentle-core)
 └── pi-rpc/
 ```
 
-Las rutas siguen la carpeta: `crate::features::session`, `crate::shared::ui`, `crate::platform::instance`. Cada funcionalidad es una carpeta `features/<nombre>/`: `mod.rs` conserva sus tipos públicos y su API, y los hijos agregan bloques `impl` y marcan `pub(super)` lo que comparten. Una funcionalidad nueva va en `features/` como carpeta aunque empiece con un solo archivo; algo pasa a `shared/` sólo cuando lo usa más de una funcionalidad y no tiene lógica de producto.
+Paths follow the folder: `crate::features::session`, `crate::shared::ui`, `crate::platform::instance`. Each feature is a `features/<name>/` folder: `mod.rs` keeps its public types and API, and child modules add `impl` blocks and mark what they share as `pub(super)`. A new feature goes in `features/` as a folder even if it starts as a single file; something moves to `shared/` only when more than one feature uses it and it has no product logic.
 
-`core` crece por comportamiento completo y sólo con lógica pura; lo que necesite IO, procesos, reloj o GPUI se queda en `app` y llama a `core`. No se introducen traits ni adaptadores para poder mover algo a `core`.
+`core` grows one complete behavior at a time and only with pure logic; anything that needs IO, processes, the clock or GPUI stays in `app` and calls `core`. No traits or adapters are introduced just to move something into `core`.
 
-## Anatomía de una funcionalidad
+## Anatomy of a feature
 
-Una funcionalidad grande puede dividirse por responsabilidad:
+A large feature can be split by responsibility:
 
 ```text
 feature/
-├── mod.rs          # API pública y coordinación
-├── state.rs        # estado y modelos propios
-├── update.rs       # transiciones puras, si existen
-├── effects.rs      # procesos, red, archivos y tareas asíncronas
-└── view/           # render y estado exclusivamente visual
+├── mod.rs          # public API and coordination
+├── state.rs        # its own state and models
+├── update.rs       # pure transitions, if any
+├── effects.rs      # processes, network, files and async tasks
+└── view/           # render and purely visual state
 ```
 
-Esta forma es una guía, no una plantilla obligatoria. Una funcionalidad pequeña debe seguir siendo un solo módulo.
+This shape is a guideline, not a mandatory template. A small feature should stay a single module.
 
-### Frontera actual de la sesión
+### Current session boundary
 
-`SessionView` es una pestaña: un backend `gentle-shell --mode rpc` y su conversación. Su lógica se divide por responsabilidad en bloques `impl SessionView` de módulos hermanos; `session/mod.rs` conserva la estructura, el constructor, la API pública que usa la ventana (`workspace/mod.rs`), los avisos a la ventana (`SessionEvent`, `sync_chrome`), las acciones y el cableado de módulos:
+`SessionView` is a tab: one `gentle-shell --mode rpc` backend and its conversation. Its logic is split by responsibility into `impl SessionView` blocks in sibling modules; `session/mod.rs` keeps the struct, the constructor, the public API used by the window (`workspace/mod.rs`), notifications to the window (`SessionEvent`, `sync_chrome`), actions and module wiring:
 
 ```text
 session/
-├── mod.rs          # SessionView, constructor, API pública, acciones y utilidades de ventana
-├── state.rs        # grupos de campos que cambian juntos y sus transiciones puras
-├── events.rs       # eventos RPC, peticiones de UI de extensiones, stderr/salida y refrescos de Git
-├── rpc.rs          # petición/respuesta, estado leído del backend y comandos (modelo, compactar, exportar, sesiones, prompts)
-├── lifecycle.rs    # arranque, reinicio (ahora o al terminar el turno), reanudación y reinicio de la conversación
-├── submit.rs       # envío del compositor: `!` shell, built-ins, pantallas nativas y adjuntos
-├── agents.rs       # panel de agentes
-├── builtins.rs     # clasificación de comandos y captura de salidas de extensiones (puro)
-├── attachments.rs  # validación, tokens y carga útil de imágenes (puro)
-└── view.rs, view/  # render (ver más abajo)
+├── mod.rs          # SessionView, constructor, public API, actions and window utilities
+├── state.rs        # groups of fields that change together and their pure transitions
+├── events.rs       # RPC events, extension UI requests, stderr/output and Git refreshes
+├── rpc.rs          # request/response, state read from the backend and commands (model, compact, export, sessions, prompts)
+├── lifecycle.rs    # startup, restart (now or at end of turn), resume and conversation reset
+├── submit.rs       # composer submission: `!` shell, built-ins, native screens and attachments
+├── agents.rs       # agents panel
+├── builtins.rs     # command classification and capture of extension output (pure)
+├── attachments.rs  # image validation, tokens and payload (pure)
+└── view.rs, view/  # render (see below)
 ```
 
-`state.rs` agrupa el backend y su ciclo de vida (`Backend`: estado del proceso, versión, stderr, prompt y sesión pendientes, reinicio pendiente), los modelos y el nivel de pensamiento (`Models`), uso y compactación (`Usage`), la UI de extensiones (`ExtensionUi`: diálogos, estados, widgets, límites de uso y toasts recientes), la actividad del turno (`TurnActivity`: fase, cola, jobs y ayudantes), la isla de tareas (`TodoIsland`) y el estado de Git (`GitStatus`). Las interpretaciones de eventos que no necesitan GPUI (fase y jobs de una llamada a herramienta, recuento de la cola, lienzo de Gentle Design, nivel de un `notify`) son funciones o métodos puros con pruebas en `events.rs`; los efectos (peticiones, temporizadores, notificaciones) quedan en los métodos de `SessionView`.
+`state.rs` groups the backend and its lifecycle (`Backend`: process state, version, stderr, pending prompt and session, pending restart), models and thinking level (`Models`), usage and compaction (`Usage`), extension UI (`ExtensionUi`: dialogs, statuses, widgets, usage limits and recent toasts), turn activity (`TurnActivity`: phase, queue, jobs and helpers), the todo island (`TodoIsland`) and Git state (`GitStatus`). Event interpretations that don't need GPUI (phase and jobs of a tool call, queue count, Gentle Design canvas, level of a `notify`) are pure functions or methods with tests in `events.rs`; effects (requests, timers, notifications) stay in `SessionView` methods.
 
-### Frontera actual de la vista de sesión
+### Current session view boundary
 
-`session/view.rs` conserva la composición (`Render`), la sincronización de lo derivado de la conversación (`sync_view`, Markdown renderizado), el render de los elementos de la conversación (tarjetas de herramientas, pensamiento, mensajes, avisos) y las piezas compartidas por varias vistas. Cada responsabilidad visual del compositor y de la conversación vive en un módulo hijo que sólo expone a la vista la API que ésta necesita:
+`session/view.rs` keeps the composition (`Render`), the sync of what is derived from the conversation (`sync_view`, rendered Markdown), the rendering of conversation items (tool cards, thinking, messages, notices) and the pieces shared by several views. Each visual responsibility of the composer and the conversation lives in a child module that exposes to the view only the API it needs:
 
 ```text
 session/
-├── view.rs                   # Render, filas de la conversación y piezas compartidas
+├── view.rs                   # Render, conversation rows and shared pieces
 └── view/
-    ├── live.rs               # temporizadores y estado visual transitorio
-    ├── transcript_list.rs    # filas, mediciones y cachés de la lista virtualizada
-    ├── cards.rs              # tarjetas de mensajes personalizados de extensiones
-    ├── composer.rs           # compositor: línea de contexto, adjuntos, texto y barra inferior
-    ├── activity.rs           # línea de actividad y chips de estado (jobs, widgets, uso, ayudantes, límites)
-    ├── slash_menu.rs         # menú de comandos `/` y su teclado
-    ├── model_picker.rs       # selector de modelo, búsqueda y teclado
-    ├── effort.rs             # control de esfuerzo (nivel de pensamiento) y su deslizador
-    ├── permissions.rs        # chip y selector del modo de permisos
-    ├── dialogs.rs            # diálogos de extensiones y su teclado
-    └── todo_island.rs        # isla de tareas sobre la conversación
+    ├── live.rs               # timers and transient visual state
+    ├── transcript_list.rs    # rows, measurements and caches of the virtualized list
+    ├── cards.rs              # extension custom message cards
+    ├── composer.rs           # composer: context line, attachments, text and bottom bar
+    ├── activity.rs           # activity line and status chips (jobs, widgets, usage, helpers, limits)
+    ├── slash_menu.rs         # `/` command menu and its keyboard handling
+    ├── model_picker.rs       # model picker, search and keyboard handling
+    ├── effort.rs             # effort control (thinking level) and its slider
+    ├── permissions.rs        # permission mode chip and picker
+    ├── dialogs.rs            # extension dialogs and their keyboard handling
+    └── todo_island.rs        # todo island over the conversation
 ```
 
-`transcript_list.rs` es dueño de la forma de las filas, el cálculo de actualizaciones parciales, la caché de datos preparados y el estado de la lista GPUI. `view.rs` decide qué contenido renderizar para cada fila, pero no modifica directamente la estructura interna de la lista.
+`transcript_list.rs` owns the row shape, the computation of partial updates, the cache of prepared data and the GPUI list state. `view.rs` decides what content to render for each row, but does not directly modify the list's internal structure.
 
-Los módulos hijos añaden bloques `impl SessionView` propios; lo que otro módulo consume se marca `pub(super)` y lo que usa `session/mod.rs` se marca `pub(in crate::features::session)` o se reexporta desde `view.rs`. Las constantes de anchura (`NARROW`, `TINY`), los plegados y las piezas compartidas (`clock`, `image_tile`, `number_badge`) permanecen en `view.rs`.
+Child modules add their own `impl SessionView` blocks; what another module consumes is marked `pub(super)`, and what `session/mod.rs` uses is marked `pub(in crate::features::session)` or re-exported from `view.rs`. The width constants (`NARROW`, `TINY`), the collapse states and the shared pieces (`clock`, `image_tile`, `number_badge`) stay in `view.rs`.
 
-### Otras funcionalidades divididas
+### Other split features
 
-Cada una conserva su tipo público y su API en el archivo padre; los hijos agregan bloques `impl` propios y marcan `pub(super)` lo que comparten.
+Each one keeps its public type and API in the parent file; child modules add their own `impl` blocks and mark what they share as `pub(super)`.
 
 ```text
-workspace/mod.rs     # Workspace, tipos (Pane, Tab, Space, Overlay) y API pública
+workspace/mod.rs     # Workspace, types (Pane, Tab, Space, Overlay) and public API
 workspace/
-├── layout.rs       # cálculos de división de paneles
-├── panes.rs        # crear, dividir, enfocar y cerrar paneles
-├── spaces.rs       # workspaces con nombre
-├── tabs.rs         # pestañas y renombrado
-├── persistence.rs  # snapshot y guardado
-├── actions.rs      # manejadores de atajos
-├── overlays.rs     # pantallas superpuestas, paleta, navegador y animación max
-├── view.rs         # barra de título, pestañas y paneles
+├── layout.rs       # pane split calculations
+├── panes.rs        # create, split, focus and close panes
+├── spaces.rs       # named workspaces
+├── tabs.rs         # tabs and renaming
+├── persistence.rs  # snapshot and saving
+├── actions.rs      # shortcut handlers
+├── overlays.rs     # overlay screens, palette, browser and max animation
+├── view.rs         # title bar, tabs and panes
 └── render.rs       # impl Render
 
-profiles/mod.rs      # ProfilesView, ProfilesEvent, estado y consultas
+profiles/mod.rs      # ProfilesView, ProfilesEvent, state and queries
 profiles/
-├── env.rs          # homes, paquete gentle-pi y descubrimiento de agentes
-├── files.rs        # escrituras atómicas, profiles.json, models.json, settings.json, carga
-├── pins.rs         # pins del repositorio (archivos y worktree Git)
-├── apply.rs        # materialización de rutas, orquestador y Make default
-├── draft.rs        # ediciones del borrador (modelo, esfuerzo, tier)
-├── actions.rs      # acciones del store y flujos de salida, nombre y borrado
-├── tests.rs        # pruebas de efectos de archivo
+├── env.rs          # homes, gentle-pi package and agent discovery
+├── files.rs        # atomic writes, profiles.json, models.json, settings.json, loading
+├── pins.rs         # repository pins (files and Git worktree)
+├── apply.rs        # route materialization, orchestrator and Make default
+├── draft.rs        # draft edits (model, effort, tier)
+├── actions.rs      # store actions and exit, name and delete flows
+├── tests.rs        # file effect tests
 └── view.rs, view/  # Render; cells, table, profile_list, confirm, footer
 
-usage/mod.rs         # UsageView, estado, refrescos y API pública
+usage/mod.rs         # UsageView, state, refreshes and public API
 usage/
-├── credentials.rs  # auth.json → tarjetas y peticiones; resolución de claves
-├── fetch.rs        # peticiones HTTP de uso
-├── stats.rs        # archivos de sesión: recorrido, lectura, caché
+├── credentials.rs  # auth.json → cards and requests; key resolution
+├── fetch.rs        # usage HTTP requests
+├── stats.rs        # session files: walking, reading, cache
 └── view.rs, view/  # Render; subscription, stats
 
-settings/mod.rs      # SettingsView, SettingsEvent, carga y composición de la pantalla
+settings/mod.rs      # SettingsView, SettingsEvent, loading and screen composition
 settings/
 ├── layout.rs       # row, section, or_dash
-├── snapshot.rs     # lectura de la configuración y sondas del lanzador
-├── claude.rs       # sesión de Claude Code y plan del bridge
-├── background.rs   # política de background subagents y sección Gentle AI
-├── upgrade.rs      # gentle-shell upgrade, su resultado y la tarjeta
-├── packages.rs     # instalar y quitar paquetes
-└── notifications.rs, theme.rs, app.rs, models.rs  # una sección cada uno
+├── snapshot.rs     # reading the configuration and launcher probes
+├── claude.rs       # Claude Code session and bridge plan
+├── background.rs   # background subagents policy and Gentle AI section
+├── upgrade.rs      # gentle-shell upgrade, its result and the card
+├── packages.rs     # install and remove packages
+└── notifications.rs, theme.rs, app.rs, models.rs  # one section each
 
-palette/mod.rs       # PaletteView, acciones, eventos, categorías
+palette/mod.rs       # PaletteView, actions, events, categories
 palette/
-├── commands.rs     # pantallas, comandos de panel y comandos `/` del backend
-├── sources.rs      # archivos bajo la raíz y ramas locales
-├── rows.rs         # filas y grupos para la consulta y la categoría
-├── keyboard.rs     # selección, ejecutar fila, categorías, renombrar workspace
+├── commands.rs     # screens, panel commands and backend `/` commands
+├── sources.rs      # files under the root and local branches
+├── rows.rs         # rows and groups for the query and category
+├── keyboard.rs     # selection, run row, categories, rename workspace
 └── view.rs         # Render
 
 sessions/mod.rs      # SessionsView, SessionsEvent, Scope
 sessions/
-├── discovery.rs    # sessionDir y archivos .jsonl por carpeta o todos
-├── summary.rs      # escaneo ligero del JSONL y caché por archivo
-├── view.rs         # estado y acciones
-├── render.rs       # filas, lista y Render
-└── tests.rs        # pruebas con archivos de sesión temporales
+├── discovery.rs    # sessionDir and .jsonl files per folder or all
+├── summary.rs      # lightweight JSONL scan and per-file cache
+├── view.rs         # state and actions
+├── render.rs       # rows, list and Render
+└── tests.rs        # tests with temporary session files
 
-git/mod.rs           # ejecutar git, toplevel; reexporta los tipos que usan los llamadores
+git/mod.rs           # run git, toplevel; re-exports the types callers use
 git/
-├── snapshot.rs     # cambios para el panel y el árbol
-├── changes.rs      # pestaña Changes: stage, discard, stash, commit, push
-└── refs.rs         # pestaña Branches: ramas, stash, checkout remoto
+├── snapshot.rs     # changes for the panel and the tree
+├── changes.rs      # Changes tab: stage, discard, stash, commit, push
+└── refs.rs         # Branches tab: branches, stash, remote checkout
 
 app_update/mod.rs    # AppUpdate (Global), Status, Problem; check, install, skip, restart
 app_update/
-├── release.rs      # versiones, asset por SO, parseo de releases y SHA256SUMS, decisión
-├── cache.rs        # app-update.json: caché de 6 h y versión saltada
-├── network.rs      # pedir la release, descargar con sha256 y progreso
-├── archive.rs      # extracción segura de zip y tar.gz; payload por SO
-├── install.rs      # reemplazo del bundle (macOS), del archivo (Linux) y del exe en uso (Windows)
-└── relaunch.rs     # proceso que reabre la app al salir
+├── release.rs      # versions, per-OS asset, release and SHA256SUMS parsing, decision
+├── cache.rs        # app-update.json: 6 h cache and skipped version
+├── network.rs      # fetch the release, download with sha256 and progress
+├── archive.rs      # safe zip and tar.gz extraction; per-OS payload
+├── install.rs      # replace the bundle (macOS), the file (Linux) and the running exe (Windows)
+└── relaunch.rs     # process that reopens the app on exit
 
-providers/          # mod.rs: tipos y constructor; login.rs (helper de login y flujo), list.rs, flow_view.rs, render.rs
-onboarding/         # mod.rs: estado y API; checks.rs (plan de instalación, tonos), install.rs, view.rs
-notices/            # mod.rs: Notice, Notices; store.rs (push, leídos, límite), bell.rs, panel.rs
-memory/             # mod.rs: MemoryView; client.rs (HTTP a Engram), view.rs
+providers/          # mod.rs: types and constructor; login.rs (login helper and flow), list.rs, flow_view.rs, render.rs
+onboarding/         # mod.rs: state and API; checks.rs (install plan, tones), install.rs, view.rs
+notices/            # mod.rs: Notice, Notices; store.rs (push, read, limit), bell.rs, panel.rs
+memory/             # mod.rs: MemoryView; client.rs (HTTP to Engram), view.rs
 alerts/             # mod.rs: fire, context_threshold; policy.rs, sound.rs, tones.rs
-updates/            # mod.rs: check y skip; cache.rs (config del launcher), registry.rs (npm)
-workspaces/         # mod.rs: modelo guardado; store.rs (workspaces.json), tests.rs
+updates/            # mod.rs: check and skip; cache.rs (launcher config), registry.rs (npm)
+workspaces/         # mod.rs: saved model; store.rs (workspaces.json), tests.rs
 ```
 
-## Flujo de datos
+## Data flow
 
 ```mermaid
 flowchart LR
-    Input["Evento de UI o RPC"] --> Update["Actualizar estado"]
-    Update --> State["Estado nuevo"]
-    Update --> Effect["Efecto necesario"]
-    Effect --> Adapter["RPC, archivo, Git o sistema"]
-    Adapter --> Result["Evento de resultado"]
+    Input["UI or RPC event"] --> Update["Update state"]
+    Update --> State["New state"]
+    Update --> Effect["Required effect"]
+    Effect --> Adapter["RPC, file, Git or system"]
+    Adapter --> Result["Result event"]
     Result --> Update
-    State --> View["Render GPUI"]
+    State --> View["GPUI render"]
 ```
 
-Los efectos no deben esconder cambios de estado. Los resultados vuelven a la funcionalidad para que ésta decida cómo representarlos.
+Effects must not hide state changes. Results return to the feature so it decides how to represent them.
 
-## Reglas de dependencias
+## Dependency rules
 
-1. `pi-rpc` **no depende** de `app` ni de GPUI.
-2. `app` puede depender de `pi-rpc` y de `core`; la dirección inversa está prohibida.
-3. `core` **no depende** de nada del proyecto (`app`, `pi-rpc`) ni de GPUI, filesystem, procesos, reloj ni APIs del sistema.
-4. Una funcionalidad consume otra mediante su API pública; no accede a sus módulos privados.
-5. El código compartido de UI no contiene reglas de negocio ni conoce funcionalidades concretas.
-6. La integración con sistema operativo, procesos y archivos permanece en los bordes.
-7. Los tipos se mantienen privados salvo que formen parte de un contrato real entre módulos.
-8. No se introduce un trait hasta que exista una frontera que necesite sustitución, varias implementaciones o una prueba que no pueda resolverse con una función pura.
-9. Dividir un archivo por tamaño no basta: cada módulo extraído debe tener una responsabilidad nombrable y cohesiva.
-10. Todo refactor conserva comportamiento. Cuando el comportamiento no esté protegido, primero se añade una prueba de caracterización relevante.
+1. `pi-rpc` **does not depend** on `app` or GPUI.
+2. `app` may depend on `pi-rpc` and `core`; the reverse direction is forbidden.
+3. `core` **does not depend** on anything in the project (`app`, `pi-rpc`), nor on GPUI, the filesystem, processes, the clock or system APIs.
+4. A feature consumes another through its public API; it does not access its private modules.
+5. Shared UI code contains no business rules and knows nothing about specific features.
+6. Integration with the operating system, processes and files stays at the edges.
+7. Types stay private unless they are part of a real contract between modules.
+8. No trait is introduced until there is a boundary that needs substitution, several implementations, or a test that cannot be solved with a pure function.
+9. Splitting a file by size is not enough: each extracted module must have a nameable, cohesive responsibility.
+10. Every refactor preserves behavior. When behavior is not covered, add a relevant characterization test first.
 
-## Estrategia de pruebas
+## Testing strategy
 
-- **Lógica pura:** pruebas unitarias de transiciones, precedencia, límites y errores.
-- **Parsers y protocolo:** entradas representativas, datos incompletos y registros inválidos.
-- **Integraciones:** pruebas en el borde o una prueba de humo que ejecute el camino real.
-- **UI:** probar el estado y las decisiones observables; no probar que una función simplemente delega o copia campos.
+- **Pure logic:** unit tests for transitions, precedence, limits and errors.
+- **Parsers and protocol:** representative inputs, incomplete data and invalid records.
+- **Integrations:** tests at the edge, or a smoke test that runs the real path.
+- **UI:** test state and observable decisions; don't test that a function merely delegates or copies fields.
 
-Antes de completar una etapa se ejecutan formato, pruebas, Clippy y una prueba de humo de la ruta modificada. Si el entorno no permite una comprobación, se documenta explícitamente; no se supone que pasó.
+Before completing a stage, run formatting, tests, Clippy and a smoke test of the modified path. If the environment does not allow a check, document it explicitly; don't assume it passed.
 
-## Cómo agregar una funcionalidad
+## How to add a feature
 
-1. Encontrar la funcionalidad dueña del comportamiento.
-2. Colocar allí estado, eventos y vista mientras sean cohesivos.
-3. Extraer lógica pura a un módulo propio cuando pueda probarse sin GPUI ni IO.
-4. Usar `pi-rpc` o un módulo de plataforma para efectos externos; no duplicar el transporte o la detección del sistema.
-5. Exponer desde `mod.rs` sólo lo que consuman otros módulos.
-6. Añadir pruebas que cubran comportamiento susceptible de regresión.
-7. Actualizar este documento o crear un ADR si cambia una frontera o una regla de dependencias.
+1. Find the feature that owns the behavior.
+2. Put state, events and view there while they stay cohesive.
+3. Extract pure logic into its own module when it can be tested without GPUI or IO.
+4. Use `pi-rpc` or a platform module for external effects; don't duplicate the transport or system detection.
+5. Expose from `mod.rs` only what other modules consume.
+6. Add tests that cover behavior prone to regression.
+7. Update this document or create an ADR if a boundary or a dependency rule changes.
 
-## Decisiones relacionadas
+## Related decisions
 
-- [ADR-0001: monolito modular por funcionalidades](adr/0001-monolito-modular.md)
-- [ADR-0002: núcleo puro incremental](adr/0002-nucleo-puro-incremental.md)
-- [ADR-0003: refactors con conservación de comportamiento](adr/0003-refactors-sin-cambio-funcional.md)
+- [ADR-0001: Modular monolith by feature](adr/0001-modular-monolith.md)
+- [ADR-0002: Incremental pure core](adr/0002-incremental-pure-core.md)
+- [ADR-0003: Behavior-preserving refactors](adr/0003-behavior-preserving-refactors.md)
