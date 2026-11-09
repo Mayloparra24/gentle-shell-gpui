@@ -12,6 +12,7 @@ use crate::features::onboarding::{OnboardingEvent, OnboardingView, Probe};
 use crate::features::setup;
 use crate::shared::banner::{self, BannerConfig};
 
+mod finale;
 mod view;
 
 /// How long the banner takes to write itself in.
@@ -36,6 +37,8 @@ pub struct WelcomeView {
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
     _intro: Task<()>,
+    /// Continue was pressed: the entrance plays, then the screen closes.
+    finale: Option<Task<()>>,
 }
 
 impl EventEmitter<WelcomeEvent> for WelcomeView {}
@@ -65,6 +68,7 @@ impl WelcomeView {
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
             _intro: intro,
+            finale: None,
         }
     }
 
@@ -73,8 +77,9 @@ impl WelcomeView {
     }
 
     /// An install is running: the screen stays open until it ends.
+    /// An install or the entrance is running: the screen stays until it ends.
     pub fn busy(&self, cx: &App) -> bool {
-        self.setup.read(cx).busy()
+        self.finale.is_some() || self.setup.read(cx).busy()
     }
 
     /// gentle-shell can start, as of the sequence's last look.
@@ -87,14 +92,18 @@ impl WelcomeView {
     }
 
     /// The footer's main button: Continue once everything required is
-    /// ready, else Install everything.
+    /// ready (the entrance plays, then the app), else Install everything.
     fn primary(&mut self, cx: &mut Context<Self>) {
         if self.busy(cx) {
             return;
         }
         if self.ready(cx) {
             setup::mark_done();
-            cx.emit(WelcomeEvent::Close);
+            self.finale = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(finale::FINALE).await;
+                let _ = this.update(cx, |_, cx| cx.emit(WelcomeEvent::Close));
+            }));
+            cx.notify();
         } else if self.setup.read(cx).can_install() {
             self.setup
                 .update(cx, |setup, cx| setup.install_everything(cx));

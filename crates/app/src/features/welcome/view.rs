@@ -8,7 +8,7 @@ use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AFTER_INTRO, INTRO, WelcomeEvent, WelcomeView};
+use super::{AFTER_INTRO, INTRO, WelcomeEvent, WelcomeView, finale};
 use crate::shared::banner::{Palette, banner};
 use crate::shared::ui;
 
@@ -51,6 +51,12 @@ impl WelcomeView {
             (
                 "Welcome to Gentle Shell.",
                 "Looking at what this machine already has…",
+            )
+        } else if setup.ready() && setup.needs_sign_in() {
+            (
+                "You're ready.",
+                "Everything Gentle Shell needs is installed. Sign in to a model \
+                 provider now, or later from the chat.",
             )
         } else if setup.ready() {
             (
@@ -165,8 +171,9 @@ impl WelcomeView {
 impl Render for WelcomeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let ready = self.setup.read(cx).ready();
+        let entrance = self.finale.is_some();
         let macos = cfg!(target_os = "macos");
-        div()
+        let root = div()
             .id("welcome")
             .absolute()
             .left_0()
@@ -179,54 +186,72 @@ impl Render for WelcomeView {
             .bg(ui::screen_bg())
             .child(
                 // A soft glow from the top, petal while setting up, green once
-                // everything required is ready.
+                // everything required is ready, brighter for the entrance.
                 div().absolute().inset_0().bg(linear_gradient(
                     180.,
                     linear_color_stop(
-                        if ready { ui::success() } else { ui::petal() }.opacity(0.10),
+                        if ready { ui::success() } else { ui::petal() }.opacity(if entrance {
+                            0.16
+                        } else {
+                            0.10
+                        }),
                         0.,
                     ),
                     linear_color_stop(ui::petal().opacity(0.), 0.6),
                 )),
-            )
-            .child(
-                v_flex()
-                    .size_full()
-                    .when(macos, |d| {
-                        // Under the traffic lights: drag the window from here.
-                        d.child(
-                            div()
-                                .id("welcome-drag")
-                                .flex_none()
-                                .h(px(TITLE_BAR))
-                                .window_control_area(WindowControlArea::Drag)
-                                .on_mouse_down(MouseButton::Left, |_, window, _| {
-                                    window.start_window_move()
-                                }),
-                        )
-                    })
-                    .child(
+            );
+        if entrance {
+            // The entrance, then the screen dissolves into the app.
+            return root
+                .child(finale::render(self.banner))
+                .with_animation(
+                    "welcome-dissolve",
+                    Animation::new(finale::FINALE),
+                    |el, t| {
+                        let fade = ((t - finale::DISSOLVE) / (1. - finale::DISSOLVE)).clamp(0., 1.);
+                        // Smoothstep: eases into the fade and out of it.
+                        el.opacity(1. - fade * fade * (3. - 2. * fade))
+                    },
+                )
+                .into_any_element();
+        }
+        root.child(
+            v_flex()
+                .size_full()
+                .when(macos, |d| {
+                    // Under the traffic lights: drag the window from here.
+                    d.child(
                         div()
-                            .id("welcome-body")
-                            .flex_1()
-                            .min_h_0()
-                            .overflow_y_scroll()
-                            .child(
-                                v_flex()
-                                    .w_full()
-                                    .items_center()
-                                    .px_8()
-                                    .pt_6()
-                                    .pb_6()
-                                    .gap_6()
-                                    .child(self.render_banner(ready))
-                                    .child(self.render_heading(cx))
-                                    .child(
-                                        div().w_full().max_w(px(680.)).child(self.setup.clone()),
-                                    ),
-                            ),
+                            .id("welcome-drag")
+                            .flex_none()
+                            .h(px(TITLE_BAR))
+                            .window_control_area(WindowControlArea::Drag)
+                            .on_mouse_down(MouseButton::Left, |_, window, _| {
+                                window.start_window_move()
+                            }),
                     )
-                    .child(self.render_footer(cx)),
-            )
+                })
+                .child(
+                    div()
+                        .id("welcome-body")
+                        .flex_1()
+                        .min_h_0()
+                        .overflow_y_scroll()
+                        .child(
+                            v_flex()
+                                .w_full()
+                                .items_center()
+                                .px_8()
+                                .pt_6()
+                                .pb_6()
+                                .gap_6()
+                                .child(self.render_banner(ready))
+                                .child(self.render_heading(cx))
+                                .child(div().w_full().max_w(px(680.)).child(self.setup.clone())),
+                        ),
+                )
+                .child(self.render_footer(cx)),
+        )
+        .into_any_element()
     }
 }

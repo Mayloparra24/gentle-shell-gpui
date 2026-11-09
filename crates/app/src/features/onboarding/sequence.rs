@@ -12,7 +12,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::OnboardingView;
-use super::checks::{Tone, is_ok, status_text, tone};
+use super::checks::{Tone, blocks, is_ok, status_text, tone};
 use super::view::status_label;
 use crate::features::setup::{Check, Need, Status};
 use crate::shared::ui;
@@ -55,7 +55,9 @@ impl OnboardingView {
         let required: Vec<&Check> = checks.iter().filter(|c| c.need == Need::Required).collect();
         let extras: Vec<&Check> = checks.iter().filter(|c| c.need != Need::Required).collect();
         let done = required.iter().filter(|c| is_ok(c)).count();
-        let next = required.iter().position(|c| !is_ok(c));
+        // The next step to do: signing in can wait, so it never holds the
+        // highlight.
+        let next = required.iter().position(|c| blocks(c) && !is_ok(c));
         let steps = required.len();
         v_flex()
             .w_full()
@@ -178,7 +180,9 @@ impl OnboardingView {
                         }),
                 )
             });
-        let dim = matches!(step, Step::Waiting { next: false });
+        // Signing in can wait: say so instead of "Missing".
+        let optional = !blocks(check) && !is_ok(check) && step != Step::Installing;
+        let dim = matches!(step, Step::Waiting { next: false }) && !optional;
         let content = v_flex()
             .flex_1()
             .min_w_0()
@@ -195,10 +199,11 @@ impl OnboardingView {
                             .text_color(if dim { ui::muted() } else { ui::fg() })
                             .child(check.title),
                     )
-                    .child(ui::chip(
-                        status_label(&check.status, step == Step::Installing),
-                        color,
-                    ))
+                    .child(if optional {
+                        ui::chip("Optional", ui::info())
+                    } else {
+                        ui::chip(status_label(&check.status, step == Step::Installing), color)
+                    })
                     .child(div().flex_1())
                     .children(self.render_action(check, index, cx)),
             )

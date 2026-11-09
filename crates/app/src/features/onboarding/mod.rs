@@ -159,6 +159,15 @@ impl OnboardingView {
         self.checks.as_deref().is_some_and(required_ok)
     }
 
+    /// No model provider is signed in yet (it can wait; Continue doesn't).
+    pub fn needs_sign_in(&self) -> bool {
+        self.checks.as_deref().is_some_and(|checks| {
+            checks
+                .iter()
+                .any(|c| c.fix == setup::Fix::SignIn && !checks::is_ok(c))
+        })
+    }
+
     /// The first look at the machine is still running.
     pub fn looking(&self) -> bool {
         self.checks.is_none()
