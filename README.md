@@ -138,7 +138,9 @@ Known gaps and things not tested yet, so you know what to expect:
 - **Markdown preview:** links to other `.md` files open in the default app, not in a pane, and `#anchor` links do nothing.
 - **Visual checks:** several screens were only checked from code, not on screen: the chips' cards, the App section of Configuration, the update pill, the Background subagents switch, and the Changes / Branches tabs with real repositories.
 
-## Layout
+## Arquitectura y estructura
+
+La aplicación sigue un monolito modular por funcionalidades. Las fronteras, reglas de dependencias, estrategia de pruebas y decisiones de evolución están documentadas en [`docs/architecture.md`](docs/architecture.md); los cambios de arquitectura relevantes se registran en [`docs/adr/`](docs/adr/).
 
 | Crate / module | Role |
 | --- | --- |

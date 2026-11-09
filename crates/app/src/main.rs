@@ -142,6 +142,20 @@ fn main() {
     };
     // Toolchains onboarding installed into the app's own folders.
     setup::apply_toolchain_path();
+    // Gentle Shell 4.7's own install moved its config folder without copying
+    // the old one: bring profiles, routing and preferences along once.
+    match pi_rpc::adopt_standalone_config() {
+        Ok(copied) if !copied.is_empty() => {
+            eprintln!(
+                "Copied {} Gentle Shell settings to its new config folder",
+                copied.len()
+            )
+        }
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("Could not copy Gentle Shell's settings to its new folder: {error}")
+        }
+    }
     gpui_kit::application()
         .with_assets(assets::AppAssets)
         .run(move |cx| {
@@ -183,6 +197,7 @@ fn main() {
                 KeyBinding::new(key!("q"), Quit, None),
                 KeyBinding::new("escape", workspace::CloseOverlay, Some("GentleWorkspace")),
                 KeyBinding::new("escape", session::Abort, Some(session::CONTEXT)),
+                KeyBinding::new(key!("."), session::Stop, Some(session::CONTEXT)),
                 KeyBinding::new(
                     key!("shift-a"),
                     session::ToggleAgents,

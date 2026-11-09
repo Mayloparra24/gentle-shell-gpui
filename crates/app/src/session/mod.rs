@@ -26,7 +26,7 @@ mod view;
 
 pub use agents::AgentsPanel;
 
-actions!(session, [Abort, ToggleAgents, NewSession]);
+actions!(session, [Abort, Stop, ToggleAgents, NewSession]);
 
 pub const CONTEXT: &str = "GentleSession";
 
@@ -495,11 +495,10 @@ impl SessionView {
 
     fn restart_backend(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.restart_pending = false;
-        let resume = self.session_file();
-        self.start(window, cx);
-        if let Some(path) = resume {
-            self.resume_when_ready(path, cx);
+        if let Some(path) = self.session_file() {
+            self.pending_session = Some(path);
         }
+        self.start(window, cx);
     }
 
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -528,11 +527,21 @@ impl SessionView {
         self.context_latch.rearm();
         self.refresh_git(cx);
         let cwd = self.cwd.clone();
+        // A conversation to open goes in at launch (`--session`), not by
+        // `switch_session` after: Gentle Shell treats the launch session as
+        // fresh, so it starts in the saved permission mode, while a switched
+        // one starts in Normal.
+        let resume = self.pending_session.take();
+        let launched = resume.clone();
         self._io = cx.spawn_in(window, async move |this, cx| {
             let spawned = cx
                 .background_executor()
                 .spawn(async move {
-                    let spec = pi_rpc::resolve_backend(&cwd)?;
+                    let mut spec = pi_rpc::resolve_backend(&cwd)?;
+                    if let Some(path) = &resume {
+                        spec.args.push("--session".into());
+                        spec.args.push(path.display().to_string());
+                    }
                     let version = pi_rpc::backend_version(&spec);
                     let (process, rx) = PiProcess::spawn(&spec)?;
                     anyhow::Ok((process, rx, version))
@@ -543,6 +552,9 @@ impl SessionView {
                     let ok = this.update(cx, |this, cx| {
                         this.backend = Backend::Ready(process);
                         this.version = version;
+                        if let Some(path) = launched {
+                            this.session_file = Some(path);
+                        }
                         this.refresh_state(cx);
                         // Kept until the switch lands, so the window saves this
                         // path rather than the blank session it replaces.
@@ -1698,8 +1710,11 @@ impl SessionView {
         self.context_latch.rearm();
     }
 
-    /// Save `mode` as the default and start a fresh session so it applies
-    /// (Gentle Shell only switches a live session's mode from its terminal UI).
+    /// Switch this session to `mode` now. Gentle Shell only switches a live
+    /// session from its terminal UI, but a session it hasn't seen in this
+    /// process starts in the saved default: so save `mode` as the default and
+    /// restart the backend on the same conversation (mid-turn, once the turn
+    /// ends). New sessions start in it too.
     pub(super) fn choose_mode(
         &mut self,
         mode: crate::gentle_state::PermissionMode,
@@ -1716,24 +1731,28 @@ impl SessionView {
             return;
         }
         self.default_mode = Some(mode);
-        let live = self
-            .mode
-            .unwrap_or(crate::gentle_state::PermissionMode::Normal);
-        let note = if self.transcript.items.is_empty() {
-            // Nothing to lose: start over in the new mode now.
-            self.new_session(window, cx);
-            format!("New session in {}.", mode.label())
-        } else if live == mode {
-            format!("New sessions start in {} too.", mode.label())
+        if self.mode == Some(mode) {
+            cx.notify();
+            return;
+        }
+        if !self.started {
+            // A tab not started yet starts in the saved mode anyway.
+        } else if self.transcript.items.is_empty() {
+            self.start(window, cx);
         } else {
-            format!(
-                "New sessions start in {}. This conversation stays in {}; ⌘N starts one in {}.",
-                mode.label(),
-                live.label(),
-                mode.label()
-            )
-        };
-        window.push_notification(Notification::info(note), cx);
+            self.restart_when_idle(
+                &format!(
+                    "Permissions switch to {} when the current turn ends.",
+                    mode.label()
+                ),
+                window,
+                cx,
+            );
+        }
+        window.push_notification(
+            Notification::info(format!("Permissions: {}", mode.label())),
+            cx,
+        );
         cx.notify();
     }
 
@@ -1764,6 +1783,9 @@ impl SessionView {
         }
     }
 
+    /// Esc: close what's open (the Agents panel, then a dialog). It never
+    /// stops the turn: a few Esc presses to close things used to abort the
+    /// agent once nothing was left open. Stopping is ⌘. or the Stop button.
     fn abort(&mut self, _: &Abort, window: &mut Window, cx: &mut Context<Self>) {
         if self.agents_panel.open {
             self.close_agents(cx);
@@ -1773,11 +1795,16 @@ impl SessionView {
             self.answer_dialog(UiAnswer::Cancelled, window, cx);
             return;
         }
-        if !self.busy() {
+        cx.propagate();
+    }
+
+    /// ⌘. (Ctrl+. elsewhere): stop the running turn.
+    fn on_stop(&mut self, _: &Stop, _: &mut Window, cx: &mut Context<Self>) {
+        if self.busy() {
+            self.stop(cx);
+        } else {
             cx.propagate();
-            return;
         }
-        self.stop(cx);
     }
 
     fn stop(&mut self, cx: &mut Context<Self>) {
