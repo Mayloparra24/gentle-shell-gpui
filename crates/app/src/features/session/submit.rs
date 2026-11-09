@@ -37,35 +37,8 @@ impl SessionView {
             .update(cx, |state, cx| state.set_value("", window, cx));
         self.list.scroll_to_end();
 
-        // Pi's TUI convention: `!cmd` runs and shares output, `!!cmd` keeps it out of context.
         if let Some(command) = text.strip_prefix('!') {
-            let (command, exclude) = match command.strip_prefix('!') {
-                Some(rest) => (rest.trim().to_string(), true),
-                None => (command.trim().to_string(), false),
-            };
-            if command.is_empty() {
-                return;
-            }
-            let index = self.transcript.start_shell(command.clone());
-            self.active_shell = Some(index);
-            self.request(
-                json!({"type": "bash", "command": command, "excludeFromContext": exclude}),
-                cx,
-                move |this, result, _| {
-                    this.active_shell = None;
-                    match result {
-                        Ok(data) => this.transcript.finish_shell(
-                            index,
-                            data["exitCode"].as_i64(),
-                            data["output"].as_str().map(str::to_string),
-                        ),
-                        Err(error) => {
-                            this.transcript
-                                .finish_shell(index, None, Some(format!("{error:#}")))
-                        }
-                    }
-                },
-            );
+            self.run_shell(command, cx);
             cx.notify();
             return;
         }
@@ -78,6 +51,50 @@ impl SessionView {
         let images = std::mem::take(&mut self.attachments);
         self.send_prompt_with(text, images, cx);
         cx.notify();
+    }
+
+    /// Text from outside the composer (`-p`, a later launch's prompt): runs
+    /// the way typing it would, `!` shell commands included.
+    pub(super) fn run_text(&mut self, text: String, cx: &mut Context<Self>) {
+        match text.trim().strip_prefix('!') {
+            Some(command) => {
+                self.run_shell(command, cx);
+                cx.notify();
+            }
+            None => self.run_prompt(text, cx),
+        }
+    }
+
+    /// Pi's TUI convention: `!cmd` runs and shares output, `!!cmd` keeps it
+    /// out of context. `command` is what follows the first `!`.
+    fn run_shell(&mut self, command: &str, cx: &mut Context<Self>) {
+        let (command, exclude) = match command.strip_prefix('!') {
+            Some(rest) => (rest.trim().to_string(), true),
+            None => (command.trim().to_string(), false),
+        };
+        if command.is_empty() {
+            return;
+        }
+        let index = self.transcript.start_shell(command.clone());
+        self.active_shell = Some(index);
+        self.request(
+            json!({"type": "bash", "command": command, "excludeFromContext": exclude}),
+            cx,
+            move |this, result, _| {
+                this.active_shell = None;
+                match result {
+                    Ok(data) => this.transcript.finish_shell(
+                        index,
+                        data["exitCode"].as_i64(),
+                        data["output"].as_str().map(str::to_string),
+                    ),
+                    Err(error) => {
+                        this.transcript
+                            .finish_shell(index, None, Some(format!("{error:#}")))
+                    }
+                }
+            },
+        );
     }
 
     /// Run a slash command the way typing it would: built-ins and natively

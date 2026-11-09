@@ -268,7 +268,7 @@ impl SessionView {
                             this.open_session(path, cx);
                         }
                         if let Some(prompt) = this.backend.pending_prompt.take() {
-                            this.send_prompt(prompt, cx);
+                            this.run_text(prompt, cx);
                         }
                         cx.notify();
                     });
