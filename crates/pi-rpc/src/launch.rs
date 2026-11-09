@@ -103,6 +103,53 @@ fn bundled_candidates(home: &Path, local_app_data: Option<&Path>, windows: bool)
     }
 }
 
+/// The first line Gentle Shell writes into its self-contained install's
+/// generated launcher (`scripts/bundled-install.mjs`, `LAUNCHER_MARK`).
+const BUNDLED_LAUNCHER_MARK: &str = "gentle-shell bundled launcher (generated; do not edit)";
+
+/// What a self-contained install's launcher runs: its own Node and the active
+/// `gentle-pi` package.
+pub struct BundledInstall {
+    pub node: PathBuf,
+    pub package: PathBuf,
+}
+
+/// `launcher` as Gentle Shell's self-contained install (4.7) lays it out:
+/// `<prefix>/bin/gentle-shell[.cmd]` running `<prefix>/runtime/node-<v>`'s
+/// Node (`bin/node`, or `node.exe` on Windows) with the active version,
+/// `<prefix>/current` (a link, or on Windows a file naming the folder in
+/// `<prefix>/versions`). `None` for any other launcher.
+pub fn bundled_install(launcher: &Path) -> Option<BundledInstall> {
+    let script = std::fs::read_to_string(launcher).ok()?;
+    if !script.contains(BUNDLED_LAUNCHER_MARK) {
+        return None;
+    }
+    let prefix = launcher.parent()?.parent()?;
+    let runtime = node_runtime_name(&script)?;
+    let runtime = prefix.join("runtime").join(runtime);
+    let node = [runtime.join("bin").join("node"), runtime.join("node.exe")]
+        .into_iter()
+        .find(|node| node.is_file())?;
+    let current = prefix.join("current");
+    let version = if current.is_dir() {
+        current
+    } else {
+        let name = std::fs::read_to_string(&current).ok()?;
+        prefix.join("versions").join(name.trim())
+    };
+    let package = version.join("node_modules").join("gentle-pi");
+    package.is_dir().then_some(BundledInstall { node, package })
+}
+
+/// `node-<version>` from the launcher's `…runtime/node-<version>/…` path.
+fn node_runtime_name(script: &str) -> Option<&str> {
+    script.match_indices("runtime").find_map(|(at, _)| {
+        let rest = script[at + "runtime".len()..].strip_prefix(['/', '\\'])?;
+        let name = &rest[..rest.find(['/', '\\'])?];
+        name.starts_with("node-").then_some(name)
+    })
+}
+
 /// Launcher options from `GENTLE_SHELL_ARGS`.
 pub(crate) fn extra_args() -> Vec<String> {
     std::env::var("GENTLE_SHELL_ARGS")
