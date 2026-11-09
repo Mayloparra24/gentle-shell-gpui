@@ -37,7 +37,7 @@ If nothing is found, the error asks for `npm i -g gentle-pi` or `GENTLE_SHELL_BI
 
 | Field | Value |
 | --- | --- |
-| `args` | `GENTLE_SHELL_ARGS` split on spaces (`extra_args()`), then `--mode rpc` |
+| `args` | `GENTLE_SHELL_ARGS` split by `split_args()` (spaces separate; `"…"`/`'…'` keep spaces; backslashes literal), then `--mode rpc` |
 | `env` | `GENTLE_SHELL_INTERACTIVE_HOST=1` (enables `ask_user_question` dialogs and live helper activity) and `PATH` = combined PATH |
 | `cwd` | The tab's folder |
 
@@ -238,8 +238,8 @@ App paths: `dirs::data_dir()/gentle-shell-gpui/` (on macOS, `~/Library/Applicati
 | `<data>/gentle-shell-gpui/app-update.json` | App | R/W | `features/app_update/cache.rs` |
 | `<data>/gentle-shell-gpui/instance.json` (port and token, 0600) | App | R/W | `platform/instance.rs` |
 | `<data>/gentle-shell-gpui/toolchain/` | App | W | `features/setup/` |
-| `~/.gentle-shell/config.json` (`mode`, `dir`) | Launcher | R | `pi-rpc/home.rs` |
-| `~/.gentle-shell/config.json` (`startupReleaseCheck`, `skippedStartupRelease`) | Launcher, shared | R/W | `features/updates/` (`config_path` honors `GENTLE_SHELL_CONFIG`) |
+| Launcher `config.json` (`mode`, `dir`): `pi_rpc::launcher_config_path()`, `GENTLE_SHELL_CONFIG` or `~/.gentle-shell/config.json` | Launcher | R | `pi-rpc/home.rs` |
+| Launcher `config.json` (`startupReleaseCheck`, `skippedStartupRelease`) | Launcher, shared | R/W | `features/updates/` (same `launcher_config_path()`) |
 | `<agent>/auth.json` | Pi | R (Pi writes it via `login-helper.mjs`) | `usage/credentials.rs`, `settings/snapshot.rs`, `setup/extras.rs` |
 | `<agent>/settings.json` | Pi | R/W | `themes.rs` (`theme`), `sessions/discovery.rs` (`sessionDir`), `profiles/files.rs` (orchestrator), `setup/gentle.rs` (`packages`) |
 | `<agent>/models.json`, `<agent>/mcp.json` | Pi | R | `settings/snapshot.rs`, `setup/extras.rs` |

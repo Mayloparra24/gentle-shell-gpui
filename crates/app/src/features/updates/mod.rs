@@ -2,7 +2,8 @@
 //! interactive startup check answers it (`lib/gentle-shell-startup-update.ts`):
 //! the npm registry's `gentle-pi/latest`, stable versions only, a one-day
 //! cache and the "Skip this version" choice, both kept in the launcher's
-//! `~/.gentle-shell/config.json` so the app and the terminal agree.
+//! `config.json` (`pi_rpc::launcher_config_path`) so the app and the
+//! terminal agree.
 //!
 //! Version parsing, comparison and the offer are `gentle_core::version`.
 //! Here, `registry` asks npm and `cache` reads and writes the launcher config.
@@ -10,21 +11,12 @@
 mod cache;
 mod registry;
 
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gentle_core::version::offer_for;
 use serde_json::Value;
 
 pub use gentle_core::version::{UpdateOffer, current_from_versions};
-
-/// The launcher config: `GENTLE_SHELL_CONFIG`, else `~/.gentle-shell/config.json`.
-pub fn config_path() -> Option<PathBuf> {
-    match std::env::var_os("GENTLE_SHELL_CONFIG") {
-        Some(path) if !path.is_empty() => Some(PathBuf::from(path)),
-        _ => dirs::home_dir().map(|home| home.join(".gentle-shell").join("config.json")),
-    }
-}
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -36,7 +28,7 @@ fn now_ms() -> u64 {
 /// Blocking: the offer for `current`, from the day-old cache or the registry.
 /// Offline or unreadable answers mean "no offer", never an error.
 pub fn check(current: &str) -> Option<UpdateOffer> {
-    let path = config_path()?;
+    let path = pi_rpc::launcher_config_path();
     let config = cache::read_config(&path);
     let skipped = config
         .get("skippedStartupRelease")
@@ -59,6 +51,6 @@ pub fn check(current: &str) -> Option<UpdateOffer> {
 
 /// "Skip this version": the key the terminal's startup prompt writes too.
 pub fn skip(version: &str) -> std::io::Result<()> {
-    let path = config_path().ok_or_else(|| std::io::Error::other("no home directory"))?;
+    let path = pi_rpc::launcher_config_path();
     cache::write_key(&path, "skippedStartupRelease", Value::from(version))
 }

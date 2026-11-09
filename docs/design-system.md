@@ -192,7 +192,7 @@ Presentation utilities in the same module: `split_path` (prefix `~/a/b/` and lea
 
 | Function | Duration | Curve | Effect | Typical use |
 | --- | --- | --- | --- | --- |
-| `appear(id, el)` | 220 ms | `ease_out_quint` | Opacity 0→1 and `mt` from 6 px to 0 | First appearance: rows, Settings content, sidebar, usage cards. |
+| `appear(id, el)` | 220 ms | `ease_out_quint` | Opacity 0→1 and relative `top` from 6 px to 0 | First appearance: rows, Settings content, sidebar, usage cards. |
 | `appear_after(id, delay, rise, el)` | `delay` + 420 ms | ease-out-quint computed by hand (the wait stays linear) | Opacity and relative `top` from `rise` px | Staggered entrances (welcome, onboarding steps). |
 | `pop_in(id, el)` | 340 ms | `spring` | Opacity and relative `top` from 12 px | Screens, dialogs, palette. |
 | `popover_in(id, el)` | 300 ms | `spring` | Opacity only, without changing the measured size | Content inside an `island` or a popover. |
@@ -206,7 +206,7 @@ Guidelines:
 - **Stagger with `appear_after`**: same base and a constant gap per step (`self.entrance + STEP_GAP * (index + 1)` with `STEP_GAP = 110 ms` in `features/onboarding/sequence.rs`).
 - **Do not replay on scroll**: the conversation only applies `appear` to a row during `APPEAR_WINDOW` (300 ms) after it was first seen (`features/session/view/transcript_list.rs`).
 - **`spring` goes in the animator, not as easing**: GPUI's easing must stay within 0..=1 and the spring goes past 1 (`pop_in` applies it inside the closure).
-- **Move without pushing**: `pop_in` and `appear_after` move with `.relative().top(..)`, which does not move flex siblings; `appear` uses `mt`, which does affect layout for 220 ms.
+- **Move without pushing**: `appear`, `pop_in` and `appear_after` move with `.relative().top(..)`, which does not move flex siblings. Don't animate margins or sizes for an entrance. Since `.relative()` replaces the position, don't pass them an `.absolute()` element; wrap it instead.
 - **Paint-only effects**: large effects draw in a `canvas` with `window.paint_quad`; they take no input and do not change layout. The surge shake is applied as an offset of the window root with `request_animation_frame`, without wrapping it in an animation, because that would change the key of every inner element (`features/workspace/render.rs`). A `Task` with a timer of the same duration clears the state when it ends (`Workspace::play_surge`, `WelcomeView::enter`).
 
 ## Brand

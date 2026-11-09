@@ -30,9 +30,18 @@ fn user_pi_home() -> PathBuf {
         .unwrap_or_else(|| home_dir().join(".pi").join("agent"))
 }
 
-/// `~/.gentle-shell/config.json`, where `gentle-shell home` persists the mode.
-pub(crate) fn launcher_config_path() -> PathBuf {
-    home_dir().join(".gentle-shell").join("config.json")
+/// The launcher's `config.json`, where `gentle-shell home` persists the mode:
+/// `GENTLE_SHELL_CONFIG` when set and non-empty, like the launcher's own
+/// `resolveConfigPath`, else `~/.gentle-shell/config.json`.
+pub fn launcher_config_path() -> PathBuf {
+    config_path_in(std::env::var_os("GENTLE_SHELL_CONFIG"), &home_dir())
+}
+
+fn config_path_in(over: Option<std::ffi::OsString>, home: &Path) -> PathBuf {
+    match over {
+        Some(path) if !path.is_empty() => PathBuf::from(path),
+        _ => home.join(".gentle-shell").join("config.json"),
+    }
 }
 
 /// The last resolution and the config file stamp it read; everything else
@@ -284,6 +293,19 @@ mod tests {
         // The old folder is untouched.
         assert!(legacy.join("profiles.json").exists());
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn launcher_config_follows_gentle_shell_config_like_the_launcher() {
+        let home = Path::new("/home/me");
+        let default = PathBuf::from("/home/me/.gentle-shell/config.json");
+        assert_eq!(config_path_in(None, home), default);
+        // An empty override is ignored, as `resolveConfigPath` does.
+        assert_eq!(config_path_in(Some("".into()), home), default);
+        assert_eq!(
+            config_path_in(Some("/tmp/other/config.json".into()), home),
+            PathBuf::from("/tmp/other/config.json")
+        );
     }
 
     #[test]
