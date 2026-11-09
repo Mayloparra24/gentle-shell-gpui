@@ -2141,7 +2141,10 @@ impl Workspace {
             .cursor_pointer()
             .hover(|s| s.bg(ui::surface_hover().opacity(0.6)))
             .tooltip(|window, cx| Tooltip::new("Switch workspace").build(window, cx))
-            // Keep clicks on the chip from turning into window drags.
+            // Keep clicks on the chip from turning into window drags: `occlude`
+            // hides the title bar's drag area from Windows' hit test, and
+            // stopping the mouse-down keeps TitleBar from starting a move.
+            .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_palette(Category::Workspaces, window, cx)
@@ -2215,7 +2218,9 @@ impl Workspace {
                         this.text_color(ui::muted())
                             .hover(|s| s.bg(ui::surface_hover().opacity(0.6)).text_color(ui::fg()))
                     })
-                    // Keep clicks on tabs from turning into window drags.
+                    // Keep clicks on tabs from turning into window drags (see the
+                    // workspace chip).
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     // A double-click on an agent tab renames its session.
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -2317,6 +2322,7 @@ impl Workspace {
             .child(
                 div()
                     .ml(px(2.))
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(title_button("new-tab", IconName::Plus).dropdown_menu(
                         move |menu, _, _| {
@@ -2769,6 +2775,9 @@ impl Render for Workspace {
                                 h_flex()
                                     .flex_none()
                                     .gap_1()
+                                    // Without this, Windows answers clicks on these
+                                    // buttons as title-bar drags (HTCAPTION).
+                                    .occlude()
                                     // Tern keeps pane layout in the title bar, so
                                     // panes carry no header; these act on the
                                     // focused pane.
