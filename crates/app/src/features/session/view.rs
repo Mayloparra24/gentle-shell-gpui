@@ -34,6 +34,8 @@ mod slash_menu;
 mod todo_island;
 mod transcript_list;
 
+pub(crate) use permissions::mode_style;
+
 pub(super) use activity::parse_rate_limit;
 pub(super) use cards::markdown_custom;
 pub(super) use live::{Live, RateLimit};

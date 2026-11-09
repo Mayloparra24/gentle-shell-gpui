@@ -31,6 +31,7 @@ use crate::features::session::{SessionEvent, SessionView};
 use crate::features::sessions::{SessionsEvent, SessionsView};
 use crate::features::settings::{SettingsEvent, SettingsView};
 use crate::features::usage::{UsageEvent, UsageView};
+use crate::features::welcome::{WelcomeEvent, WelcomeView};
 use crate::features::workspaces::{self, SavedPane, SavedState, SavedTab, SavedWorkspace};
 use crate::shared::pane::{PaneFactories, PaneId, PaneItem, PaneKind, PaneTree, SplitAxis};
 use crate::shared::ui;
@@ -94,6 +95,7 @@ enum Overlay {
     Settings(Entity<SettingsView>),
     Profiles(Entity<ProfilesView>),
     Onboarding(Entity<OnboardingView>),
+    Welcome(Entity<WelcomeView>),
 }
 
 struct Pane {
@@ -244,6 +246,9 @@ pub struct Workspace {
     _surge_end: Option<Task<()>>,
     /// The in-app browser showing Gentle Design's canvas, if open.
     browser: Option<(Entity<crate::features::browser::BrowserPanel>, Subscription)>,
+    /// The welcome tour, kept while its "Sign in" shows Providers so closing
+    /// Providers returns to it.
+    resume_welcome: Option<Entity<WelcomeView>>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -294,6 +299,7 @@ impl Workspace {
             surge: None,
             surge_runs: 0,
             browser: None,
+            resume_welcome: None,
             _surge_end: None,
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {
@@ -323,15 +329,21 @@ impl Workspace {
         this.focus_active(window, cx);
         this.start_shown(window, cx);
         this.schedule_save(cx);
-        // First run, or something required missing: onboarding opens by
-        // itself once the checks (blocking; PATH probes) come back.
+        // First run: the welcome tour, which ends on the setup checklist.
+        // Later, something required missing: the onboarding screen. Both
+        // open by themselves once the checks (blocking; PATH probes) return.
         cx.spawn_in(window, async move |this, cx| {
             let probe = cx.background_executor().spawn(async { Probe::run() }).await;
             if !probe.needs_onboarding() {
                 return;
             }
             let _ = this.update_in(cx, |this, window, cx| {
-                if this.overlay.is_none() {
+                if this.overlay.is_some() {
+                    return;
+                }
+                if probe.first_run {
+                    this.open_welcome(Some(probe), window, cx);
+                } else {
                     this.open_onboarding(Some(probe), window, cx);
                 }
             });

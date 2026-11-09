@@ -24,6 +24,7 @@ mod submit;
 mod view;
 
 pub use agents::AgentsPanel;
+pub(crate) use view::mode_style;
 
 actions!(session, [Abort, Stop, ToggleAgents, NewSession]);
 

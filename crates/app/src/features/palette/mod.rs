@@ -32,6 +32,8 @@ pub enum PaletteAction {
     Settings,
     /// The onboarding screen: dependency checks and installs.
     Setup,
+    /// The first-run welcome tour, from its first page.
+    Welcome,
     Agents,
     NewSession,
     /// A new tab with an agent pane.

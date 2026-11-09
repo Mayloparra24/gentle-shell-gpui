@@ -18,5 +18,6 @@ pub mod setup;
 pub mod terminal;
 pub mod updates;
 pub mod usage;
+pub mod welcome;
 pub mod workspace;
 pub mod workspaces;

@@ -63,7 +63,7 @@ crates/
 │       ├── features/            # una carpeta por funcionalidad; su entrada es mod.rs
 │       │   ├── session/  workspace/  workspaces/  sessions/  palette/  profiles/  settings/  usage/  setup/
 │       │   ├── browser/  files/  terminal/  git/  providers/  memory/  onboarding/  notices/  alerts/
-│       │   └── app_update/  updates/
+│       │   └── app_update/  updates/  welcome/
 │       ├── platform/            # integración con el SO: instancia única, íconos del Dock y de la ventana
 │       └── shared/              # piezas usadas por varias funcionalidades sin lógica propia:
 │                                # ui, themes, assets, banner, surge, pane, gentle_state

@@ -73,6 +73,12 @@ pub(super) fn screen_rows() -> Vec<Row> {
             PaletteAction::Setup,
         ),
         row(
+            IconName::Sparkles,
+            "Welcome tour",
+            "The first-run introduction, from the start",
+            PaletteAction::Welcome,
+        ),
+        row(
             IconName::Plus,
             "New session",
             &format!("Start a fresh conversation in this pane ({cmd}N)"),

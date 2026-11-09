@@ -105,7 +105,13 @@ impl OnboardingView {
     /// The checklist for Configuration → Setup & requirements: looks at the
     /// machine now, installs and hands off actions like the screen does.
     pub fn embedded(cx: &mut Context<Self>) -> Self {
-        let mut this = Self::new(None, cx);
+        Self::embedded_with(None, cx)
+    }
+
+    /// The embedded checklist, starting from a look already taken (`None`
+    /// looks now).
+    pub fn embedded_with(probe: Option<Probe>, cx: &mut Context<Self>) -> Self {
+        let mut this = Self::new(probe, cx);
         this.embedded = true;
         this
     }
@@ -118,5 +124,10 @@ impl OnboardingView {
     /// gentle-shell can start, as of the last look.
     pub fn usable(&self) -> bool {
         self.checks.as_deref().is_some_and(usable)
+    }
+
+    /// Everything required is ready, as of the last look.
+    pub fn ready(&self) -> bool {
+        self.checks.as_deref().is_some_and(required_ok)
     }
 }

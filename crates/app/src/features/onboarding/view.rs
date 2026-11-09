@@ -11,6 +11,7 @@ use gpui_kit::*;
 use super::checks::{Tone, all_set, install_plan, is_ok, required_ok, status_text, tone};
 use super::{OnboardingEvent, OnboardingView};
 use crate::features::setup::{Check, Fix, Need, Status};
+use crate::shared::banner::pixel_rose;
 use crate::shared::ui;
 
 /// Install output lines a running row shows.
@@ -44,7 +45,7 @@ impl OnboardingView {
             ),
         };
         let rose_size = if done { 88. } else { 56. };
-        let mark = div().flex().justify_center().child(rose(
+        let mark = div().flex().justify_center().child(pixel_rose(
             rose_size,
             if done { ui::success() } else { ui::petal() },
         ));
@@ -398,27 +399,6 @@ impl OnboardingView {
                 )
             })
     }
-}
-
-/// Gentle Shell's pixel rose, `height` px tall, in `color`.
-fn rose(height: f32, color: Hsla) -> impl IntoElement {
-    let (dots, (width, rows)) = crate::shared::banner::rose();
-    let dot = height / rows.max(1) as f32;
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let side = px((dot * 0.55).max(1.0));
-            for &(x, y) in dots {
-                let origin = point(
-                    bounds.origin.x + px(x as f32 * dot),
-                    bounds.origin.y + px(y as f32 * dot),
-                );
-                window.paint_quad(fill(Bounds::new(origin, size(side, side)), color));
-            }
-        },
-    )
-    .w(px(width as f32 * dot))
-    .h(px(height))
 }
 
 impl Render for OnboardingView {

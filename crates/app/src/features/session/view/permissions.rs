@@ -149,7 +149,9 @@ impl SessionView {
     }
 }
 
-fn mode_style(mode: Option<PermissionMode>) -> (IconName, Hsla) {
+/// The icon and color a permission mode wears everywhere (the chip, the
+/// picker, the welcome tour).
+pub(crate) fn mode_style(mode: Option<PermissionMode>) -> (IconName, Hsla) {
     match mode {
         Some(PermissionMode::Normal) => (IconName::Shield, ui::muted()),
         Some(PermissionMode::Auto) => (IconName::Sparkles, ui::info()),

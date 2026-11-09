@@ -148,16 +148,18 @@ impl Workspace {
         match &self.overlay {
             // An install is running: the screen stays until it ends.
             Some((Overlay::Onboarding(view), _)) if view.read(cx).busy() => {}
+            Some((Overlay::Welcome(view), _)) if view.read(cx).busy(cx) => {}
             Some(_) => self.close_overlay(window, cx),
             None => cx.propagate(),
         }
     }
 
     pub(super) fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let retry = matches!(
-            &self.overlay,
-            Some((Overlay::Onboarding(view), _)) if view.read(cx).usable()
-        );
+        let retry = match &self.overlay {
+            Some((Overlay::Onboarding(view), _)) => view.read(cx).usable(),
+            Some((Overlay::Welcome(view), _)) => view.read(cx).usable(cx),
+            _ => false,
+        };
         self.overlay = None;
         if retry {
             self.retry_failed_sessions(window, cx);
