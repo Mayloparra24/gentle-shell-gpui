@@ -53,12 +53,14 @@ La migración es incremental. La estructura objetivo no obliga a mover código q
 crates/
 ├── app/
 │   └── src/
-│       ├── main.rs              # composition root
+│       ├── main.rs              # arranque: CLI, instancia única, PATH de toolchains, adopción de config
+│       ├── app.rs               # composition root: GPUI, temas, atajos, menús y ventana
+│       ├── cli.rs               # argumentos (`[FOLDER] [-p TEXT]`) y carpeta inicial
 │       ├── session/             # conversación y backend de una pestaña
 │       ├── files/               # árbol, cambios, referencias y visor
 │       ├── setup/               # comprobaciones e instalación
 │       ├── terminal/            # PTY y presentación de terminal
-│       ├── platform/            # integración específica del SO, cuando compense
+│       ├── platform.rs          # ícono del Dock (macOS) y de la ventana (X11); crece a platform/ cuando compense
 │       └── shared/              # UI reutilizable sin estado de negocio, cuando compense
 ├── core/                        # lógica pura compartida (gentle-core)
 └── pi-rpc/

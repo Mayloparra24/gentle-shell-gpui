@@ -310,7 +310,7 @@ impl Workspace {
                 Some(index) => index,
                 None => this.push_space(None, folder),
             },
-            None if this.spaces.is_empty() => this.push_space(None, crate::default_cwd()),
+            None if this.spaces.is_empty() => this.push_space(None, crate::cli::default_cwd()),
             None => this.current,
         };
         this.current = target;

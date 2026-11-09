@@ -259,7 +259,7 @@ impl Workspace {
         } else if self.space().root.is_dir() {
             self.space().root.clone()
         } else {
-            crate::default_cwd()
+            crate::cli::default_cwd()
         };
         match saved.kind {
             PaneKind::Agent => {
