@@ -61,7 +61,7 @@ pub fn launcher() -> Result<Launcher, String> {
 
 /// Launcher options (home selectors from `GENTLE_SHELL_ARGS`) that precede a subcommand.
 fn launcher_command(spec: &pi_rpc::LaunchSpec, sub: &[&str]) -> Command {
-    let mut command = Command::new(&spec.program);
+    let mut command = pi_rpc::command(&spec.program);
     command
         .args(spec.args.iter().take_while(|a| *a != "--mode"))
         .args(sub)
@@ -171,7 +171,7 @@ pub fn install_gentle_shell(log: &Log) -> Result<(), String> {
         }
     }
     let npm = pi_rpc::find_program("npm").ok_or("npm wasn't found. Install Node.js first.")?;
-    let mut command = Command::new(&npm);
+    let mut command = pi_rpc::command(&npm);
     command.args([
         "install",
         "-g",
@@ -263,11 +263,10 @@ fn gentle_ai_pin(root: Option<&Path>) -> Option<String> {
 
 /// Node's `realpath` of the home (no `\\?\` prefix on Windows).
 fn home_key(dir: &Path) -> String {
-    let real = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
-    let text = real.to_string_lossy().into_owned();
-    text.strip_prefix(r"\\?\")
-        .map(str::to_string)
-        .unwrap_or(text)
+    dunce::canonicalize(dir)
+        .unwrap_or_else(|_| dunce::simplified(dir).to_path_buf())
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn read_json(path: &Path) -> Option<Value> {

@@ -7,6 +7,7 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-channel.workspace = true
+dunce = "1"
 serde.workspace = true
 serde_json.workspace = true
 which = "8"

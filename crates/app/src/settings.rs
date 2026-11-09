@@ -335,7 +335,7 @@ pub fn forget_claude_auth() {
 fn claude_auth_status() -> Option<String> {
     let stamp = dirs::home_dir().and_then(|home| Stamp::of(&home.join(".claude.json")));
     reuse_or_run(&CLAUDE_AUTH, Instant::now(), CLAUDE_AUTH_TTL, stamp, || {
-        let mut claude = std::process::Command::new("claude");
+        let mut claude = pi_rpc::command("claude");
         claude
             .args(["auth", "status"])
             .stdin(std::process::Stdio::null())
@@ -544,7 +544,7 @@ impl SettingsView {
                 .background_executor()
                 .spawn(async move {
                     let spec = pi_rpc::resolve_backend(&cwd).map_err(|e| format!("{e:#}"))?;
-                    let mut command = std::process::Command::new(&spec.program);
+                    let mut command = pi_rpc::command(&spec.program);
                     // Launcher options (home selectors) precede the subcommand.
                     command
                         .args(spec.args.iter().take_while(|a| *a != "--mode"))
@@ -627,7 +627,7 @@ impl SettingsView {
                         Ok(spec) => spec,
                         Err(error) => return (false, format!("{error:#}"), None, None),
                     };
-                    let mut command = std::process::Command::new(&spec.program);
+                    let mut command = pi_rpc::command(&spec.program);
                     command
                         .args(spec.args.iter().take_while(|a| *a != "--mode"))
                         .arg("upgrade")

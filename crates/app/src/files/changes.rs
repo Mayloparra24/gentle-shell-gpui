@@ -6,7 +6,7 @@
 use std::cell::Cell;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -1139,7 +1139,7 @@ fn generate_message(toplevel: &Path) -> Result<(String, String), String> {
         return Err("Stage some changes first; the message is written from the staged diff".into());
     }
     let spec = pi_rpc::resolve_backend(toplevel).map_err(|e| format!("{e:#}"))?;
-    let mut command = Command::new(&spec.program);
+    let mut command = pi_rpc::command(&spec.program);
     // Launcher options (home selectors) come before Pi's own arguments.
     command
         .args(spec.args.iter().take_while(|a| *a != "--mode"))
@@ -1152,11 +1152,6 @@ fn generate_message(toplevel: &Path) -> Result<(String, String), String> {
         if key != "GENTLE_SHELL_INTERACTIVE_HOST" {
             command.env(key, value);
         }
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
     }
     let out = command
         .output()

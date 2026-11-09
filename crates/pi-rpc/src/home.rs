@@ -133,7 +133,7 @@ fn read_config_mode() -> Option<ConfigMode> {
 /// The `@earendil-works/pi-coding-agent` package next to the resolved
 /// launcher (`<gentle-pi>/bin/gentle-shell.mjs`), nested or hoisted.
 pub fn pi_package(spec: &LaunchSpec) -> Option<PathBuf> {
-    let launcher = std::fs::canonicalize(&spec.program).unwrap_or_else(|_| spec.program.clone());
+    let launcher = dunce::canonicalize(&spec.program).unwrap_or_else(|_| spec.program.clone());
     let mut roots: Vec<PathBuf> = Vec::new();
     // Unix: the npm bin is a symlink into <gentle-pi>/bin/.
     if let Some(root) = launcher.parent().and_then(Path::parent) {

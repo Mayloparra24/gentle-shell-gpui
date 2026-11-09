@@ -2174,6 +2174,7 @@ dependencies = [
  "async-channel",
  "base64 0.22.1",
  "dirs 7.0.0",
+ "dunce",
  "embed-resource",
  "flate2",
  "gpui-kit",
@@ -5291,6 +5292,7 @@ version = "0.1.5-rc.1"
 dependencies = [
  "anyhow",
  "async-channel",
+ "dunce",
  "serde",
  "serde_json",
  "which",

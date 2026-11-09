@@ -1,7 +1,6 @@
 //! Node, Go, Git, Engram, the provider and the Claude Code sign-in.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::Value;
 
@@ -66,7 +65,7 @@ fn winget() -> Option<PathBuf> {
 /// A per-machine package via winget; Windows may show its own UAC prompt.
 fn winget_install(id: &str, what: &str, log: &Log) -> Result<(), String> {
     let winget = winget().ok_or("winget isn't available on this system.")?;
-    let mut command = Command::new(winget);
+    let mut command = pi_rpc::command(winget);
     command.args([
         "install",
         "--id",
@@ -282,7 +281,7 @@ pub fn install_engram(log: &Log) -> Result<(), String> {
     {
         // Newer Homebrew wants third-party taps trusted; older ones lack the command.
         let _ = output_of(&brew, &["trust", "gentleman-programming/tap"]);
-        let mut command = Command::new(&brew);
+        let mut command = pi_rpc::command(&brew);
         command.args(["install", "gentleman-programming/tap/engram"]);
         log("Installing Engram with Homebrew…".into());
         match run_logged(command, "brew install", log) {

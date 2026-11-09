@@ -43,7 +43,7 @@ The app does not reimplement Gentle Shell. Each tab starts `gentle-shell --mode 
 Download the asset for your system from [Releases](https://github.com/ismaelosuna7824/gentle-shell-gpui/releases) (names under [Packages and releases](#packages-and-releases)).
 
 - **macOS:** open `gentle-shell-gpui-<version>-macos-aarch64.dmg` (Apple silicon) or `…-macos-x86_64.dmg` (Intel) and drag **Gentle Shell** onto **Applications**. The app is ad-hoc signed, not notarized, so the first launch is blocked: right-click the app → **Open** → **Open**, or allow it in System Settings → Privacy & Security → **Open Anyway**. From a terminal, `xattr -dr com.apple.quarantine /Applications/"Gentle Shell.app"` does the same. Later versions install from inside the app ([Updating the app](#updating-the-app)).
-- **Windows:** unzip and run `gentle-shell-gpui.exe`. SmartScreen may warn about an unknown publisher: **More info** → **Run anyway**. The in-app browser uses the Microsoft Edge WebView2 Runtime, which Windows 11 and updated Windows 10 already have.
+- **Windows:** run `gentle-shell-gpui-<version>-windows-x86_64-setup.exe`. It installs for your user only (no admin rights) into `%LOCALAPPDATA%\Programs\Gentle Shell`, adds Gentle Shell to the Start menu (and the desktop if you tick it) and to Apps → Installed apps for uninstalling; installing a newer setup over it upgrades in place. SmartScreen may warn about an unknown publisher: **More info** → **Run anyway**. The `…-windows-x86_64.zip` holds the bare exe (the in-app updater uses it). The in-app browser uses the Microsoft Edge WebView2 Runtime, which Windows 11 and updated Windows 10 already have.
 - **Linux:** extract the tarball and run `gentle-shell-gpui-<version>/gentle-shell-gpui`. Copy the `.desktop` file to `~/.local/share/applications/` (and fix its `Exec=` path) to get a launcher entry. The app links WebKitGTK 4.1 for its in-app browser: on Debian or Ubuntu (22.04 or newer) `sudo apt install libwebkit2gtk-4.1-0` if it isn't installed yet.
 
 ### From source (no release installed)
@@ -91,7 +91,7 @@ Build packages locally:
 
 - macOS: `packaging/macos/bundle.sh aarch64-apple-darwin 0.1.0` → `dist/Gentle Shell.app`, `dist/gentle-shell-gpui-0.1.0-macos-aarch64.zip` and `.dmg` (`x86_64-apple-darwin` for Intel; it cross-compiles from Apple silicon). `GENTLE_BIN=<path>` packages an existing build instead.
 - Linux: `packaging/linux/package.sh x86_64-unknown-linux-gnu 0.1.0` → `dist/gentle-shell-gpui-0.1.0-linux-x86_64.tar.gz`.
-- Windows: the icon and version info are embedded in the exe by `crates/app/build.rs`.
+- Windows: the icon and version info are embedded in the exe by `crates/app/build.rs`; the installer is `packaging/windows/installer.iss` (Inno Setup 6: `ISCC /DAppVersion=<v> /DSourceExe=<exe> /DOutputDir=dist /DIconFile=packaging\icons\icon.ico packaging\windows\installer.iss`).
 
 Build profiles: `cargo run --release` uses Cargo's default release settings, so local optimized builds stay quick. Packages use `--profile dist` (thin LTO, one codegen unit, stripped): about a third smaller, much slower to build. The scripts and the Release workflow build `dist`.
 
@@ -103,7 +103,7 @@ Cut a release:
 2. Optional dry run: Actions → Release → Run workflow. It builds all four targets and uploads the assets and `SHA256SUMS` as an artifact without publishing.
 3. `git tag v0.2.0 && git push origin main v0.2.0`. The Release workflow checks the tag against the workspace version, builds macOS (arm64 and x86_64), Windows and Linux, writes `SHA256SUMS` and publishes the GitHub release with generated notes. A version with `-` (`0.2.0-rc.1`) is a prerelease.
 
-Assets: `gentle-shell-gpui-<v>-macos-aarch64.dmg` / `.zip` and `…-macos-x86_64.dmg` / `.zip` (the same ad-hoc signed `Gentle Shell.app`: the DMG to install by dragging, the zip for the in-app updater), `…-windows-x86_64.zip` (the exe), `…-linux-x86_64.tar.gz` (binary, `.desktop`, icon) and `SHA256SUMS`. The in-app updater relies on these names.
+Assets: `gentle-shell-gpui-<v>-macos-aarch64.dmg` / `.zip` and `…-macos-x86_64.dmg` / `.zip` (the same ad-hoc signed `Gentle Shell.app`: the DMG to install by dragging, the zip for the in-app updater), `…-windows-x86_64-setup.exe` (the installer) and `…-windows-x86_64.zip` (the bare exe, for the in-app updater), `…-linux-x86_64.tar.gz` (binary, `.desktop`, icon) and `SHA256SUMS`. The in-app updater relies on these names.
 
 ### Updating the app
 

@@ -45,27 +45,16 @@ pub fn go_version(output: &str) -> Option<Version> {
         .and_then(parse_version)
 }
 
-fn hide_window(command: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
-    #[cfg(not(windows))]
-    let _ = command;
-}
-
 /// A tool's stdout and whether it succeeded, run on the merged PATH; `None`
 /// when it can't start or outlives the deadline (it is killed then).
 pub fn capture(program: &Path, args: &[&str]) -> Option<(bool, String)> {
-    let mut command = Command::new(program);
+    let mut command = pi_rpc::command(program);
     command
         .args(args)
         .env("PATH", pi_rpc::child_path())
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    hide_window(&mut command);
     let mut child = command.spawn().ok()?;
     let mut stdout = child.stdout.take()?;
     let reader = std::thread::spawn(move || {
@@ -130,7 +119,6 @@ pub fn run_logged(mut command: Command, what: &str, log: &Log) -> Result<(), Str
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    hide_window(&mut command);
     let mut child = command
         .spawn()
         .map_err(|e| format!("Couldn't start {what}: {e}"))?;

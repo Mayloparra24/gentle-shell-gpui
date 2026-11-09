@@ -1,3 +1,5 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod activity;
 mod alerts;
 mod app_update;
@@ -70,7 +72,7 @@ pub fn default_cwd() -> PathBuf {
     parse_cli()
         .folder
         .filter(|p| p.is_dir())
-        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| dunce::canonicalize(p).ok())
         .or_else(|| {
             std::env::current_dir()
                 .ok()
@@ -127,7 +129,7 @@ fn main() {
     let folder = cli
         .folder
         .filter(|p| p.is_dir())
-        .and_then(|p| p.canonicalize().ok());
+        .and_then(|p| dunce::canonicalize(p).ok());
     let prompt = cli.prompt;
     // Only one app per user: a second launch hands its request over and exits.
     let request = instance::OpenRequest {

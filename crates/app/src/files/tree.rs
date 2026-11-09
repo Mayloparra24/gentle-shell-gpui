@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -1512,7 +1512,7 @@ fn paths(state: &GitState) -> Vec<&str> {
 }
 
 fn show_toplevel(root: &Path) -> Option<PathBuf> {
-    let out = Command::new("git")
+    let out = pi_rpc::command("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(root)
         .stdin(Stdio::null())

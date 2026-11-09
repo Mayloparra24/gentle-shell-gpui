@@ -6,6 +6,25 @@ use std::sync::Mutex;
 
 use crate::file_cache::Stamp;
 
+/// A `Command` for a background child of this GUI app.
+///
+/// On Windows it sets `CREATE_NO_WINDOW`: a release build has no console, so
+/// every console child (git, node, shells, the backend) would flash a console
+/// window of its own, and a debug build's children would attach to the
+/// launching terminal. Elsewhere it is plain `Command::new`.
+pub fn command(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt as _;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let mut command = std::process::Command::new(program);
+        command.creation_flags(CREATE_NO_WINDOW);
+        command
+    }
+    #[cfg(not(windows))]
+    std::process::Command::new(program)
+}
+
 /// How to start one RPC backend process.
 #[derive(Debug, Clone)]
 pub struct LaunchSpec {
@@ -144,7 +163,7 @@ static VERSION_RUN: Mutex<()> = Mutex::new(());
 /// Everything `<launcher> --version` prints on stdout, cached per launcher
 /// until the launcher file (an upgrade) or the home config changes.
 pub fn version_output(spec: &LaunchSpec) -> Option<String> {
-    let program = std::fs::canonicalize(&spec.program).unwrap_or_else(|_| spec.program.clone());
+    let program = dunce::canonicalize(&spec.program).unwrap_or_else(|_| spec.program.clone());
     let key = || {
         Some(VersionKey {
             program: Stamp::of(&program)?,
@@ -183,7 +202,7 @@ pub fn forget_versions() {
 }
 
 fn run_version(spec: &LaunchSpec) -> Option<String> {
-    let mut command = std::process::Command::new(&spec.program);
+    let mut command = crate::command(&spec.program);
     command
         .arg("--version")
         .current_dir(&spec.cwd)
@@ -191,11 +210,6 @@ fn run_version(spec: &LaunchSpec) -> Option<String> {
         .stderr(std::process::Stdio::null());
     for (key, value) in &spec.env {
         command.env(key, value);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
     }
     let out = command.output().ok()?;
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -243,7 +257,7 @@ fn search_path() -> OsString {
 
 #[cfg(unix)]
 fn login_shell_path() -> Option<OsString> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     use std::time::{Duration, Instant};
 
     const START: &str = "__GENTLE_PATH_START__";
@@ -251,7 +265,7 @@ fn login_shell_path() -> Option<OsString> {
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     // Interactive login so rc files that set up nvm/fnm/mise run; markers fence
     // the value from anything those files print.
-    let mut child = Command::new(&shell)
+    let mut child = crate::command(&shell)
         .args([
             "-l",
             "-i",

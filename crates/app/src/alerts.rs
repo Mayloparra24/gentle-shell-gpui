@@ -519,19 +519,17 @@ fn builtin_wav(id: &str) -> Option<Vec<u8>> {
 /// the fixed system PowerShell playing WAV through .NET `SoundPlayer`, hidden.
 #[cfg(target_os = "macos")]
 fn player_command(path: &Path) -> Option<std::process::Command> {
-    let mut command = std::process::Command::new("/usr/bin/afplay");
+    let mut command = pi_rpc::command("/usr/bin/afplay");
     command.arg(path);
     Some(command)
 }
 
 #[cfg(target_os = "windows")]
 fn player_command(path: &Path) -> Option<std::process::Command> {
-    use std::os::windows::process::CommandExt as _;
     // Same trust anchor as Gentle Shell's adapter; the path travels in the
     // environment, so no byte of it becomes command text.
-    let mut command = std::process::Command::new(
-        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
-    );
+    let mut command =
+        pi_rpc::command("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
     command
         .args([
             "-NoProfile",
@@ -541,8 +539,7 @@ fn player_command(path: &Path) -> Option<std::process::Command> {
             "-Command",
             "(New-Object System.Media.SoundPlayer $env:GENTLE_ALERT_SOUND).PlaySync()",
         ])
-        .env("GENTLE_ALERT_SOUND", path)
-        .creation_flags(0x0800_0000);
+        .env("GENTLE_ALERT_SOUND", path);
     Some(command)
 }
 
@@ -551,7 +548,7 @@ fn player_command(path: &Path) -> Option<std::process::Command> {
     let player = ["/usr/bin/paplay", "/usr/bin/pw-play", "/usr/bin/aplay"]
         .into_iter()
         .find(|p| Path::new(p).is_file())?;
-    let mut command = std::process::Command::new(player);
+    let mut command = pi_rpc::command(player);
     command.arg(path);
     Some(command)
 }
