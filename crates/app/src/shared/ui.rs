@@ -507,6 +507,28 @@ pub fn appear(id: impl Into<ElementId>, element: Div) -> AnimationElement<Div> {
     )
 }
 
+/// [`appear`] after `delay`, rising `rise` px: staggered entrances (the
+/// welcome screen's intro, then its steps one by one).
+pub fn appear_after(
+    id: impl Into<ElementId>,
+    delay: Duration,
+    rise: f32,
+    element: Div,
+) -> AnimationElement<Div> {
+    const RUN: f32 = 420.;
+    let wait = delay.as_millis() as f32;
+    element.with_animation(
+        id,
+        Animation::new(Duration::from_millis((wait + RUN) as u64)),
+        move |el, t| {
+            let local = ((t * (wait + RUN) - wait) / RUN).clamp(0., 1.);
+            // ease-out-quint, applied here so the wait stays linear.
+            let eased = 1. - (1. - local).powi(5);
+            el.opacity(eased).relative().top(px((1. - eased) * rise))
+        },
+    )
+}
+
 /// Screens, dialogs and menus open with the same soft spring: they rise a
 /// little, settle with a gentle overshoot, and fade in without a hard pop.
 pub fn pop_in(id: impl Into<ElementId>, element: Div) -> AnimationElement<Div> {

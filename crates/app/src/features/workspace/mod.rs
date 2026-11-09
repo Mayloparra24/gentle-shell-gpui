@@ -246,7 +246,7 @@ pub struct Workspace {
     _surge_end: Option<Task<()>>,
     /// The in-app browser showing Gentle Design's canvas, if open.
     browser: Option<(Entity<crate::features::browser::BrowserPanel>, Subscription)>,
-    /// The welcome tour, kept while its "Sign in" shows Providers so closing
+    /// The welcome screen, kept while its "Sign in" shows Providers so closing
     /// Providers returns to it.
     resume_welcome: Option<Entity<WelcomeView>>,
 }
@@ -329,7 +329,7 @@ impl Workspace {
         this.focus_active(window, cx);
         this.start_shown(window, cx);
         this.schedule_save(cx);
-        // First run: the welcome tour, which ends on the setup checklist.
+        // First run: the welcome screen with its install sequence.
         // Later, something required missing: the onboarding screen. Both
         // open by themselves once the checks (blocking; PATH probes) return.
         cx.spawn_in(window, async move |this, cx| {

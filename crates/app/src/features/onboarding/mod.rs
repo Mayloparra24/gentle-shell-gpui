@@ -12,9 +12,23 @@ use crate::features::setup::{self, Check, CheckId};
 
 mod checks;
 mod install;
+mod sequence;
 mod view;
 
-use checks::{required_ok, usable};
+use checks::{install_plan, required_ok, usable};
+
+/// Where the checklist is shown.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// The onboarding screen: hero, checklist, footer, in a card.
+    Screen,
+    /// Inside Configuration: the checklist and its actions, without the
+    /// screen's hero, footer and frame.
+    Embedded,
+    /// The welcome screen's install sequence: numbered steps on a progress
+    /// rail; the welcome draws the heading and footer.
+    Sequence,
+}
 
 /// One look at the machine: what the screen shows and whether it must open.
 pub struct Probe {
@@ -54,9 +68,10 @@ pub enum OnboardingEvent {
 }
 
 pub struct OnboardingView {
-    /// Shown inside Configuration: the checklist and its actions, without
-    /// the screen's hero, footer and frame.
-    embedded: bool,
+    mode: Mode,
+    /// The sequence's steps start coming in after this (the welcome's
+    /// intro plays first).
+    entrance: std::time::Duration,
     platform: Option<String>,
     first_run: bool,
     /// `None` until the first look finishes.
@@ -81,7 +96,8 @@ impl OnboardingView {
     /// `probe` is a look already taken (the startup check); `None` looks now.
     pub fn new(probe: Option<Probe>, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
-            embedded: false,
+            mode: Mode::Screen,
+            entrance: std::time::Duration::ZERO,
             platform: None,
             first_run: false,
             checks: None,
@@ -105,15 +121,27 @@ impl OnboardingView {
     /// The checklist for Configuration → Setup & requirements: looks at the
     /// machine now, installs and hands off actions like the screen does.
     pub fn embedded(cx: &mut Context<Self>) -> Self {
-        Self::embedded_with(None, cx)
+        let mut this = Self::new(None, cx);
+        this.mode = Mode::Embedded;
+        this
     }
 
-    /// The embedded checklist, starting from a look already taken (`None`
-    /// looks now).
-    pub fn embedded_with(probe: Option<Probe>, cx: &mut Context<Self>) -> Self {
+    /// The install sequence for the welcome screen; its steps come in after
+    /// `entrance`.
+    pub fn sequence(
+        probe: Option<Probe>,
+        entrance: std::time::Duration,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let mut this = Self::new(probe, cx);
-        this.embedded = true;
+        this.mode = Mode::Sequence;
+        this.entrance = entrance;
         this
+    }
+
+    /// Steps come in right away from now on (the intro already played).
+    pub fn skip_entrance(&mut self) {
+        self.entrance = std::time::Duration::ZERO;
     }
 
     /// An install is running: the screen must stay open until it ends.
@@ -129,5 +157,32 @@ impl OnboardingView {
     /// Everything required is ready, as of the last look.
     pub fn ready(&self) -> bool {
         self.checks.as_deref().is_some_and(required_ok)
+    }
+
+    /// The first look at the machine is still running.
+    pub fn looking(&self) -> bool {
+        self.checks.is_none()
+    }
+
+    /// A look is running (the first, or "Check again").
+    pub fn checking(&self) -> bool {
+        self.checking
+    }
+
+    /// "Install everything" has something to run.
+    pub fn can_install(&self) -> bool {
+        self.checks
+            .as_deref()
+            .is_some_and(|checks| !install_plan(checks).is_empty())
+    }
+
+    /// Run every unattended install that's needed, in order.
+    pub fn install_everything(&mut self, cx: &mut Context<Self>) {
+        self.install_all(cx);
+    }
+
+    /// Look at the machine again.
+    pub fn check_again(&mut self, cx: &mut Context<Self>) {
+        self.refresh(cx);
     }
 }

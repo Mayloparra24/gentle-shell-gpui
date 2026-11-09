@@ -1,8 +1,6 @@
-//! Render: the full-window frame with its glow, the current page sliding in,
-//! and the footer (back and skip, the page dots, the main button). Keyboard:
-//! ← and → page, ↵ is the main button.
-
-use std::time::Duration;
+//! Render: the full-window frame with its glow, the banner writing itself in
+//! (green once everything required is ready), the heading, the install
+//! sequence, and the footer. ↵ is the main button.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -10,193 +8,163 @@ use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{SETUP_STEP, STEPS, WelcomeEvent, WelcomeView, pages};
-use crate::shared::banner::pixel_rose;
+use super::{AFTER_INTRO, INTRO, WelcomeEvent, WelcomeView};
+use crate::shared::banner::{Palette, banner};
 use crate::shared::ui;
 
 /// The client-drawn title bar (Windows, Linux) keeps its window controls
-/// visible above the tour; on macOS the tour fills the window under the
+/// visible above the screen; on macOS the screen fills the window under the
 /// native traffic lights.
 const TITLE_BAR: f32 = 36.;
+/// The banner is ~175 px wide per unit of scale.
+const BANNER_SCALE: f32 = 2.6;
 
 impl WelcomeView {
-    fn render_page(&self, cx: &App) -> Div {
-        match self.step {
-            0 => v_flex()
-                .items_center()
-                .gap_6()
-                .child(ui::pop_in("welcome-rose", pages::rose_mark()))
-                .child(pages::heading(
-                    pages::hello_title(),
-                    "A desktop home for Gentle Shell's coding agents. Every tab is an \
-                     agent with its own conversation, tools and helpers, right in the \
-                     folder you're working on.",
-                ))
-                .child(pages::tiles([
-                    (IconName::Bot, ui::petal(), "Agents in tabs"),
-                    (IconName::Command, ui::champagne(), "Keyboard first"),
-                    (IconName::Brain, ui::info(), "Memory that lasts"),
-                ])),
-            1 => v_flex()
-                .items_center()
-                .gap_8()
-                .child(pages::window_mock())
-                .child(pages::heading(
-                    pages::title("Many agents, one window."),
-                    "Open agents and terminals side by side, split them, and reach \
-                     every screen from the palette.",
-                ))
-                .child(pages::window_keys()),
-            2 => v_flex()
-                .items_center()
-                .gap_8()
-                .child(pages::profiles_mock())
-                .child(pages::heading(
-                    pages::title("Your models, your way."),
-                    "Sign in with a subscription or an API key, then send each role \
-                     to the model you trust. Save the routing as a profile and switch \
-                     in one click.",
-                ))
-                .child(pages::tiles([
-                    (IconName::KeyRound, ui::petal(), "Subscriptions & keys"),
-                    (IconName::Layers, ui::champagne(), "Profiles"),
-                    (IconName::Gauge, ui::info(), "Usage at a glance"),
-                ])),
-            3 => v_flex()
-                .items_center()
-                .gap_8()
-                .child(pages::control_mock())
-                .child(pages::heading(
-                    pages::title("You stay in control."),
-                    "Choose how much the agent may do on its own, and change it any \
-                     time from the chip under the conversation.",
-                ))
-                .child(pages::control_keys()),
-            _ => self.render_setup(cx),
+    fn render_banner(&self, ready: bool) -> AnyElement {
+        let mut config = self.banner;
+        if ready {
+            // Everything required is in place: the rose blooms green.
+            config.palette = Palette::Green;
+            return ui::pop_in(
+                "welcome-banner-ready",
+                div().child(banner(config, BANNER_SCALE, 1.)),
+            )
+            .into_any_element();
         }
+        if self.intro_done {
+            return div()
+                .child(banner(config, BANNER_SCALE, 1.))
+                .into_any_element();
+        }
+        div()
+            .with_animation(
+                "welcome-banner",
+                Animation::new(INTRO).with_easing(ease_out_quint()),
+                move |el, t| el.child(banner(config, BANNER_SCALE, t)),
+            )
+            .into_any_element()
     }
 
-    /// The last page: the setup checklist under a short heading.
-    fn render_setup(&self, cx: &App) -> Div {
-        let ready = self.ready(cx);
-        v_flex()
-            .w_full()
-            .max_w(px(720.))
+    fn render_heading(&self, cx: &App) -> AnyElement {
+        let setup = self.setup.read(cx);
+        let (title, line) = if setup.looking() {
+            (
+                "Welcome to Gentle Shell.",
+                "Looking at what this machine already has…",
+            )
+        } else if setup.ready() {
+            (
+                "You're ready.",
+                "Everything Gentle Shell needs is here. Open your first agent whenever \
+                 you like; the extras below make it better.",
+            )
+        } else {
+            (
+                "Let's get you set up.",
+                "A few steps and you're in. Everything installs right here; anything \
+                 that needs your password opens in a terminal for you to run.",
+            )
+        };
+        let heading = v_flex()
             .items_center()
-            .gap_5()
-            .child(pixel_rose(
-                56.,
-                if ready { ui::success() } else { ui::petal() },
-            ))
-            .child(pages::heading(
-                pages::title(if ready {
-                    "You're ready."
-                } else {
-                    "Let's get you set up."
-                }),
-                if ready {
-                    "Everything Gentle Shell needs is here. The extras below make it better."
-                } else {
-                    "Install what's missing right here; anything that needs your \
-                     password opens in a terminal for you to run."
-                },
-            ))
-            // The checklist brings its own grouped frames.
-            .child(div().w_full().child(self.setup.clone()))
+            .gap_2()
+            .child(
+                div()
+                    .text_size(px(34.))
+                    .line_height(px(42.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(ui::fg())
+                    .child(title),
+            )
+            .child(
+                div()
+                    .max_w(px(560.))
+                    .text_base()
+                    .text_center()
+                    .line_height(px(24.))
+                    .text_color(ui::muted())
+                    .child(line),
+            );
+        let delay = if self.intro_done {
+            std::time::Duration::ZERO
+        } else {
+            AFTER_INTRO
+        };
+        ui::appear_after("welcome-heading", delay, 10., heading).into_any_element()
     }
 
-    fn render_footer(&self, cx: &mut Context<Self>) -> Div {
-        let step = self.step;
-        let busy = self.busy(cx);
-        let ready = self.ready(cx);
-        let left = h_flex()
-            .flex_1()
-            .gap_2()
-            .when(step > 0, |d| {
-                d.child(
-                    Button::new("welcome-back")
-                        .ghost()
-                        .icon(Icon::new(IconName::ArrowLeft))
-                        .label("Back")
-                        .disabled(busy)
-                        .on_click(cx.listener(|this, _, _, cx| this.back(cx))),
-                )
+    fn render_footer(&self, cx: &mut Context<Self>) -> AnyElement {
+        let setup = self.setup.read(cx);
+        let busy = setup.busy();
+        let ready = setup.ready();
+        let checking = setup.checking();
+        let can_install = setup.can_install();
+        let (label, enabled) = if ready {
+            ("Continue", !busy)
+        } else if busy {
+            ("Installing…", false)
+        } else if can_install {
+            ("Install everything", !checking)
+        } else {
+            // Only steps this screen can't run alone are left (sign in, a
+            // terminal command): Continue waits for them.
+            ("Continue", false)
+        };
+        let primary = Button::new("welcome-primary")
+            .primary()
+            .large()
+            .rounded(px(999.))
+            .when(!ready && can_install, |b| {
+                b.icon(Icon::new(IconName::ArrowDown))
             })
-            .when(step < SETUP_STEP, |d| {
+            .label(label)
+            .loading(busy)
+            .disabled(!enabled)
+            .on_click(cx.listener(|this, _, _, cx| this.primary(cx)));
+        let footer = h_flex()
+            .flex_none()
+            .h(px(88.))
+            .px_10()
+            .gap_2()
+            .when(!ready, |d| {
                 d.child(
                     Button::new("welcome-skip")
-                        .ghost()
-                        .label("Skip intro")
-                        .on_click(cx.listener(|this, _, _, cx| this.go(SETUP_STEP, cx))),
-                )
-            })
-            .when(step == SETUP_STEP && !ready, |d| {
-                d.child(
-                    Button::new("welcome-later")
                         .ghost()
                         .label("Skip for now")
                         .disabled(busy)
                         .on_click(cx.listener(|_, _, _, cx| cx.emit(WelcomeEvent::Close))),
                 )
-            });
-        let dots = h_flex().gap_1p5().children((0..STEPS).map(|i| {
-            let on = i == step;
-            div()
-                .id(("welcome-dot", i))
-                .h(px(6.))
-                .w(px(if on { 22. } else { 6. }))
-                .rounded_full()
-                .bg(if on {
-                    ui::petal()
-                } else {
-                    ui::faint().opacity(0.5)
-                })
-                .when(!busy, |d| {
-                    d.cursor_pointer()
-                        .on_click(cx.listener(move |this, _, _, cx| this.go(i, cx)))
-                })
-        }));
-        let label = match step {
-            0 => "Get started",
-            SETUP_STEP => "Continue",
-            _ => "Next",
+            })
+            .child(
+                Button::new("welcome-recheck")
+                    .ghost()
+                    .icon(Icon::new(IconName::RefreshCw))
+                    .label("Check again")
+                    .loading(checking)
+                    .disabled(busy || checking)
+                    .on_click(cx.listener(|this, _, _, cx| this.check_again(cx))),
+            )
+            .child(div().flex_1())
+            .child(primary);
+        let delay = if self.intro_done {
+            std::time::Duration::ZERO
+        } else {
+            AFTER_INTRO
         };
-        let next = Button::new("welcome-next")
-            .primary()
-            .large()
-            .rounded(px(999.))
-            .label(label)
-            .disabled(step == SETUP_STEP && (busy || !ready))
-            .on_click(cx.listener(|this, _, _, cx| this.next(cx)));
-        h_flex()
-            .flex_none()
-            .h(px(88.))
-            .px_10()
-            .child(left)
-            .child(dots)
-            .child(h_flex().flex_1().justify_end().child(next))
+        ui::appear_after("welcome-footer", delay, 0., footer).into_any_element()
     }
 
     fn on_key(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        match event.keystroke.key.as_str() {
-            "right" if self.step < SETUP_STEP => self.go(self.step + 1, cx),
-            "left" if !self.busy(cx) => self.back(cx),
-            "enter" => self.next(cx),
-            _ => return,
+        if event.keystroke.key == "enter" {
+            self.primary(cx);
+            cx.stop_propagation();
         }
-        cx.stop_propagation();
     }
 }
 
 impl Render for WelcomeView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let step = self.step;
-        let offset = if self.forward { 28. } else { -28. };
-        let page = self.render_page(cx).with_animation(
-            SharedString::from(format!("welcome-page-{step}")),
-            Animation::new(Duration::from_millis(360)).with_easing(ease_out_quint()),
-            move |el, t| el.opacity(t).relative().left(px((1. - t) * offset)),
-        );
+        let ready = self.setup.read(cx).ready();
         let macos = cfg!(target_os = "macos");
         div()
             .id("welcome")
@@ -210,10 +178,14 @@ impl Render for WelcomeView {
             .on_key_down(cx.listener(Self::on_key))
             .bg(ui::screen_bg())
             .child(
-                // A soft petal glow from the top, fading out by mid-window.
+                // A soft glow from the top, petal while setting up, green once
+                // everything required is ready.
                 div().absolute().inset_0().bg(linear_gradient(
                     180.,
-                    linear_color_stop(ui::petal().opacity(0.10), 0.),
+                    linear_color_stop(
+                        if ready { ui::success() } else { ui::petal() }.opacity(0.10),
+                        0.,
+                    ),
                     linear_color_stop(ui::petal().opacity(0.), 0.6),
                 )),
             )
@@ -241,12 +213,17 @@ impl Render for WelcomeView {
                             .overflow_y_scroll()
                             .child(
                                 v_flex()
-                                    .min_h_full()
+                                    .w_full()
                                     .items_center()
-                                    .justify_center()
                                     .px_8()
-                                    .py_6()
-                                    .child(page),
+                                    .pt_6()
+                                    .pb_6()
+                                    .gap_6()
+                                    .child(self.render_banner(ready))
+                                    .child(self.render_heading(cx))
+                                    .child(
+                                        div().w_full().max_w(px(680.)).child(self.setup.clone()),
+                                    ),
                             ),
                     )
                     .child(self.render_footer(cx)),

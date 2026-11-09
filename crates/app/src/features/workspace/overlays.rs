@@ -396,7 +396,7 @@ impl Workspace {
             |this, _, event: &ProvidersEvent, window, cx| match event {
                 ProvidersEvent::Close => {
                     this.close_overlay(window, cx);
-                    // Signed in from the welcome tour: back to its checklist.
+                    // Signed in from the welcome screen: back to its sequence.
                     if let Some(view) = this.resume_welcome.take() {
                         this.attach_welcome(view, window, cx);
                     }
@@ -432,8 +432,8 @@ impl Workspace {
         cx.notify();
     }
 
-    /// The first-run welcome tour; `probe` is a look at the machine already
-    /// taken. ⌘K → "Welcome tour" replays it.
+    /// The first-run welcome screen; `probe` is a look at the machine already
+    /// taken. ⌘K → "Welcome screen" shows it again.
     pub(super) fn open_welcome(
         &mut self,
         probe: Option<Probe>,
@@ -457,7 +457,7 @@ impl Workspace {
             window,
             |this, view, event: &WelcomeEvent, window, cx| match event {
                 WelcomeEvent::Close => this.close_overlay(window, cx),
-                // Providers takes the window; closing it returns to the tour.
+                // Providers takes the window; closing it returns to the welcome.
                 WelcomeEvent::Setup(OnboardingEvent::SignIn) => {
                     this.resume_welcome = Some(view.clone());
                     this.close_overlay(window, cx);

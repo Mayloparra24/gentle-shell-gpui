@@ -1,35 +1,41 @@
-//! Welcome: the first-run tour. Four pages introduce Gentle Shell (agents in
-//! tabs, splits and the palette, models and profiles, permissions), the last
-//! one is the setup checklist ([`OnboardingView`], embedded). It opens by
-//! itself only on a first run; ⌘K → "Welcome tour" replays it any time.
+//! Welcome: the first-run screen. Gentle Shell's banner writes itself in like
+//! the terminal intro, then the install sequence ([`OnboardingView`] in
+//! sequence mode) plays below it, step by step, until everything required
+//! is ready. It opens by itself only on a first run; ⌘K → "Welcome screen"
+//! shows it any time.
+
+use std::time::Duration;
 
 use gpui_kit::*;
 
 use crate::features::onboarding::{OnboardingEvent, OnboardingView, Probe};
 use crate::features::setup;
+use crate::shared::banner::{self, BannerConfig};
 
-mod pages;
 mod view;
 
-/// Pages, the setup checklist last.
-const STEPS: usize = 5;
-const SETUP_STEP: usize = STEPS - 1;
+/// How long the banner takes to write itself in.
+const INTRO: Duration = Duration::from_millis(1500);
+/// The heading and the sequence start coming in this far into the intro.
+const AFTER_INTRO: Duration = Duration::from_millis(1100);
 
 #[derive(Clone, Debug)]
 pub enum WelcomeEvent {
     /// Continue (after recording completion) or Skip.
     Close,
-    /// An action from the setup checklist on the last page.
+    /// An action from the install sequence.
     Setup(OnboardingEvent),
 }
 
 pub struct WelcomeView {
-    step: usize,
-    /// The step shown before the current one, so pages slide the right way.
-    forward: bool,
     setup: Entity<OnboardingView>,
+    banner: BannerConfig,
+    /// The intro played; showing the screen again (back from Providers)
+    /// draws everything in place.
+    intro_done: bool,
     focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
+    _intro: Task<()>,
 }
 
 impl EventEmitter<WelcomeEvent> for WelcomeView {}
@@ -37,20 +43,28 @@ impl EventEmitter<WelcomeEvent> for WelcomeView {}
 impl WelcomeView {
     /// `probe` is a look at the machine already taken (the startup check).
     pub fn new(probe: Option<Probe>, cx: &mut Context<Self>) -> Self {
-        let setup = cx.new(|cx| OnboardingView::embedded_with(probe, cx));
+        let setup = cx.new(|cx| OnboardingView::sequence(probe, AFTER_INTRO, cx));
         let subscriptions = vec![
             cx.subscribe(&setup, |_, _, event: &OnboardingEvent, cx| {
                 cx.emit(WelcomeEvent::Setup(event.clone()));
             }),
-            // Installs and re-checks change what the footer offers.
+            // Installs and re-checks change the heading and the footer.
             cx.observe(&setup, |_, _, cx| cx.notify()),
         ];
+        let intro = cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(INTRO + AFTER_INTRO).await;
+            let _ = this.update(cx, |this, cx| {
+                this.intro_done = true;
+                this.setup.update(cx, |setup, _| setup.skip_entrance());
+            });
+        });
         Self {
-            step: 0,
-            forward: true,
             setup,
+            banner: banner::read_config(&pi_rpc::resolve_homes().config),
+            intro_done: false,
             focus: cx.focus_handle(),
             _subscriptions: subscriptions,
+            _intro: intro,
         }
     }
 
@@ -58,12 +72,12 @@ impl WelcomeView {
         &self.focus
     }
 
-    /// An install is running: the tour stays open until it ends.
+    /// An install is running: the screen stays open until it ends.
     pub fn busy(&self, cx: &App) -> bool {
         self.setup.read(cx).busy()
     }
 
-    /// gentle-shell can start, as of the setup checklist's last look.
+    /// gentle-shell can start, as of the sequence's last look.
     pub fn usable(&self, cx: &App) -> bool {
         self.setup.read(cx).usable()
     }
@@ -72,33 +86,22 @@ impl WelcomeView {
         self.setup.read(cx).ready()
     }
 
-    fn go(&mut self, step: usize, cx: &mut Context<Self>) {
-        let step = step.min(SETUP_STEP);
-        if step != self.step {
-            self.forward = step > self.step;
-            self.step = step;
-            cx.notify();
+    /// The footer's main button: Continue once everything required is
+    /// ready, else Install everything.
+    fn primary(&mut self, cx: &mut Context<Self>) {
+        if self.busy(cx) {
+            return;
         }
-    }
-
-    fn next(&mut self, cx: &mut Context<Self>) {
-        if self.step == SETUP_STEP {
-            self.finish(cx);
-        } else {
-            self.go(self.step + 1, cx);
-        }
-    }
-
-    fn back(&mut self, cx: &mut Context<Self>) {
-        self.go(self.step.saturating_sub(1), cx);
-    }
-
-    /// Continue from the last page: records completion like the onboarding
-    /// screen does, once everything required is ready.
-    fn finish(&mut self, cx: &mut Context<Self>) {
-        if self.ready(cx) && !self.busy(cx) {
+        if self.ready(cx) {
             setup::mark_done();
             cx.emit(WelcomeEvent::Close);
+        } else if self.setup.read(cx).can_install() {
+            self.setup
+                .update(cx, |setup, cx| setup.install_everything(cx));
         }
+    }
+
+    fn check_again(&mut self, cx: &mut Context<Self>) {
+        self.setup.update(cx, |setup, cx| setup.check_again(cx));
     }
 }

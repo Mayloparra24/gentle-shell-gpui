@@ -74,8 +74,8 @@ pub(super) fn screen_rows() -> Vec<Row> {
         ),
         row(
             IconName::Sparkles,
-            "Welcome tour",
-            "The first-run introduction, from the start",
+            "Welcome screen",
+            "The first-run screen: the intro, then the install sequence",
             PaletteAction::Welcome,
         ),
         row(
