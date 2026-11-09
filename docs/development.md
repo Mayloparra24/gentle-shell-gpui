@@ -85,11 +85,11 @@ Everything the app stores lives under `dirs::data_dir()/gentle-shell-gpui/`:
 | Variable | Where it is read | Effect |
 | --- | --- | --- |
 | `GENTLE_SHELL_BIN` | `pi-rpc/src/launch.rs` (`resolve_backend`), `home.rs` | Launcher to use. Normal order: `GENTLE_SHELL_BIN`, standalone install (`bundled_launcher`: `~/.gentle-shell/bin/gentle-shell`; on Windows `%LOCALAPPDATA%\gentle-shell\bin\gentle-shell.cmd` or `%USERPROFILE%\.gentle-shell-bundle\bin\gentle-shell.cmd`), `gentle-shell` on the combined PATH. If set, the config home is not derived from the standalone launcher. |
-| `GENTLE_SHELL_ARGS` | `launch.rs` (`extra_args`), `home.rs` | Options before `--mode rpc` (space-separated): `--link`, `--isolated`, `--home <dir>`. They also decide which home the app uses for `auth.json` and config. |
+| `GENTLE_SHELL_ARGS` | `launch.rs` (`extra_args`, `split_args`), `home.rs` | Options before `--mode rpc`, separated by spaces; `"…"` or `'…'` keep a path with spaces in one argument, and backslashes stay literal: `--link`, `--isolated`, `--home "<dir>"`. They also decide which home the app uses for `auth.json` and config. |
 | `GENTLE_SHELL_HOME` | `home.rs` | Isolated home (default `~/.gentle-shell/agent`). |
 | `GENTLE_SHELL_USER_PI_HOME`, `PI_CODING_AGENT_DIR` | `home.rs` | Pi home for `--link` (default `~/.pi/agent`). |
 | `GENTLE_PI_CONFIG_HOME` | `home.rs` (`config_home`) | Wins over any other Gentle Shell config folder. |
-| `GENTLE_SHELL_CONFIG` | `features/updates/mod.rs`, `features/setup/gentle.rs` | Path to the launcher's `config.json` (default `~/.gentle-shell/config.json`). |
+| `GENTLE_SHELL_CONFIG` | `pi-rpc/src/home.rs` (`launcher_config_path`), used by `resolve_homes`, `features/updates/` and `features/setup/gentle.rs` | Path to the launcher's `config.json` when set and non-empty, like the launcher's `resolveConfigPath` (default `~/.gentle-shell/config.json`). |
 | `GENTLE_PI_BACKGROUND_SUBAGENTS` | `features/settings/snapshot.rs` | Source of the background subagents policy shown in Settings. |
 | `GENTLE_SHELL_GENTLE_AI_PIN` | `features/setup/gentle.rs` | Gentle AI pin used by the setup check. |
 | `ENGRAM_URL`, `ENGRAM_PORT`, `ENGRAM_HTTP_TOKEN` | `features/memory/client.rs` | Engram server (default port `7437`). |

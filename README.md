@@ -77,7 +77,7 @@ cargo run --release -- [FOLDER] [--prompt "first message"]
 | Variable | Effect |
 | --- | --- |
 | `GENTLE_SHELL_BIN` | Path of the launcher to use instead of `gentle-shell` on `PATH`. |
-| `GENTLE_SHELL_ARGS` | Launcher options placed before `--mode rpc`, such as `--link` or `--home <dir>`. The app also uses them to find `auth.json` and the config home. |
+| `GENTLE_SHELL_ARGS` | Launcher options placed before `--mode rpc`, such as `--link` or `--home "<dir>"` (quote paths with spaces). The app also uses them to find `auth.json` and the config home. |
 
 Only one app runs per user, whatever the build: a second launch hands its folder and `--prompt` to the running window and exits.
 
