@@ -69,17 +69,28 @@ Esta forma es una guía, no una plantilla obligatoria. Una funcionalidad pequeñ
 
 ### Frontera actual de la vista de sesión
 
-`session/view.rs` conserva la composición y el render de la conversación. Sus responsabilidades visuales con estado propio se extraen como módulos hijos y sólo exponen a la vista la API que ésta necesita:
+`session/view.rs` conserva la composición (`Render`), el render de los elementos de la conversación (tarjetas de herramientas, pensamiento, mensajes, avisos) y las piezas compartidas por varias vistas. Cada responsabilidad visual del compositor y de la conversación vive en un módulo hijo que sólo expone a la vista la API que ésta necesita:
 
 ```text
 session/
-├── view.rs
+├── view.rs                   # Render, filas de la conversación y piezas compartidas
 └── view/
     ├── live.rs               # temporizadores y estado visual transitorio
-    └── transcript_list.rs    # filas, mediciones y cachés de la lista virtualizada
+    ├── transcript_list.rs    # filas, mediciones y cachés de la lista virtualizada
+    ├── cards.rs              # tarjetas de mensajes personalizados de extensiones
+    ├── composer.rs           # compositor: línea de contexto, adjuntos, texto y barra inferior
+    ├── activity.rs           # línea de actividad y chips de estado (jobs, widgets, uso, ayudantes, límites)
+    ├── slash_menu.rs         # menú de comandos `/` y su teclado
+    ├── model_picker.rs       # selector de modelo, búsqueda y teclado
+    ├── effort.rs             # control de esfuerzo (nivel de pensamiento) y su deslizador
+    ├── permissions.rs        # chip y selector del modo de permisos
+    ├── dialogs.rs            # diálogos de extensiones y su teclado
+    └── todo_island.rs        # isla de tareas sobre la conversación
 ```
 
 `transcript_list.rs` es dueño de la forma de las filas, el cálculo de actualizaciones parciales, la caché de datos preparados y el estado de la lista GPUI. `view.rs` decide qué contenido renderizar para cada fila, pero no modifica directamente la estructura interna de la lista.
+
+Los módulos hijos añaden bloques `impl SessionView` propios; lo que otro módulo consume se marca `pub(super)` y lo que usa `session/mod.rs` se marca `pub(in crate::session)` o se reexporta desde `view.rs`. Las constantes de anchura (`NARROW`, `TINY`), los plegados y las piezas compartidas (`clock`, `image_tile`, `number_badge`) permanecen en `view.rs`.
 
 ## Flujo de datos
 
