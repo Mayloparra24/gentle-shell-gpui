@@ -22,8 +22,8 @@ impl SessionView {
         narrow: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let levels = self.thinking_levels.clone();
-        let current = self.thinking.clone();
+        let levels = self.models.thinking_levels.clone();
+        let current = self.models.thinking.clone();
         let index = effort_index(&levels, &current);
         let fraction = effort_fraction(&levels, &current);
         // Glide only right after a change: the card's elements are rebuilt
@@ -102,22 +102,23 @@ impl SessionView {
     /// Set the thinking level from the effort card; the knob springs from
     /// where it was. Goes back if the backend refuses the level.
     fn set_thinking(&mut self, level: String, cx: &mut Context<Self>) {
-        if self.thinking == level {
+        if self.models.thinking == level {
             return;
         }
-        self.live.effort_from = effort_fraction(&self.thinking_levels, &self.thinking);
+        self.live.effort_from =
+            effort_fraction(&self.models.thinking_levels, &self.models.thinking);
         self.live.effort_moved_at = Some(Instant::now());
         self.live.effort_moves += 1;
-        let previous = std::mem::replace(&mut self.thinking, level.clone());
+        let previous = std::mem::replace(&mut self.models.thinking, level.clone());
         cx.notify();
         self.request(
             serde_json::json!({"type": "set_thinking_level", "level": level}),
             cx,
             move |this, result, cx| {
                 if this.report(result).is_none() {
-                    this.thinking = previous;
+                    this.models.thinking = previous;
                     cx.notify();
-                } else if this.thinking == "max" {
+                } else if this.models.thinking == "max" {
                     cx.emit(crate::session::SessionEvent::MaxEffort);
                 }
             },

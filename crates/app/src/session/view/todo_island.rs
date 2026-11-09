@@ -16,13 +16,14 @@ impl SessionView {
     /// conversation that unfolds downward into the task list. It only exists
     /// while the session has tasks.
     pub(super) fn render_todo_island(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        if self.todo.is_empty() {
+        if self.todo.tasks.is_empty() {
             return None;
         }
         let t = self.todo_morph();
-        let total = self.todo.len();
+        let total = self.todo.tasks.len();
         let done = self
             .todo
+            .tasks
             .iter()
             .filter(|task| task.status == "done")
             .count();
@@ -33,7 +34,7 @@ impl SessionView {
             ui::accent()
         };
 
-        let content_h = todo_content_height(&self.todo);
+        let content_h = todo_content_height(&self.todo.tasks);
         let body_h = content_h.min(TODO_MAX_BODY);
         let h = TODO_FRAME + TODO_PILL + body_h * t;
         let body_area = (h - TODO_FRAME - TODO_PILL).max(0.);
@@ -78,7 +79,7 @@ impl SessionView {
             .when(t > 0.02, |d| d.border_b_1().border_color(ui::border()))
             .on_click(cx.listener(|this, _, _, cx| this.toggle_todo(cx)))
             .tooltip({
-                let tip = if self.todo_open {
+                let tip = if self.todo.open {
                     "Hide tasks"
                 } else {
                     "Show tasks"
@@ -127,7 +128,7 @@ impl SessionView {
                     .overflow_y_scroll()
                     .p(px(TODO_LIST_PAD))
                     .gap(px(TODO_ROW_GAP))
-                    .children(todo_rows(&self.todo)),
+                    .children(todo_rows(&self.todo.tasks)),
             )
             .when(fade > 0.01, |d| {
                 d.child(
@@ -193,16 +194,16 @@ impl SessionView {
 
     /// Where the island's unfold is right now (0 folded, 1 open), eased.
     fn todo_morph(&self) -> f32 {
-        let seconds = self.todo_motion_at.elapsed().as_secs_f32();
+        let seconds = self.todo.motion_at.elapsed().as_secs_f32();
         let t = (seconds / TODO_MOTION.as_secs_f32()).clamp(0., 1.);
         // Opening springs a touch past the target, like the iOS island; closing
         // just eases out so the card never shrinks below the pill.
-        let eased = if self.todo_motion_to > self.todo_motion_from {
+        let eased = if self.todo.motion_to > self.todo.motion_from {
             ui::spring(t)
         } else {
             1. - (1. - t).powi(3)
         };
-        self.todo_motion_from + (self.todo_motion_to - self.todo_motion_from) * eased
+        self.todo.motion_from + (self.todo.motion_to - self.todo.motion_from) * eased
     }
 
     /// Unfold or fold the card, starting from wherever the morph is now so
@@ -210,10 +211,10 @@ impl SessionView {
     /// for the duration of the motion.
     fn toggle_todo(&mut self, cx: &mut Context<Self>) {
         let from = self.todo_morph();
-        self.todo_open = !self.todo_open;
-        self.todo_motion_from = from;
-        self.todo_motion_to = if self.todo_open { 1. } else { 0. };
-        self.todo_motion_at = Instant::now();
+        self.todo.open = !self.todo.open;
+        self.todo.motion_from = from;
+        self.todo.motion_to = if self.todo.open { 1. } else { 0. };
+        self.todo.motion_at = Instant::now();
         cx.notify();
         cx.spawn(async move |this, cx| {
             loop {
@@ -222,7 +223,7 @@ impl SessionView {
                     .await;
                 let moving = this
                     .update(cx, |this, cx| {
-                        let moving = this.todo_motion_at.elapsed() < TODO_MOTION;
+                        let moving = this.todo.motion_at.elapsed() < TODO_MOTION;
                         if moving {
                             cx.notify();
                         }

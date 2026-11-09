@@ -11,16 +11,22 @@ use gpui_kit::*;
 use super::activity::chip_popover;
 use super::dialogs::checkbox_box;
 use super::{NARROW, TINY, image_tile, number_badge};
-use crate::session::{Backend, SessionView};
+use crate::session::SessionView;
 use crate::transcript::format_tokens;
 use crate::ui;
 
 impl SessionView {
     /// `NN%` (a chip: compact now, auto-compaction) — thin pink bar — window size.
     fn render_context_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let window_tokens = self.model.as_ref().map(|m| m.context_window).unwrap_or(0);
-        let percent = self.context_percent.unwrap_or(0.0).clamp(0.0, 100.0) as f32;
+        let window_tokens = self
+            .models
+            .current
+            .as_ref()
+            .map(|m| m.context_window)
+            .unwrap_or(0);
+        let percent = self.usage.context_percent.unwrap_or(0.0).clamp(0.0, 100.0) as f32;
         let high = self
+            .usage
             .context_percent
             .is_some_and(|p| p >= crate::alerts::context_threshold(cx));
         v_flex()
@@ -58,15 +64,16 @@ impl SessionView {
 
     /// The context percentage as a chip: compact now, toggle auto-compaction.
     fn render_context_chip(&self, high: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let compacting = self.compacting;
-        let auto = self.auto_compaction;
-        let ready = matches!(self.backend, Backend::Ready(_));
-        let used = match self.context_percent {
+        let compacting = self.usage.compacting;
+        let auto = self.usage.auto_compaction;
+        let ready = self.backend.is_ready();
+        let used = match self.usage.context_percent {
             Some(p) => format!("{p:.0}%"),
             None => "–".into(),
         };
         let window = self
-            .model
+            .models
+            .current
             .as_ref()
             .map(|m| m.context_window)
             .filter(|w| *w > 0)
@@ -176,7 +183,7 @@ impl SessionView {
         let (prefix, leaf) = ui::split_path(&self.cwd);
         let empty = self.composer.read(cx).value().trim().is_empty() && self.attachments.is_empty();
         let busy = self.busy();
-        let ready = matches!(self.backend, Backend::Ready(_));
+        let ready = self.backend.is_ready();
 
         let action_button = if busy && empty {
             Button::new("stop")
@@ -205,7 +212,7 @@ impl SessionView {
                 .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
         };
 
-        let git = self.git.as_ref().map(|git| {
+        let git = self.git.snapshot.as_ref().map(|git| {
             h_flex()
                 .flex_shrink_0()
                 .gap_1()
@@ -255,9 +262,10 @@ impl SessionView {
                     .overflow_hidden()
                     .child(self.render_model_picker(cx)),
             )
-            .when(self.model.as_ref().is_some_and(|m| m.reasoning), |this| {
-                this.child(self.render_effort_picker(narrow, cx))
-            })
+            .when(
+                self.models.current.as_ref().is_some_and(|m| m.reasoning),
+                |this| this.child(self.render_effort_picker(narrow, cx)),
+            )
             .when(!narrow, |this| {
                 this.child(
                     h_flex()
@@ -297,13 +305,13 @@ impl SessionView {
             })
             .when(!narrow, |this| this.children(git))
             .child(div().flex_1().min_w_0())
-            .when(self.cost > 0.0 && !narrow, |this| {
+            .when(self.usage.cost > 0.0 && !narrow, |this| {
                 this.child(
                     div()
                         .font_family(ui::MONO)
                         .text_size(px(11.))
                         .text_color(ui::faint())
-                        .child(format!("${:.2}", self.cost)),
+                        .child(format!("${:.2}", self.usage.cost)),
                 )
             })
             .child(div().flex_shrink_0().child(action_button));

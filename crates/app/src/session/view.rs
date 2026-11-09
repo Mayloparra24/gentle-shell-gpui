@@ -2,6 +2,7 @@
 //! conversation's items (tool cards, thinking, messages, notices). The
 //! composer, its pickers, dialogs and overlays live in the child modules.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -9,13 +10,14 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::shimmer::ShimmerText;
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::text::TextView;
+use gpui_kit::component::text::{TextView, TextViewState};
 use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::attachments;
-use super::{Backend, CONTEXT, SessionView};
+use super::state::BackendStatus;
+use super::{CONTEXT, SessionView};
 use crate::tools;
 use crate::transcript::{Block, Item, NoticeLevel, ToolStatus};
 use crate::ui;
@@ -56,6 +58,34 @@ const OUTPUT_LINES: usize = 8;
 const NARROW: f32 = 520.;
 const TINY: f32 = 420.;
 
+/// Bring the Markdown rendered for `key` up to `text`, appending when it
+/// only grew (streaming).
+fn sync_markdown_block(
+    markdown: &mut HashMap<(usize, usize), (Entity<TextViewState>, usize)>,
+    key: (usize, usize),
+    text: &str,
+    cx: &mut Context<SessionView>,
+) {
+    match markdown.get_mut(&key) {
+        Some((state, pushed)) if *pushed != text.len() => {
+            let appended = text.is_char_boundary(*pushed) && *pushed < text.len();
+            state.update(cx, |state, cx| {
+                if appended {
+                    state.push_str(&text[*pushed..], cx);
+                } else {
+                    state.set_text(text, cx);
+                }
+            });
+            *pushed = text.len();
+        }
+        Some(_) => {}
+        None => {
+            let state = cx.new(|cx| TextViewState::markdown(text, cx));
+            markdown.insert(key, (state, text.len()));
+        }
+    }
+}
+
 impl SessionView {
     /// A prompt is in flight: Pi is working or has not picked it up yet.
     pub(super) fn busy(&self) -> bool {
@@ -87,15 +117,37 @@ impl SessionView {
         let tail = self.tail_rows();
         let header = HeaderKey {
             hero: self.hero_shown(),
-            backend: match self.backend {
-                Backend::Starting => 0,
-                Backend::Ready(_) => 1,
-                Backend::Failed(_) => 2,
-                Backend::Exited(_) => 3,
+            backend: match self.backend.status {
+                BackendStatus::Starting => 0,
+                BackendStatus::Ready(_) => 1,
+                BackendStatus::Failed(_) => 2,
+                BackendStatus::Exited(_) => 3,
             },
         };
         self.list
             .sync(self.transcript.items.len(), tail, header, dirty);
+    }
+
+    /// Bring the rendered Markdown up to date for items `from..` (earlier
+    /// items have not changed since the last sync).
+    fn sync_markdown(&mut self, from: usize, cx: &mut Context<Self>) {
+        let items = self.transcript.items.get(from..).unwrap_or_default();
+        for (item_ix, item) in (from..).zip(items) {
+            match item {
+                Item::Assistant { blocks, .. } => {
+                    for (block_ix, block) in blocks.iter().enumerate() {
+                        if let Block::Text(text) = block {
+                            sync_markdown_block(&mut self.markdown, (item_ix, block_ix), text, cx);
+                        }
+                    }
+                }
+                // Helpers answer in Markdown, like the assistant.
+                Item::Custom { kind, text, .. } if markdown_custom(kind) => {
+                    sync_markdown_block(&mut self.markdown, (item_ix, 0), text, cx);
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Record start/end instants of live items `from..`.
@@ -143,9 +195,9 @@ impl SessionView {
             self.live.turn = None;
         }
 
-        let ready = matches!(self.backend, Backend::Ready(_));
+        let ready = self.backend.is_ready();
         let items = &self.transcript.items;
-        let dialogs = !self.dialogs.is_empty();
+        let dialogs = !self.extension.dialogs.is_empty();
         if let Some(pending) = &mut self.live.pending {
             pending.started |= running;
             let answered = items
@@ -303,10 +355,9 @@ impl SessionView {
     // ── Empty and error states ─────────────────────────────────────────────
 
     fn render_hero(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let version = self.version.clone().unwrap_or_default();
-        let needs_sign_in = matches!(self.backend, Backend::Ready(_))
-            && self.models_loaded
-            && self.models.is_empty();
+        let version = self.backend.version.clone().unwrap_or_default();
+        let needs_sign_in =
+            self.backend.is_ready() && self.models.loaded && self.models.available.is_empty();
         // The banner is ~175px per unit of scale; shrink it to fit the pane.
         let scale = ((self.pane_width.get() - 48.) / 175.).clamp(1.5, 4.0);
         v_flex()
@@ -371,8 +422,8 @@ impl SessionView {
     }
 
     fn render_backend_state(&self) -> Option<AnyElement> {
-        let (title, body): (&str, String) = match &self.backend {
-            Backend::Starting => {
+        let (title, body): (&str, String) = match &self.backend.status {
+            BackendStatus::Starting => {
                 return Some(
                     h_flex()
                         .gap_2()
@@ -385,14 +436,15 @@ impl SessionView {
                         .into_any_element(),
                 );
             }
-            Backend::Ready(_) => return None,
-            Backend::Failed(error) => ("Could not start gentle-shell", error.clone()),
-            Backend::Exited(code) => (
+            BackendStatus::Ready(_) => return None,
+            BackendStatus::Failed(error) => ("Could not start gentle-shell", error.clone()),
+            BackendStatus::Exited(code) => (
                 "gentle-shell stopped",
                 format!(
                     "Exit code {}.\n{}",
                     code.map_or("unknown".into(), |c| c.to_string()),
-                    self.stderr
+                    self.backend
+                        .stderr
                         .iter()
                         .rev()
                         .take(12)
@@ -1012,7 +1064,7 @@ impl SessionView {
         };
         let hero = self.hero_shown();
         // `render_backend_state` shows something unless the backend is ready.
-        let header = hero || !matches!(self.backend, Backend::Ready(_));
+        let header = hero || !self.backend.is_ready();
         let now = Instant::now();
         let content = match row {
             Row::Header => {

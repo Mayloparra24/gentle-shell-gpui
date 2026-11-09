@@ -67,9 +67,29 @@ feature/
 
 Esta forma es una guía, no una plantilla obligatoria. Una funcionalidad pequeña debe seguir siendo un solo módulo.
 
+### Frontera actual de la sesión
+
+`SessionView` es una pestaña: un backend `gentle-shell --mode rpc` y su conversación. Su lógica se divide por responsabilidad en bloques `impl SessionView` de módulos hermanos; `session/mod.rs` conserva la estructura, el constructor, la API pública que usa la ventana (`workspace.rs`), los avisos a la ventana (`SessionEvent`, `sync_chrome`), las acciones y el cableado de módulos:
+
+```text
+session/
+├── mod.rs          # SessionView, constructor, API pública, acciones y utilidades de ventana
+├── state.rs        # grupos de campos que cambian juntos y sus transiciones puras
+├── events.rs       # eventos RPC, peticiones de UI de extensiones, stderr/salida y refrescos de Git
+├── rpc.rs          # petición/respuesta, estado leído del backend y comandos (modelo, compactar, exportar, sesiones, prompts)
+├── lifecycle.rs    # arranque, reinicio (ahora o al terminar el turno), reanudación y reinicio de la conversación
+├── submit.rs       # envío del compositor: `!` shell, built-ins, pantallas nativas y adjuntos
+├── agents.rs       # panel de agentes
+├── builtins.rs     # clasificación de comandos y captura de salidas de extensiones (puro)
+├── attachments.rs  # validación, tokens y carga útil de imágenes (puro)
+└── view.rs, view/  # render (ver más abajo)
+```
+
+`state.rs` agrupa el backend y su ciclo de vida (`Backend`: estado del proceso, versión, stderr, prompt y sesión pendientes, reinicio pendiente), los modelos y el nivel de pensamiento (`Models`), uso y compactación (`Usage`), la UI de extensiones (`ExtensionUi`: diálogos, estados, widgets, límites de uso y toasts recientes), la actividad del turno (`TurnActivity`: fase, cola, jobs y ayudantes), la isla de tareas (`TodoIsland`) y el estado de Git (`GitStatus`). Las interpretaciones de eventos que no necesitan GPUI (fase y jobs de una llamada a herramienta, recuento de la cola, lienzo de Gentle Design, nivel de un `notify`) son funciones o métodos puros con pruebas en `events.rs`; los efectos (peticiones, temporizadores, notificaciones) quedan en los métodos de `SessionView`.
+
 ### Frontera actual de la vista de sesión
 
-`session/view.rs` conserva la composición (`Render`), el render de los elementos de la conversación (tarjetas de herramientas, pensamiento, mensajes, avisos) y las piezas compartidas por varias vistas. Cada responsabilidad visual del compositor y de la conversación vive en un módulo hijo que sólo expone a la vista la API que ésta necesita:
+`session/view.rs` conserva la composición (`Render`), la sincronización de lo derivado de la conversación (`sync_view`, Markdown renderizado), el render de los elementos de la conversación (tarjetas de herramientas, pensamiento, mensajes, avisos) y las piezas compartidas por varias vistas. Cada responsabilidad visual del compositor y de la conversación vive en un módulo hijo que sólo expone a la vista la API que ésta necesita:
 
 ```text
 session/

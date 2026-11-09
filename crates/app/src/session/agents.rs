@@ -91,6 +91,7 @@ impl SessionView {
                         let open = this.agents_panel.open;
                         if open
                             && this
+                                .activity
                                 .agents
                                 .as_ref()
                                 .is_some_and(|a| a.tasks.iter().any(|t| t.summary.is_active()))
@@ -114,8 +115,19 @@ impl SessionView {
         cx.notify();
     }
 
+    /// Gentle Shell has no host-side stop for helpers; ask the agent to cancel it.
+    fn ask_to_stop_agent(&mut self, task: &crate::activity::TaskSummary, cx: &mut Context<Self>) {
+        let text = format!(
+            "Stop the subagent task {} ({}: {}) now with subagent_cancel, then tell me what it had done.",
+            task.id,
+            task.agent,
+            task.label.as_deref().unwrap_or("no label")
+        );
+        self.send_prompt(text, cx);
+    }
+
     fn selected_task(&self) -> Option<&AgentTask> {
-        let tasks = &self.agents.as_ref()?.tasks;
+        let tasks = &self.activity.agents.as_ref()?.tasks;
         self.agents_panel
             .selected
             .as_ref()
@@ -128,8 +140,13 @@ impl SessionView {
             return None;
         }
         let empty = Vec::new();
-        let tasks = self.agents.as_ref().map_or(&empty, |a| &a.tasks);
-        let summary = self.agents.as_ref().map(|a| a.summary).unwrap_or_default();
+        let tasks = self.activity.agents.as_ref().map_or(&empty, |a| &a.tasks);
+        let summary = self
+            .activity
+            .agents
+            .as_ref()
+            .map(|a| a.summary)
+            .unwrap_or_default();
         let now = now_ms();
         let filter = self.agents_panel.filter;
         let visible: Vec<&AgentTask> = tasks.iter().filter(|t| filter.keeps(t)).collect();

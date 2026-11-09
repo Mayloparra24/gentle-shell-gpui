@@ -14,7 +14,7 @@ use crate::ui;
 
 impl SessionView {
     fn dialog_cursor(&self) -> usize {
-        let Some(dialog) = self.dialogs.front() else {
+        let Some(dialog) = self.extension.dialogs.front() else {
             return 0;
         };
         if let Some((id, cursor)) = &self.live.dialog_cursor
@@ -49,7 +49,7 @@ impl SessionView {
         }
         let key = event.keystroke.key.as_str();
         let cursor = self.dialog_cursor();
-        let Some(dialog) = self.dialogs.front() else {
+        let Some(dialog) = self.extension.dialogs.front() else {
             return;
         };
         let answer = match &dialog.method {
@@ -89,7 +89,7 @@ impl SessionView {
     }
 
     pub(super) fn render_dialog(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let dialog = self.dialogs.front()?;
+        let dialog = self.extension.dialogs.front()?;
         let cursor = self.dialog_cursor();
         let (icon, raw_title) = match &dialog.method {
             UiMethod::Select { title, .. } => (IconName::ListTodo, title.as_str()),
@@ -271,7 +271,7 @@ impl SessionView {
             _ => div().into_any_element(),
         };
 
-        let waiting = self.dialogs.len() - 1;
+        let waiting = self.extension.dialogs.len() - 1;
         let footer = h_flex()
             .gap_3()
             .pt_2()

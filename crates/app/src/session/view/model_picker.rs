@@ -10,7 +10,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::NARROW;
-use crate::session::{ModelInfo, SessionView};
+use crate::session::SessionView;
+use crate::session::state::ModelInfo;
 use crate::transcript::format_tokens;
 use crate::ui;
 
@@ -18,6 +19,7 @@ impl SessionView {
     fn filtered_models(&self, cx: &App) -> Vec<ModelInfo> {
         let query = self.model_search.read(cx).value().trim().to_lowercase();
         self.models
+            .available
             .iter()
             .filter(|m| {
                 query.is_empty()
@@ -41,9 +43,10 @@ impl SessionView {
                 state.focus(window, cx);
             });
             self.live.model_cursor = self
-                .model
+                .models
+                .current
                 .as_ref()
-                .and_then(|current| self.models.iter().position(|m| m == current))
+                .and_then(|current| self.models.available.iter().position(|m| m == current))
                 .unwrap_or(0);
         } else {
             self.focus_composer(window, cx);
@@ -109,7 +112,7 @@ impl SessionView {
 
     fn pick_model(&mut self, model: ModelInfo, window: &mut Window, cx: &mut Context<Self>) {
         self.set_model_picker(false, window, cx);
-        if self.model.as_ref() != Some(&model) {
+        if self.models.current.as_ref() != Some(&model) {
             self.set_model(model, cx);
         }
     }
@@ -118,12 +121,14 @@ impl SessionView {
         let weak = cx.entity().downgrade();
         let busy = self.busy();
         let label = self
-            .model
+            .models
+            .current
             .as_ref()
             .map(|m| m.name.clone())
             .unwrap_or_else(|| "No model".into());
         let dot = self
-            .model
+            .models
+            .current
             .as_ref()
             .map_or(ui::faint(), |m| provider_color(&m.provider));
         let trigger = Button::new("model")
@@ -147,9 +152,9 @@ impl SessionView {
 
         let models = self.filtered_models(cx);
         let cursor = self.live.model_cursor.min(models.len().saturating_sub(1));
-        let current = self.model.clone();
+        let current = self.models.current.clone();
         let search = self.model_search.clone();
-        let has_any = !self.models.is_empty();
+        let has_any = !self.models.available.is_empty();
         let content_weak = weak.clone();
         let scroll = self.live.model_scroll.clone();
 
