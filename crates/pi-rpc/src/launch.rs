@@ -153,8 +153,44 @@ fn node_runtime_name(script: &str) -> Option<&str> {
 /// Launcher options from `GENTLE_SHELL_ARGS`.
 pub(crate) fn extra_args() -> Vec<String> {
     std::env::var("GENTLE_SHELL_ARGS")
-        .map(|extra| extra.split_whitespace().map(str::to_string).collect())
+        .map(|extra| split_args(&extra))
         .unwrap_or_default()
+}
+
+/// Split like a shell does for the common cases: whitespace separates,
+/// `"…"` or `'…'` keeps spaces inside one argument (`--home "C:\Users\Ana
+/// Li\gs"`) and the quotes go. A backslash stays literal: on Windows it is
+/// the path separator, not an escape.
+fn split_args(text: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    // An argument started, even if empty (`""`).
+    let mut started = false;
+    let mut quote: Option<char> = None;
+    for c in text.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => current.push(c),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                started = true;
+            }
+            None if c.is_whitespace() => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            None => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        args.push(current);
+    }
+    args
 }
 
 /// `node` on the merged search PATH (Gentle Shell requires it).
@@ -353,6 +389,20 @@ mod tests {
     use std::fs::File;
     use std::os::unix::fs::PermissionsExt as _;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn launcher_args_keep_quoted_paths_with_spaces() {
+        assert_eq!(split_args("--link"), ["--link"]);
+        assert_eq!(split_args("  --home   /tmp/gs  "), ["--home", "/tmp/gs"]);
+        // A Windows home with a space, backslashes kept as they are.
+        assert_eq!(
+            split_args(r#"--home "C:\Users\Ana Li\gs" --isolated"#),
+            ["--home", r"C:\Users\Ana Li\gs", "--isolated"]
+        );
+        assert_eq!(split_args("--home='/a b'"), ["--home=/a b"]);
+        assert_eq!(split_args(r#"--x """#), ["--x", ""]);
+        assert!(split_args("   ").is_empty());
+    }
 
     #[test]
     fn bundled_install_lives_in_gentle_shells_own_folder() {
