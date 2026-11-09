@@ -94,11 +94,21 @@ fn resolve_homes_uncached() -> Homes {
 }
 
 /// gentle-pi `resolveGentlePiConfigHome` / `standaloneConfigHome`:
-/// `GENTLE_PI_CONFIG_HOME` wins; an isolated `~/.gentle-shell/agent` keeps its
-/// config beside it; `--link` and custom homes share `~/.pi/gentle-ai`.
+/// `GENTLE_PI_CONFIG_HOME` wins; a self-contained install (the launcher the
+/// app runs, [`crate::launch::bundled_launcher`]) keeps it in
+/// `<prefix>/config/gentle-ai` (`bundledPiConfigDir`); an isolated
+/// `~/.gentle-shell/agent` keeps its config beside it; `--link` and custom
+/// homes share `~/.pi/gentle-ai`.
 fn config_home(agent: &Path, isolated: bool) -> PathBuf {
     if let Some(dir) = std::env::var_os("GENTLE_PI_CONFIG_HOME").filter(|d| !d.is_empty()) {
         return PathBuf::from(dir);
+    }
+    let bundled = std::env::var_os("GENTLE_SHELL_BIN")
+        .is_none_or(|bin| bin.is_empty())
+        .then(crate::launch::bundled_launcher)
+        .flatten();
+    if let Some(dir) = bundled.as_deref().and_then(bundled_config_home) {
+        return dir;
     }
     let parent = agent.parent();
     let beside = agent.file_name().is_some_and(|n| n == "agent")
@@ -109,6 +119,13 @@ fn config_home(agent: &Path, isolated: bool) -> PathBuf {
         Some(parent) if isolated && beside => parent.join("gentle-ai"),
         _ => home_dir().join(".pi").join("gentle-ai"),
     }
+}
+
+/// `<prefix>/config/gentle-ai` for a self-contained install's launcher at
+/// `<prefix>/bin/gentle-shell[.cmd]`.
+fn bundled_config_home(launcher: &Path) -> Option<PathBuf> {
+    let prefix = launcher.parent()?.parent()?;
+    Some(prefix.join("config").join("gentle-ai"))
 }
 
 enum ConfigMode {
@@ -172,6 +189,18 @@ mod tests {
     use super::*;
     use std::fs::File;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn bundled_install_keeps_its_config_under_its_prefix() {
+        assert_eq!(
+            bundled_config_home(Path::new("/home/me/.gentle-shell/bin/gentle-shell")),
+            Some(PathBuf::from("/home/me/.gentle-shell/config/gentle-ai"))
+        );
+        assert_eq!(
+            bundled_config_home(Path::new("/Local/gentle-shell/bin/gentle-shell.cmd")),
+            Some(PathBuf::from("/Local/gentle-shell/config/gentle-ai"))
+        );
+    }
 
     fn set_mtime(path: &Path, secs: u64) {
         let file = File::options().write(true).open(path).unwrap();

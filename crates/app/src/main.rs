@@ -183,6 +183,7 @@ fn main() {
                 KeyBinding::new(key!("q"), Quit, None),
                 KeyBinding::new("escape", workspace::CloseOverlay, Some("GentleWorkspace")),
                 KeyBinding::new("escape", session::Abort, Some(session::CONTEXT)),
+                KeyBinding::new(key!("."), session::Stop, Some(session::CONTEXT)),
                 KeyBinding::new(
                     key!("shift-a"),
                     session::ToggleAgents,

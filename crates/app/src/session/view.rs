@@ -1938,9 +1938,9 @@ impl SessionView {
     }
 
     fn render_mode_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        // The chip is this session's live mode; the menu picks the default
-        // new sessions start in (Gentle Shell can't switch a live session
-        // over RPC). When they differ the chip shows both.
+        // The chip is this session's mode. Picking one switches it now (the
+        // backend restarts on the same conversation); mid-turn the switch
+        // waits for the turn to end, and the chip shows both until then.
         let current = self.mode;
         let default = self.default_mode.or(current);
         let pending = default.filter(|d| current.is_some_and(|c| c != *d));
@@ -1952,12 +1952,10 @@ impl SessionView {
             (None, _) => "Permissions".to_string(),
         };
         let tooltip = match (current, pending) {
-            (Some(live), Some(next)) => format!(
-                "This session runs in {}; new sessions start in {} (⌘N)",
-                live.label(),
-                next.label()
-            ),
-            _ => "Permission mode for new sessions".to_string(),
+            (Some(_), Some(next)) => {
+                format!("Switches to {} when the current turn ends", next.label())
+            }
+            _ => "Permission mode".to_string(),
         };
         let trigger = Button::new("mode-picker")
             .ghost()
@@ -2045,7 +2043,7 @@ impl SessionView {
                             .px_2()
                             .pt_1p5()
                             .pb_1()
-                            .child(ui::section_label("New sessions start in")),
+                            .child(ui::section_label("Permissions")),
                     )
                     .children(rows)
                     .child(
@@ -2055,13 +2053,14 @@ impl SessionView {
                             .pb_1()
                             .text_size(px(11.))
                             .text_color(ui::faint())
-                            .child(match (current, pending) {
-                                (Some(live), Some(next)) => format!(
-                                    "This conversation stays in {}; ⌘N starts one in {}.",
-                                    live.label(),
+                            .child(match pending {
+                                Some(next) => format!(
+                                    "Switches to {} when the current turn ends.",
                                     next.label()
                                 ),
-                                _ => "Applies from the next session".to_string(),
+                                None => {
+                                    "Applies now to this conversation and to new ones.".to_string()
+                                }
                             }),
                     );
                 ui::island(cx)
@@ -2761,7 +2760,11 @@ impl SessionView {
                 .danger()
                 .rounded(px(999.))
                 .child(div().size(px(9.)).rounded_sm().bg(ui::well()))
-                .tooltip("Stop (Esc)")
+                .tooltip(if cfg!(target_os = "macos") {
+                    "Stop (⌘.)"
+                } else {
+                    "Stop (Ctrl+.)"
+                })
                 .on_click(cx.listener(|this, _, _, cx| this.stop(cx)))
         } else {
             Button::new("send")
@@ -2929,7 +2932,11 @@ impl SessionView {
                         .text_size(px(10.))
                         .text_color(ui::faint())
                         .child(div().min_w_0().truncate().child(if busy {
-                            "↵ steers · esc stops"
+                            if cfg!(target_os = "macos") {
+                                "↵ steers · ⌘. stops"
+                            } else {
+                                "↵ steers · Ctrl+. stops"
+                            }
                         } else if narrow {
                             "↵ sends · ⇧↵ newline · / commands"
                         } else {
@@ -3331,6 +3338,7 @@ impl Render for SessionView {
             .key_context(CONTEXT)
             .track_focus(&self.focus_handle)
             .on_action(cx.listener(Self::abort))
+            .on_action(cx.listener(Self::on_stop))
             .on_action(cx.listener(Self::toggle_agents))
             .on_action(cx.listener(Self::on_new_session))
             .capture_key_down(cx.listener(Self::on_dialog_key))
