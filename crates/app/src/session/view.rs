@@ -18,9 +18,9 @@ use gpui_kit::*;
 use super::attachments;
 use super::state::BackendStatus;
 use super::{CONTEXT, SessionView};
-use crate::tools;
-use crate::transcript::{Block, Item, NoticeLevel, ToolStatus};
 use crate::ui;
+use gentle_core::tools;
+use gentle_core::transcript::{Block, Item, NoticeLevel, ToolStatus};
 
 mod activity;
 mod cards;
@@ -1251,7 +1251,7 @@ fn card_spec(item: &Item) -> Option<CardSpec> {
                 _ => None,
             };
             let title = match arg("description") {
-                Some(description) if command_like => ui::first_line(description, 80),
+                Some(description) if command_like => gentle_core::text::first_line(description, 80),
                 _ => summary.title,
             };
             let subject = if command_like && input.is_some() {

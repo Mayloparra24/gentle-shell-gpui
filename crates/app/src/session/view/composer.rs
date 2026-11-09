@@ -12,8 +12,8 @@ use super::activity::chip_popover;
 use super::dialogs::checkbox_box;
 use super::{NARROW, TINY, image_tile, number_badge};
 use crate::session::SessionView;
-use crate::transcript::format_tokens;
 use crate::ui;
+use gentle_core::transcript::format_tokens;
 
 impl SessionView {
     /// `NN%` (a chip: compact now, auto-compaction) — thin pink bar — window size.

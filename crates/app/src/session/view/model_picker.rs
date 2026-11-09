@@ -12,8 +12,8 @@ use gpui_kit::*;
 use super::NARROW;
 use crate::session::SessionView;
 use crate::session::state::ModelInfo;
-use crate::transcript::format_tokens;
 use crate::ui;
+use gentle_core::transcript::format_tokens;
 
 impl SessionView {
     fn filtered_models(&self, cx: &App) -> Vec<ModelInfo> {

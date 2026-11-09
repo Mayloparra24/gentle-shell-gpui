@@ -15,7 +15,9 @@ Gentle Shell GPUI es una aplicación de escritorio nativa escrita en Rust. Su ar
 ```mermaid
 flowchart TD
     Main["app: arranque y composición"] --> Features["Funcionalidades GPUI"]
-    Features --> State["Estado y lógica pura"]
+    Features --> State["Estado de las funcionalidades"]
+    Features --> Core["core: lógica pura"]
+    State --> Core
     Features --> Rpc["pi-rpc: proceso y protocolo JSONL"]
     Features --> Platform["Plataforma: Git, terminal, archivos, navegador y actualizaciones"]
     Features --> Shared["UI compartida, temas y recursos"]
@@ -25,11 +27,21 @@ flowchart TD
 
 | Componente | Responsabilidad |
 | --- | --- |
-| `crates/app` | Binario, composición, estado de las funcionalidades y vistas GPUI. |
+| `crates/app` | Binario, composición, estado de las funcionalidades, vistas GPUI y los efectos (archivos, procesos, sonido) de la lógica que vive en `core`. |
+| `crates/core` (`gentle-core`) | Lógica pura sin GPUI ni IO: modelos del transcript y de la actividad de subagentes, resúmenes de herramientas, modo de permisos, jobs y fase ODD, enrutado de comandos `/`, política de `notifications.json`. |
 | `crates/pi-rpc` | Resolución y lanzamiento del backend, transporte JSONL, autenticación y tipos del protocolo. |
 | `packaging` | Empaquetado e integración de distribución por sistema operativo. |
 
 `crates/pi-rpc` es una frontera estable: no conoce GPUI, ventanas, pestañas ni componentes visuales. `crates/app` depende de él, nunca al contrario.
+
+`crates/core` no depende de nada del proyecto (ni de `app` ni de `pi-rpc`) ni de GPUI; sus únicas dependencias son `serde`, `serde_json` y `regex`. Compila igual en macOS, Windows y Linux: no contiene código específico de plataforma salvo la sintaxis de rutas `file:` de la política, elegida con `cfg!(windows)` en compilación. Cuando un módulo mezclaba lógica pura y efectos, la parte pura vive en `core` y la parte con efectos queda en `app` y la llama:
+
+| `core` | Queda en `app` |
+| --- | --- |
+| `transcript`, `activity`, `tools`, `commands` | `session/agents.rs`: `now_ms` (reloj del sistema). |
+| `gentle_state`: `PermissionMode`, jobs, inferencia de fase | `gentle_state.rs`: leer y guardar `permission-mode.json`. |
+| `notifications`: `Alert`, validación y cambios de la política | `alerts.rs`: caché y escritura del archivo, reproducción, aviso a la ventana, `Gate` y `ContextLatch`. |
+| `text::first_line` | `ui.rs`: el resto de utilidades de presentación. |
 
 ## Organización objetivo
 
@@ -46,11 +58,11 @@ crates/
 │       ├── terminal/            # PTY y presentación de terminal
 │       ├── platform/            # integración específica del SO, cuando compense
 │       └── shared/              # UI reutilizable sin estado de negocio, cuando compense
-├── core/                        # lógica pura compartida, sólo cuando exista una frontera real
+├── core/                        # lógica pura compartida (gentle-core)
 └── pi-rpc/
 ```
 
-No es necesario crear `core` antes de disponer de lógica pura que sea reutilizable y esté libre de tipos GPUI e IO. Hasta entonces, esa lógica puede permanecer en módulos puros dentro de `app`.
+`core` crece por comportamiento completo y sólo con lógica pura; lo que necesite IO, procesos, reloj o GPUI se queda en `app` y llama a `core`. No se introducen traits ni adaptadores para poder mover algo a `core`.
 
 ## Anatomía de una funcionalidad
 
@@ -130,8 +142,8 @@ Los efectos no deben esconder cambios de estado. Los resultados vuelven a la fun
 ## Reglas de dependencias
 
 1. `pi-rpc` **no depende** de `app` ni de GPUI.
-2. `app` puede depender de `pi-rpc`; la dirección inversa está prohibida.
-3. La lógica candidata a `core` no depende de GPUI, `pi-rpc`, filesystem, procesos ni APIs del sistema.
+2. `app` puede depender de `pi-rpc` y de `core`; la dirección inversa está prohibida.
+3. `core` **no depende** de nada del proyecto (`app`, `pi-rpc`) ni de GPUI, filesystem, procesos, reloj ni APIs del sistema.
 4. Una funcionalidad consume otra mediante su API pública; no accede a sus módulos privados.
 5. El código compartido de UI no contiene reglas de negocio ni conoce funcionalidades concretas.
 6. La integración con sistema operativo, procesos y archivos permanece en los bordes.

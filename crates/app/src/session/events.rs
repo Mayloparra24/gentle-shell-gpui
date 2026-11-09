@@ -13,8 +13,8 @@ use super::state::{BackendStatus, Dialog, TurnActivity};
 use super::{SessionEvent, SessionView, view};
 use crate::browser::CanvasNotice;
 use crate::git;
-use crate::tools;
-use crate::transcript::{self, NoticeLevel};
+use gentle_core::tools;
+use gentle_core::transcript::{self, NoticeLevel};
 
 /// Least time between working-tree refreshes a turn's tool calls trigger.
 const GIT_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
@@ -115,7 +115,7 @@ impl SessionView {
             // A stopped turn needs no alert: the user just stopped it.
             if event["aborted"] != true {
                 let active = window.is_window_active();
-                crate::alerts::fire(crate::alerts::Alert::TurnEnded, active, cx);
+                crate::alerts::fire(gentle_core::notifications::Alert::TurnEnded, active, cx);
             }
         }
         if effects.settled {
@@ -143,7 +143,7 @@ impl SessionView {
             }
             let first = self.extension.dialogs.is_empty();
             crate::alerts::fire(
-                crate::alerts::Alert::NeedsYou,
+                gentle_core::notifications::Alert::NeedsYou,
                 window.is_window_active(),
                 cx,
             );
@@ -198,7 +198,7 @@ impl SessionView {
             UiMethod::SetStatus { key, text } => match text.filter(|t| !t.trim().is_empty()) {
                 Some(text) => {
                     if key == "gentle:mode" {
-                        self.mode = crate::gentle_state::PermissionMode::from_status(&text);
+                        self.mode = gentle_core::gentle_state::PermissionMode::from_status(&text);
                     }
                     self.extension.statuses.insert(key, text);
                 }
@@ -209,8 +209,8 @@ impl SessionView {
             UiMethod::SetWidget { key, lines, .. } => {
                 let lines = lines.filter(|l| !l.is_empty());
                 if key == "gentle-agents" {
-                    let next = lines.and_then(|l| crate::activity::parse(&l));
-                    self.activity.agents = Some(crate::activity::retain_finished(
+                    let next = lines.and_then(|l| gentle_core::activity::parse(&l));
+                    self.activity.agents = Some(gentle_core::activity::retain_finished(
                         self.activity.agents.take(),
                         next,
                     ));
@@ -322,7 +322,7 @@ impl TurnActivity {
     /// a background command for the job it will report.
     fn tool_started(&mut self, event: &Value) {
         let tool = event["toolName"].as_str().unwrap_or_default();
-        if let Some(phase) = crate::gentle_state::infer_phase(tool, &event["args"]) {
+        if let Some(phase) = gentle_core::gentle_state::infer_phase(tool, &event["args"]) {
             self.phase = Some(phase);
         }
         if matches!(tool, "bash_background" | "monitor") {
@@ -340,18 +340,20 @@ impl TurnActivity {
     /// `tool_execution_end`: a job the call reported, labeled by the command
     /// that started it.
     fn tool_ended(&mut self, event: &Value) {
-        if let Some(job) = crate::gentle_state::job_from_details(&event["result"]["details"]) {
+        if let Some(job) = gentle_core::gentle_state::job_from_details(&event["result"]["details"])
+        {
             let label = self
                 .job_commands
                 .remove(&transcript::str_field(event, "toolCallId"));
-            crate::gentle_state::upsert_job(&mut self.jobs, job, label.as_deref());
+            gentle_core::gentle_state::upsert_job(&mut self.jobs, job, label.as_deref());
         }
     }
 
     /// `message_end` of a custom message: a job notice updates its job.
     fn custom_message_ended(&mut self, event: &Value) {
-        if let Some(job) = crate::gentle_state::job_from_details(&event["message"]["details"]) {
-            crate::gentle_state::upsert_job(&mut self.jobs, job, None);
+        if let Some(job) = gentle_core::gentle_state::job_from_details(&event["message"]["details"])
+        {
+            gentle_core::gentle_state::upsert_job(&mut self.jobs, job, None);
         }
     }
 }
@@ -401,7 +403,7 @@ mod tests {
     };
     use crate::browser::CanvasNotice;
     use crate::session::state::TurnActivity;
-    use crate::transcript::NoticeLevel;
+    use gentle_core::transcript::NoticeLevel;
 
     #[test]
     fn git_refreshes_are_spaced_out() {

@@ -275,11 +275,11 @@ fn todo_left(pane: f32, width: f32) -> f32 {
 }
 
 /// Exact height of the list's content, so the island can size its unfold.
-fn todo_content_height(todo: &[crate::tools::TodoTask]) -> f32 {
+fn todo_content_height(todo: &[gentle_core::tools::TodoTask]) -> f32 {
     if todo.is_empty() {
         return 0.;
     }
-    let note = |task: &crate::tools::TodoTask| {
+    let note = |task: &gentle_core::tools::TodoTask| {
         task.note
             .as_deref()
             .is_some_and(|note| !note.trim().is_empty())
@@ -316,7 +316,7 @@ fn todo_bars(done: usize, total: usize, color: Hsla) -> Div {
 
 /// One row per todo task (status badge, one-line title, optional note) for
 /// the task island. Rows have a fixed height so the unfold can size itself.
-fn todo_rows(todo: &[crate::tools::TodoTask]) -> Vec<AnyElement> {
+fn todo_rows(todo: &[gentle_core::tools::TodoTask]) -> Vec<AnyElement> {
     todo.iter()
         .enumerate()
         .map(|(index, task)| {
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn todo_island_height_counts_rows_notes_and_gaps() {
-        let task = |status: &str, note: Option<&str>| crate::tools::TodoTask {
+        let task = |status: &str, note: Option<&str>| gentle_core::tools::TodoTask {
             title: "Task".into(),
             status: status.into(),
             note: note.map(str::to_string),

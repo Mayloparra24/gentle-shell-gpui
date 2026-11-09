@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use super::view;
 use crate::git::GitSnapshot;
-use crate::tools::TodoTask;
+use gentle_core::tools::TodoTask;
 
 /// Thinking levels a reasoning model has before the backend lists its own
 /// (`xhigh` / `max` appear only for models that support them).
@@ -168,11 +168,11 @@ impl ExtensionUi {
 pub(super) struct TurnActivity {
     pub(super) phase: Option<&'static str>,
     pub(super) queued: usize,
-    pub(super) jobs: Vec<crate::gentle_state::Job>,
+    pub(super) jobs: Vec<gentle_core::gentle_state::Job>,
     /// `bash_background`/`monitor` commands by tool call, to label their jobs.
     pub(super) job_commands: HashMap<String, String>,
     /// Helpers (`gentle-agents` widget).
-    pub(super) agents: Option<crate::activity::Activity>,
+    pub(super) agents: Option<gentle_core::activity::Activity>,
 }
 
 /// The task list and its island's fold (see [`view`] for the morph).
@@ -227,7 +227,7 @@ mod tests {
     use serde_json::json;
 
     use super::{ExtensionUi, ModelInfo, TodoIsland};
-    use crate::tools::TodoTask;
+    use gentle_core::tools::TodoTask;
 
     #[test]
     fn models_parse_with_defaults_and_skip_unknown() {

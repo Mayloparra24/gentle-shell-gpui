@@ -77,7 +77,7 @@ impl SessionSummary {
             .as_deref()
             .or(self.first_message.as_deref())
             .unwrap_or("(no messages)");
-        ui::first_line(text.trim(), 120)
+        gentle_core::text::first_line(text.trim(), 120)
     }
 
     pub fn matches(&self, query_lower: &str) -> bool {
@@ -620,7 +620,7 @@ impl SessionsView {
         if session.name.is_some()
             && let Some(first) = &session.first_message
         {
-            subtitle.push(ui::first_line(first.trim(), 90));
+            subtitle.push(gentle_core::text::first_line(first.trim(), 90));
         }
         let mut meta = Vec::new();
         if let Some(model) = &session.model {

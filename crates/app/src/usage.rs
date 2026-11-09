@@ -21,8 +21,8 @@ use gpui_kit::*;
 use pi_rpc::file_cache::{FileCache, Stamp};
 use serde_json::{Map, Value};
 
-use crate::transcript::format_tokens;
 use crate::ui;
+use gentle_core::transcript::format_tokens;
 
 const CODEX_PROVIDER: &str = "openai-codex";
 const OPENAI_PROVIDER: &str = "openai";

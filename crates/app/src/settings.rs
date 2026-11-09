@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use gentle_core::notifications;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -797,11 +798,13 @@ impl SettingsView {
 }
 
 /// Copy for each alert's switch.
-fn alert_hint(alert: alerts::Alert) -> &'static str {
+fn alert_hint(alert: notifications::Alert) -> &'static str {
     match alert {
-        alerts::Alert::TurnEnded => "When a turn finishes (agent.completed).",
-        alerts::Alert::NeedsYou => "When el Gentleman asks you something (agent.attention).",
-        alerts::Alert::ContextHigh => "When the context reaches the threshold (context.high).",
+        notifications::Alert::TurnEnded => "When a turn finishes (agent.completed).",
+        notifications::Alert::NeedsYou => "When el Gentleman asks you something (agent.attention).",
+        notifications::Alert::ContextHigh => {
+            "When the context reaches the threshold (context.high)."
+        }
     }
 }
 
@@ -812,7 +815,7 @@ fn alert_switch(
     on: bool,
     hint: &'static str,
     dim: bool,
-    change: impl Fn(bool) -> alerts::Change + 'static,
+    change: impl Fn(bool) -> notifications::Change + 'static,
     cx: &mut Context<SettingsView>,
 ) -> Div {
     v_flex()
@@ -844,7 +847,7 @@ fn alert_switch(
 impl SettingsView {
     /// Write one change to Gentle Shell's notifications.json; the section
     /// re-reads the file on the next render.
-    fn set_notification(&mut self, change: alerts::Change, cx: &mut Context<Self>) {
+    fn set_notification(&mut self, change: notifications::Change, cx: &mut Context<Self>) {
         self.notifications_note = alerts::apply(change)
             .err()
             .map(|e| format!("Could not write notifications.json: {e}"));
@@ -870,14 +873,14 @@ impl SettingsView {
                 enabled,
                 "Master switch, off by default. Off also stops the Dock bounce / taskbar flash while the app is in the background.",
                 false,
-                alerts::Change::Enabled,
+                notifications::Change::Enabled,
                 cx,
             ));
-        for alert in alerts::Alert::ALL {
+        for alert in notifications::Alert::ALL {
             let id = match alert {
-                alerts::Alert::TurnEnded => "alert-turn-ended",
-                alerts::Alert::NeedsYou => "alert-needs-you",
-                alerts::Alert::ContextHigh => "alert-context-high",
+                notifications::Alert::TurnEnded => "alert-turn-ended",
+                notifications::Alert::NeedsYou => "alert-needs-you",
+                notifications::Alert::ContextHigh => "alert-context-high",
             };
             card = card.child(alert_switch(
                 id,
@@ -885,18 +888,18 @@ impl SettingsView {
                 policy.sound(alert).is_some(),
                 alert_hint(alert),
                 !enabled,
-                move |on| alerts::Change::Event(alert, on),
+                move |on| notifications::Change::Event(alert, on),
                 cx,
             ));
         }
         let warning = match policy.state {
-            alerts::FileState::Invalid => Some(
+            notifications::FileState::Invalid => Some(
                 "notifications.json isn't valid for Gentle Shell, so sounds are off. A change here replaces it with the default preset.",
             ),
-            alerts::FileState::Unreadable => Some(
+            notifications::FileState::Unreadable => Some(
                 "notifications.json can't be read, so sounds are off. A change here rewrites it with the default preset.",
             ),
-            alerts::FileState::Missing | alerts::FileState::Valid => None,
+            notifications::FileState::Missing | notifications::FileState::Valid => None,
         };
         card.child(
             div().pt_2().text_xs().text_color(ui::faint()).child(

@@ -18,7 +18,6 @@ use gpui_kit::component::{Icon, Sizable as _, TitleBar, WindowExt as _, h_flex, 
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::commands::Screen;
 use crate::files::FileTreeView;
 use crate::memory::{MemoryEvent, MemoryView};
 use crate::notices::{self, Notices};
@@ -35,6 +34,7 @@ use crate::settings::{SettingsEvent, SettingsView};
 use crate::ui;
 use crate::usage::{UsageEvent, UsageView};
 use crate::workspaces::{self, SavedPane, SavedState, SavedTab, SavedWorkspace};
+use gentle_core::commands::Screen;
 
 actions!(
     gentle,

@@ -5,8 +5,8 @@
 
 use std::time::{Duration, Instant};
 
-use crate::commands::Screen;
-use crate::transcript::NoticeLevel;
+use gentle_core::commands::Screen;
+use gentle_core::transcript::NoticeLevel;
 
 /// Pi built-ins the app runs itself, for the `/` menu and the palette.
 pub(super) const BUILTINS: &[(&str, &str)] = &[
@@ -70,7 +70,7 @@ pub(super) fn classify(text: &str) -> Submit {
     match text
         .trim()
         .strip_prefix('/')
-        .and_then(crate::commands::route)
+        .and_then(gentle_core::commands::route)
     {
         Some(screen) => Submit::Open(screen),
         None => Submit::Prompt,

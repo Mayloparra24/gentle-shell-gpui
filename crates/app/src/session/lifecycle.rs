@@ -13,7 +13,7 @@ use pi_rpc::PiProcess;
 use super::SessionView;
 use super::state::BackendStatus;
 use super::view;
-use crate::transcript::{NoticeLevel, Transcript};
+use gentle_core::transcript::{NoticeLevel, Transcript};
 
 impl SessionView {
     /// Start the backend unless it was started before. Idempotent.
@@ -148,7 +148,7 @@ impl SessionView {
     /// ends). New sessions start in it too.
     pub(super) fn choose_mode(
         &mut self,
-        mode: crate::gentle_state::PermissionMode,
+        mode: gentle_core::gentle_state::PermissionMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {

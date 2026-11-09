@@ -13,8 +13,8 @@ use gpui_kit::component::{ActiveTheme as _, Icon, Selectable, Sizable as _, h_fl
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::transcript::NoticeLevel;
 use crate::ui;
+use gentle_core::transcript::NoticeLevel;
 
 /// Most notices kept; the oldest drop first.
 pub const CAP: usize = 200;
@@ -398,7 +398,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use crate::notices::{CAP, Notices, ago};
-    use crate::transcript::NoticeLevel;
+    use gentle_core::transcript::NoticeLevel;
 
     fn push(store: &mut Notices, message: &str, at: Instant) {
         store.push(

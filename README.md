@@ -144,11 +144,12 @@ La aplicación sigue un monolito modular por funcionalidades. Las fronteras, reg
 
 | Crate / module | Role |
 | --- | --- |
+| `crates/core` | Pure logic with no GPUI or IO: transcript and subagent activity models, tool summaries, permission mode / jobs / ODD phase, slash-command routing, notifications.json policy. |
 | `crates/pi-rpc` | Launcher and home resolution (matching Gentle Shell's launcher), the JSONL client, typed extension UI requests, and the sign-in helper. |
 | `app/session` | One tab: RPC state, transcript, composer and its status chips, agents panel. |
 | `app/workspace.rs` | The window, tabs, and window-level screens. |
 | `app/{providers,profiles,sessions,usage,palette}.rs` | The native screens. |
-| `app/{transcript,activity,gentle_state,tools,git,banner}.rs` | Pure state rebuilt from events and files. |
+| `app/{git,banner}.rs` | Pure state rebuilt from events and files. |
 | `app/themes.rs` | Theme catalog, default choice (saved choice, then Pi's `theme` setting, then Gentleman-Cute) and persistence; `ui.rs` resolves it into the palette. |
 
 ```bash

@@ -15,11 +15,12 @@ base64 = "0.22"
 dunce = "1"
 serde.workspace = true
 serde_json.workspace = true
+gentle-core = { path = "../core" }
 pi-rpc = { path = "../pi-rpc" }
 gpui-kit = { version = "0.9.0", features = ["syntect"] }
 smol = "2"
 dirs = "7"
-regex = "1"
+regex.workspace = true
 sha2 = "0.10"
 alacritty_terminal = "0.26"
 ignore = "0.4"

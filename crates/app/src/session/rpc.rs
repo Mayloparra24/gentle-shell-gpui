@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::state::{BackendStatus, ModelInfo};
 use super::{SessionView, attachments, builtins};
-use crate::transcript::NoticeLevel;
+use gentle_core::transcript::NoticeLevel;
 
 impl SessionView {
     pub(super) fn process(&self) -> Option<Arc<PiProcess>> {
@@ -127,7 +127,11 @@ impl SessionView {
                         .observe(this.usage.context_percent, threshold)
                     {
                         let active = this.window_active(cx);
-                        crate::alerts::fire(crate::alerts::Alert::ContextHigh, active, cx);
+                        crate::alerts::fire(
+                            gentle_core::notifications::Alert::ContextHigh,
+                            active,
+                            cx,
+                        );
                     }
                 }
             },
@@ -159,9 +163,9 @@ impl SessionView {
     /// The task list as the conversation's last `todo` call left it.
     fn sync_todo_from_history(&mut self) {
         for item in self.transcript.items.iter().rev() {
-            if let crate::transcript::Item::Tool { name, details, .. } = item
+            if let gentle_core::transcript::Item::Tool { name, details, .. } = item
                 && name == "todo"
-                && let Some(tasks) = crate::tools::todo_tasks(details)
+                && let Some(tasks) = gentle_core::tools::todo_tasks(details)
             {
                 self.todo.apply(tasks);
                 return;

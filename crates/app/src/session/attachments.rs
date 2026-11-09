@@ -13,7 +13,7 @@ use base64::engine::general_purpose::STANDARD;
 use gpui_kit::{Image, ImageFormat};
 use serde_json::{Value, json};
 
-use crate::transcript::{UserImage, image_key};
+use gentle_core::transcript::{UserImage, image_key};
 
 /// Largest image accepted, before base64.
 pub const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;

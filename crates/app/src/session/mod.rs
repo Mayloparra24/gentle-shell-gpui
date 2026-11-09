@@ -10,8 +10,8 @@ use gpui_kit::component::text::TextViewState;
 use gpui_kit::*;
 use pi_rpc::{UiAnswer, UiMethod};
 
-use crate::transcript::{NoticeLevel, Transcript};
 use crate::ui;
+use gentle_core::transcript::{NoticeLevel, Transcript};
 
 mod agents;
 mod attachments;
@@ -45,7 +45,7 @@ pub enum SessionEvent {
     ChromeChanged,
     /// A Gentle Shell command whose UI is terminal-only was run (typed or
     /// from the palette): open the app's own screen for it instead.
-    OpenScreen(crate::commands::Screen),
+    OpenScreen(gentle_core::commands::Screen),
     /// The thinking level was set to `max`: the window plays its surge.
     MaxEffort,
     /// Gentle Design's canvas opened, refreshed or stopped: the window shows
@@ -81,8 +81,8 @@ pub struct SessionView {
     agents_panel: AgentsPanel,
     /// This session's live permission mode (Gentle Shell's `gentle:mode`
     /// status), and the default new sessions start in (`permission-mode.json`).
-    mode: Option<crate::gentle_state::PermissionMode>,
-    default_mode: Option<crate::gentle_state::PermissionMode>,
+    mode: Option<gentle_core::gentle_state::PermissionMode>,
+    default_mode: Option<gentle_core::gentle_state::PermissionMode>,
     _agents_ticker: Task<()>,
     todo: state::TodoIsland,
     git: state::GitStatus,
@@ -268,7 +268,7 @@ impl SessionView {
             .chain(
                 self.commands
                     .iter()
-                    .filter(|(name, _)| !crate::commands::hidden(name))
+                    .filter(|(name, _)| !gentle_core::commands::hidden(name))
                     .cloned(),
             )
             .collect()

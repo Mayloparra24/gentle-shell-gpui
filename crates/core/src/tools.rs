@@ -13,7 +13,7 @@ pub struct ToolSummary {
 pub fn summarize(name: &str, args: &Value, details: &Value) -> ToolSummary {
     let arg = |key: &str| args[key].as_str().unwrap_or_default().to_string();
     let (title, subject) = match name {
-        "bash" => ("Bash", crate::ui::first_line(&arg("command"), 120)),
+        "bash" => ("Bash", crate::text::first_line(&arg("command"), 120)),
         "edit" => ("Edit", arg("path")),
         "write" => ("Write", arg("path")),
         "read" => ("Read", arg("path")),
@@ -31,7 +31,7 @@ pub fn summarize(name: &str, args: &Value, details: &Value) -> ToolSummary {
             ]
             .iter()
             .find_map(|k| args[*k].as_str())
-            .map(|s| crate::ui::first_line(s, 120))
+            .map(|s| crate::text::first_line(s, 120))
             .unwrap_or_default();
             return ToolSummary {
                 title,

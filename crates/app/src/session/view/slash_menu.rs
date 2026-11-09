@@ -22,7 +22,7 @@ impl SessionView {
         let backend = self
             .commands
             .iter()
-            .filter(|(name, _)| !crate::commands::hidden(name))
+            .filter(|(name, _)| !gentle_core::commands::hidden(name))
             .map(|(name, description)| (name.as_str(), description.as_str()));
         builtins
             .chain(backend)

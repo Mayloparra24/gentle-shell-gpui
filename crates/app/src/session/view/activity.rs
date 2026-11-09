@@ -11,8 +11,9 @@ use gpui_kit::*;
 
 use super::{NARROW, TINY, clock};
 use crate::session::SessionView;
-use crate::transcript::{Item, ToolStatus, format_tokens};
-use crate::{tools, ui};
+use crate::ui;
+use gentle_core::tools;
+use gentle_core::transcript::{Item, ToolStatus, format_tokens};
 
 impl SessionView {
     /// Elapsed time, phase and current tool over the composer, with the
@@ -45,7 +46,11 @@ impl SessionView {
                     Some(if s.subject.is_empty() {
                         s.title
                     } else {
-                        format!("{} {}", s.title, ui::first_line(&s.subject, 60))
+                        format!(
+                            "{} {}",
+                            s.title,
+                            gentle_core::text::first_line(&s.subject, 60)
+                        )
                     })
                 }
                 _ => None,
@@ -298,7 +303,7 @@ impl SessionView {
                     SharedString::from(format!("widget-{key}")),
                     IconName::LayoutDashboard,
                     ui::muted(),
-                    ui::first_line(key, 18),
+                    gentle_core::text::first_line(key, 18),
                     title,
                     String::new(),
                     move || {
@@ -338,7 +343,9 @@ impl SessionView {
                             s.status.clone(),
                             crate::session::agents::status_color(&s.status),
                             s.label.clone(),
-                            s.last_step.as_deref().map(|step| ui::first_line(step, 60)),
+                            s.last_step
+                                .as_deref()
+                                .map(|step| gentle_core::text::first_line(step, 60)),
                         )
                     })
                     .collect::<Vec<_>>(),

@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::*;
 
 use super::{CardSpec, card_spec, line_count};
-use crate::transcript::{Dirty, Item};
 use crate::ui;
+use gentle_core::transcript::{Dirty, Item};
 
 /// Rows after the transcript items.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

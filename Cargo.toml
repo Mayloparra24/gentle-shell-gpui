@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/pi-rpc", "crates/app"]
+members = ["crates/core", "crates/pi-rpc", "crates/app"]
 
 [workspace.package]
 version = "0.1.6"
@@ -10,6 +10,7 @@ license = "MIT"
 [workspace.dependencies]
 anyhow = "1"
 async-channel = "2.5"
+regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 

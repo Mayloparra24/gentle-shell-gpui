@@ -10,8 +10,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::SessionView;
-use crate::activity::{AgentTask, ThreadItem, now_ms};
 use crate::ui;
+use gentle_core::activity::{AgentTask, ThreadItem};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentsTab {
@@ -76,6 +76,14 @@ fn duration(ms: Option<u64>) -> String {
     ms.map(ui::format_duration).unwrap_or_else(|| "–".into())
 }
 
+/// Wall-clock milliseconds, the unit of the activity document's timestamps.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
 impl SessionView {
     pub(super) fn open_agents(&mut self, select: Option<String>, cx: &mut Context<Self>) {
         self.agents_panel.open = true;
@@ -116,7 +124,11 @@ impl SessionView {
     }
 
     /// Gentle Shell has no host-side stop for helpers; ask the agent to cancel it.
-    fn ask_to_stop_agent(&mut self, task: &crate::activity::TaskSummary, cx: &mut Context<Self>) {
+    fn ask_to_stop_agent(
+        &mut self,
+        task: &gentle_core::activity::TaskSummary,
+        cx: &mut Context<Self>,
+    ) {
         let text = format!(
             "Stop the subagent task {} ({}: {}) now with subagent_cancel, then tell me what it had done.",
             task.id,

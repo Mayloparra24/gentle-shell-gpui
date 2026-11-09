@@ -1,12 +1,10 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod activity;
 mod alerts;
 mod app_update;
 mod assets;
 mod banner;
 mod browser;
-mod commands;
 mod files;
 mod gentle_state;
 mod git;
@@ -26,8 +24,6 @@ mod setup;
 mod surge;
 mod terminal;
 mod themes;
-mod tools;
-mod transcript;
 mod ui;
 mod updates;
 mod usage;
