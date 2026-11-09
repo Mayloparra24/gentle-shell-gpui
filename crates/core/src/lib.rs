@@ -3,7 +3,9 @@
 //! no OS APIs (see docs/adr/0002-nucleo-puro-incremental.md).
 
 pub mod activity;
+pub mod alert_timing;
 pub mod commands;
+pub mod engram;
 pub mod fuzzy;
 pub mod gentle_state;
 pub mod git;
@@ -14,3 +16,5 @@ pub mod text;
 pub mod tools;
 pub mod transcript;
 pub mod usage;
+pub mod version;
+pub mod workspaces;

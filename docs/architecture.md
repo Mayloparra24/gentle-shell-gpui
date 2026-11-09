@@ -39,14 +39,17 @@ flowchart TD
 | `core` | Queda en `app` |
 | --- | --- |
 | `transcript`, `activity`, `tools`, `commands` | `session/agents.rs`: `now_ms` (reloj del sistema). |
-| `gentle_state`: `PermissionMode`, jobs, inferencia de fase | `gentle_state.rs`: leer y guardar `permission-mode.json`. |
-| `notifications`: `Alert`, validación y cambios de la política | `alerts.rs`: caché y escritura del archivo, reproducción, aviso a la ventana, `Gate` y `ContextLatch`. |
-| `text::first_line` | `ui.rs`: el resto de utilidades de presentación. |
+| `gentle_state`: `PermissionMode`, jobs, inferencia de fase | `shared/gentle_state.rs`: leer y guardar `permission-mode.json`. |
+| `notifications`: `Alert`, validación y cambios de la política; `alert_timing`: `Gate` y `ContextLatch` | `alerts/`: caché y escritura del archivo, reproducción, tonos incluidos, aviso a la ventana. |
+| `text::first_line` | `shared/ui.rs`: el resto de utilidades de presentación. |
 | `usage`: modelos y parsers de ventanas de suscripción (Codex, NaN), agrupación, claim de cuenta; registros de sesión, agregación de estadísticas, fechas ISO y días civiles | `usage/`: leer `auth.json`, resolver claves (`$VAR`, `!comando`), peticiones HTTP, recorrer y cachear archivos de sesión, reloj y desplazamiento horario local. |
 | `profiles`: modelo de enrutado, formato de `profiles.json`, pins, frontmatter de agentes, notas | `profiles/`: homes y descubrimiento de agentes, escrituras atómicas, enrutado guardado y materializado, settings de Pi, archivos de pin y worktree, Make default. |
 | `fuzzy`: puntuación difusa y ranking de archivos | `palette/`: recorrer archivos, leer ramas con git. |
 | `sessions`: resumen de sesión, nombre de carpeta por cwd, orden, fechas ISO y tiempo relativo | `sessions/`: buscar y leer archivos `.jsonl` (el escaneo por líneas va unido a la lectura), caché. |
-| `git`: parsers de status (v1 y v2), numstat, refs, stash, worktrees, submódulos, ahead/behind; recorte de diffs | `git.rs`, `git/`: ejecutar `git`, contar líneas de archivos no rastreados, operaciones de stage, commit, push y ramas. |
+| `git`: parsers de status (v1 y v2), numstat, refs, stash, worktrees, submódulos, ahead/behind; recorte de diffs | `git/`: ejecutar `git`, contar líneas de archivos no rastreados, operaciones de stage, commit, push y ramas. |
+| `version`: versiones estables, comparación y oferta de actualización de Gentle Shell | `updates/`: caché del launcher, consulta a npm, reloj. |
+| `engram`: modelo de observaciones y codificación de consultas | `memory/`: peticiones HTTP a Engram. |
+| `workspaces`: nombres únicos de workspace | `workspaces/`: modelo guardado (usa `PaneTree`), lectura y escritura de `workspaces.json`. |
 
 ## Organización
 
@@ -55,12 +58,12 @@ crates/
 ├── app/
 │   └── src/
 │       ├── main.rs              # arranque: CLI, instancia única, PATH de toolchains, adopción de config
-│       ├── app.rs, app/         # composition root: GPUI, temas, atajos, menús, ventana; integration.rs registra paneles y sidebar
+│       ├── app/                 # composition root (mod.rs): GPUI, temas, atajos, menús, ventana; integration.rs registra paneles y sidebar
 │       ├── cli.rs               # argumentos (`[FOLDER] [-p TEXT]`) y carpeta inicial
-│       ├── features/            # una carpeta o archivo por funcionalidad
-│       │   ├── session/  workspace/  profiles/  settings/  usage/  setup/  browser/  files/  terminal/
-│       │   ├── workspaces.rs  sessions.rs  palette.rs  providers.rs  memory.rs  onboarding.rs
-│       │   └── notices.rs  alerts.rs  git.rs  app_update.rs  updates.rs
+│       ├── features/            # una carpeta por funcionalidad; su entrada es mod.rs
+│       │   ├── session/  workspace/  workspaces/  sessions/  palette/  profiles/  settings/  usage/  setup/
+│       │   ├── browser/  files/  terminal/  git/  providers/  memory/  onboarding/  notices/  alerts/
+│       │   └── app_update/  updates/
 │       ├── platform/            # integración con el SO: instancia única, íconos del Dock y de la ventana
 │       └── shared/              # piezas usadas por varias funcionalidades sin lógica propia:
 │                                # ui, themes, assets, banner, surge, pane, gentle_state
@@ -68,7 +71,7 @@ crates/
 └── pi-rpc/
 ```
 
-Las rutas siguen la carpeta: `crate::features::session`, `crate::shared::ui`, `crate::platform::instance`. `features/`, `platform/` y `shared/` sólo listan módulos (`mod.rs`); cada funcionalidad con hijos usa `nombre.rs` + `nombre/`. Una funcionalidad nueva va en `features/`; algo pasa a `shared/` sólo cuando lo usa más de una funcionalidad y no tiene lógica de producto.
+Las rutas siguen la carpeta: `crate::features::session`, `crate::shared::ui`, `crate::platform::instance`. Cada funcionalidad es una carpeta `features/<nombre>/`: `mod.rs` conserva sus tipos públicos y su API, y los hijos agregan bloques `impl` y marcan `pub(super)` lo que comparten. Una funcionalidad nueva va en `features/` como carpeta aunque empiece con un solo archivo; algo pasa a `shared/` sólo cuando lo usa más de una funcionalidad y no tiene lógica de producto.
 
 `core` crece por comportamiento completo y sólo con lógica pura; lo que necesite IO, procesos, reloj o GPUI se queda en `app` y llama a `core`. No se introducen traits ni adaptadores para poder mover algo a `core`.
 
@@ -89,7 +92,7 @@ Esta forma es una guía, no una plantilla obligatoria. Una funcionalidad pequeñ
 
 ### Frontera actual de la sesión
 
-`SessionView` es una pestaña: un backend `gentle-shell --mode rpc` y su conversación. Su lógica se divide por responsabilidad en bloques `impl SessionView` de módulos hermanos; `session/mod.rs` conserva la estructura, el constructor, la API pública que usa la ventana (`workspace.rs`), los avisos a la ventana (`SessionEvent`, `sync_chrome`), las acciones y el cableado de módulos:
+`SessionView` es una pestaña: un backend `gentle-shell --mode rpc` y su conversación. Su lógica se divide por responsabilidad en bloques `impl SessionView` de módulos hermanos; `session/mod.rs` conserva la estructura, el constructor, la API pública que usa la ventana (`workspace/mod.rs`), los avisos a la ventana (`SessionEvent`, `sync_chrome`), las acciones y el cableado de módulos:
 
 ```text
 session/
@@ -137,7 +140,7 @@ Los módulos hijos añaden bloques `impl SessionView` propios; lo que otro módu
 Cada una conserva su tipo público y su API en el archivo padre; los hijos agregan bloques `impl` propios y marcan `pub(super)` lo que comparten.
 
 ```text
-workspace.rs        # Workspace, tipos (Pane, Tab, Space, Overlay) y API pública
+workspace/mod.rs     # Workspace, tipos (Pane, Tab, Space, Overlay) y API pública
 workspace/
 ├── layout.rs       # cálculos de división de paneles
 ├── panes.rs        # crear, dividir, enfocar y cerrar paneles
@@ -149,7 +152,7 @@ workspace/
 ├── view.rs         # barra de título, pestañas y paneles
 └── render.rs       # impl Render
 
-profiles.rs         # ProfilesView, ProfilesEvent, estado y consultas
+profiles/mod.rs      # ProfilesView, ProfilesEvent, estado y consultas
 profiles/
 ├── env.rs          # homes, paquete gentle-pi y descubrimiento de agentes
 ├── files.rs        # escrituras atómicas, profiles.json, models.json, settings.json, carga
@@ -160,14 +163,14 @@ profiles/
 ├── tests.rs        # pruebas de efectos de archivo
 └── view.rs, view/  # Render; cells, table, profile_list, confirm, footer
 
-usage.rs            # UsageView, estado, refrescos y API pública
+usage/mod.rs         # UsageView, estado, refrescos y API pública
 usage/
 ├── credentials.rs  # auth.json → tarjetas y peticiones; resolución de claves
 ├── fetch.rs        # peticiones HTTP de uso
 ├── stats.rs        # archivos de sesión: recorrido, lectura, caché
 └── view.rs, view/  # Render; subscription, stats
 
-settings.rs         # SettingsView, SettingsEvent, carga y composición de la pantalla
+settings/mod.rs      # SettingsView, SettingsEvent, carga y composición de la pantalla
 settings/
 ├── layout.rs       # row, section, or_dash
 ├── snapshot.rs     # lectura de la configuración y sondas del lanzador
@@ -177,7 +180,7 @@ settings/
 ├── packages.rs     # instalar y quitar paquetes
 └── notifications.rs, theme.rs, app.rs, models.rs  # una sección cada uno
 
-palette.rs          # PaletteView, acciones, eventos, categorías
+palette/mod.rs       # PaletteView, acciones, eventos, categorías
 palette/
 ├── commands.rs     # pantallas, comandos de panel y comandos `/` del backend
 ├── sources.rs      # archivos bajo la raíz y ramas locales
@@ -185,7 +188,7 @@ palette/
 ├── keyboard.rs     # selección, ejecutar fila, categorías, renombrar workspace
 └── view.rs         # Render
 
-sessions.rs         # SessionsView, SessionsEvent, Scope
+sessions/mod.rs      # SessionsView, SessionsEvent, Scope
 sessions/
 ├── discovery.rs    # sessionDir y archivos .jsonl por carpeta o todos
 ├── summary.rs      # escaneo ligero del JSONL y caché por archivo
@@ -193,13 +196,13 @@ sessions/
 ├── render.rs       # filas, lista y Render
 └── tests.rs        # pruebas con archivos de sesión temporales
 
-git.rs              # ejecutar git, toplevel; reexporta los tipos que usan los llamadores
+git/mod.rs           # ejecutar git, toplevel; reexporta los tipos que usan los llamadores
 git/
 ├── snapshot.rs     # cambios para el panel y el árbol
 ├── changes.rs      # pestaña Changes: stage, discard, stash, commit, push
 └── refs.rs         # pestaña Branches: ramas, stash, checkout remoto
 
-app_update.rs       # AppUpdate (Global), Status, Problem; check, install, skip, restart
+app_update/mod.rs    # AppUpdate (Global), Status, Problem; check, install, skip, restart
 app_update/
 ├── release.rs      # versiones, asset por SO, parseo de releases y SHA256SUMS, decisión
 ├── cache.rs        # app-update.json: caché de 6 h y versión saltada
@@ -207,6 +210,14 @@ app_update/
 ├── archive.rs      # extracción segura de zip y tar.gz; payload por SO
 ├── install.rs      # reemplazo del bundle (macOS), del archivo (Linux) y del exe en uso (Windows)
 └── relaunch.rs     # proceso que reabre la app al salir
+
+providers/          # mod.rs: tipos y constructor; login.rs (helper de login y flujo), list.rs, flow_view.rs, render.rs
+onboarding/         # mod.rs: estado y API; checks.rs (plan de instalación, tonos), install.rs, view.rs
+notices/            # mod.rs: Notice, Notices; store.rs (push, leídos, límite), bell.rs, panel.rs
+memory/             # mod.rs: MemoryView; client.rs (HTTP a Engram), view.rs
+alerts/             # mod.rs: fire, context_threshold; policy.rs, sound.rs, tones.rs
+updates/            # mod.rs: check y skip; cache.rs (config del launcher), registry.rs (npm)
+workspaces/         # mod.rs: modelo guardado; store.rs (workspaces.json), tests.rs
 ```
 
 ## Flujo de datos

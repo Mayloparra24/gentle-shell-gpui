@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::{BINARY, Problem};
-use crate::features::updates::{is_newer, stable_parts};
+use gentle_core::version::{is_newer, stable_parts};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
