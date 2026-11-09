@@ -138,17 +138,17 @@ Known gaps and things not tested yet, so you know what to expect:
 - **Markdown preview:** links to other `.md` files open in the default app, not in a pane, and `#anchor` links do nothing.
 - **Visual checks:** several screens were only checked from code, not on screen: the chips' cards, the App section of Configuration, the update pill, the Background subagents switch, and the Changes / Branches tabs with real repositories.
 
-## Arquitectura y estructura
+## Architecture and structure
 
-La aplicación sigue un monolito modular por funcionalidades. La documentación para desarrollar está en [`docs/`](docs/README.md):
+The app is a modular monolith organized by feature. The developer documentation lives in [`docs/`](docs/README.md):
 
-- [`docs/architecture.md`](docs/architecture.md): fronteras, reglas de dependencias, pruebas y dónde va cada cosa.
-- [`docs/design-system.md`](docs/design-system.md): colores, tipografía, componentes, animaciones y patrones de pantalla.
-- [`docs/integrations.md`](docs/integrations.md): cómo habla la app con Gentle Shell y con otros servicios.
-- [`docs/development.md`](docs/development.md): compilar, probar en aislado, CI y releases.
-- [`docs/adr/`](docs/adr/): decisiones de arquitectura.
+- [`docs/architecture.md`](docs/architecture.md): boundaries, dependency rules, testing, and where each thing goes.
+- [`docs/design-system.md`](docs/design-system.md): colors, typography, components, animations and screen patterns.
+- [`docs/integrations.md`](docs/integrations.md): how the app talks to Gentle Shell and other services.
+- [`docs/development.md`](docs/development.md): building, isolated testing, CI and releases.
+- [`docs/adr/`](docs/adr/): architecture decisions.
 
-[`AGENTS.md`](AGENTS.md) es el punto de entrada corto para personas nuevas y agentes de IA.
+[`AGENTS.md`](AGENTS.md) is the short entry point for new developers and AI agents.
 
 | Crate / module | Role |
 | --- | --- |

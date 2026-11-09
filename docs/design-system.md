@@ -1,182 +1,182 @@
-# Sistema de diseño
+# Design system
 
-Cómo se ve la app y con qué piezas se construye. Todo vive en `crates/app/src/shared/`: `ui.rs` (tokens, componentes y movimiento), `themes.rs` (catálogo y tema activo), `banner.rs` y `surge.rs` (marca y efectos pixel art) y `assets.rs` (íconos). Las vistas usan estas piezas en lugar de colores y medidas sueltas, para que cada pantalla se parezca a las demás.
+How the app looks and which pieces it is built from. Everything lives in `crates/app/src/shared/`: `ui.rs` (tokens, components and motion), `themes.rs` (catalog and active theme), `banner.rs` and `surge.rs` (brand and pixel art effects) and `assets.rs` (icons). Views use these pieces instead of loose colors and sizes, so every screen looks like the others.
 
-## Principios
+## Principles
 
-Estos principios salen del código actual, no son aspiraciones.
+These principles come from the current code. They are not aspirations.
 
-| Principio | Cómo se aplica |
+| Principle | How it applies |
 | --- | --- |
-| **Vidrio translúcido** | La ventana pide `WindowBackgroundAppearance::Blurred` y una barra de título transparente (`crates/app/src/app/mod.rs`). Las superficies (`panel`, `surface`, `well`…) son el fondo del tema teñido y con alfa, para que se vea el escritorio desenfocado. Lo que flota encima (menús, pantallas, paleta) es opaco: `popover_bg` y `screen_bg` tienen alfa 1 con cualquier transparencia. |
-| **Sin líneas en el chrome** | La barra de título no tiene borde (`title_bar_border = clear` en `ui::apply_theme`). Paneles y barra lateral llevan `border_1()` transparente; sólo el panel enfocado de una división muestra un borde `petal().opacity(0.45)` (`features/workspace/view.rs`). Los divisores entre paneles son un hueco de 6 px (`DIVIDER`) con una barrita de 2×40 px que aparece en `petal()` sólo al pasar el cursor. Dentro, las zonas se separan con espacio y con el cambio de superficie (`panel` → `surface` → `well`). |
-| **Líneas finas sólo en pantallas** | Dentro de una pantalla superpuesta sí hay una línea `ui::border()` entre cabecera, cuerpo y pie (`screen_header` usa `border_b_1`, los pies `border_t_1`), y las filas de Configuración usan `border().opacity(0.5)`. No se agregan más. |
-| **Petal como acento** | El rosa de marca (el `accent` del tema) se reserva para lo vivo y lo principal: el punto que late mientras el agente trabaja, el texto `✿ fase…`, el panel enfocado, los botones primarios y el resplandor del welcome. No se usa como relleno de fondo. |
-| **Denso pero tranquilo** | `text_xs` es el tamaño más usado y `muted` el color más usado (más que `fg`). El color semántico va en íconos, chips y bordes de tarjetas, no en bloques grandes. Las animaciones duran 220–420 ms y no rebotan más de un ~3 %. |
+| **Translucent glass** | The window requests `WindowBackgroundAppearance::Blurred` and a transparent title bar (`crates/app/src/app/mod.rs`). Surfaces (`panel`, `surface`, `well`…) are the theme background, tinted and with alpha, so the blurred desktop shows through. What floats on top (menus, screens, palette) is opaque: `popover_bg` and `screen_bg` have alpha 1 at any transparency. |
+| **No lines in the chrome** | The title bar has no border (`title_bar_border = clear` in `ui::apply_theme`). Panels and the sidebar have a transparent `border_1()`; only the focused panel of a split shows a `petal().opacity(0.45)` border (`features/workspace/view.rs`). Dividers between panels are a 6 px gap (`DIVIDER`) with a 2×40 px handle that appears in `petal()` only on hover. Inside, zones are separated by space and by the change of surface (`panel` → `surface` → `well`). |
+| **Thin lines only in screens** | Inside an overlay screen there is a `ui::border()` line between header, body and footer (`screen_header` uses `border_b_1`, footers use `border_t_1`), and Settings rows use `border().opacity(0.5)`. No more are added. |
+| **Petal as accent** | The brand pink (the theme's `accent`) is reserved for what is live and primary: the dot that pulses while the agent works, the `✿ phase…` text, the focused panel, primary buttons and the welcome glow. It is not used as a background fill. |
+| **Dense but calm** | `text_xs` is the most used size and `muted` the most used color (more than `fg`). Semantic color goes on icons, chips and card borders, not on large blocks. Animations last 220–420 ms and overshoot by no more than ~3 %. |
 
 ## Color
 
-### De dónde salen los colores
+### Where colors come from
 
 ```text
-themes/*.json (formato de tema de Pi)
-  → themes::parse_pi_theme   → Theme (colores opacos 0xRRGGBB)
-  → ui::Palette::new(theme, clear)   → roles con alfa, según la transparencia
-  → ACTIVE (RwLock global en themes.rs)
-  → ui::fg(), ui::surface()…  (leen con themes::palette(|p| …), sin cx)
-  → ui::apply_theme(cx)       → colores de gpui-component (botones, inputs, listas, menús)
+themes/*.json (Pi theme format)
+  → themes::parse_pi_theme   → Theme (opaque colors 0xRRGGBB)
+  → ui::Palette::new(theme, clear)   → roles with alpha, based on transparency
+  → ACTIVE (global RwLock in themes.rs)
+  → ui::fg(), ui::surface()…  (read via themes::palette(|p| …), no cx)
+  → ui::apply_theme(cx)       → gpui-component colors (buttons, inputs, lists, menus)
 ```
 
-- **Catálogo** (`themes::load_catalog`): primero los temas de Gentle Shell embebidos con `include_str!` desde `crates/app/themes/` (`Gentleman-Cute`, `Gentleman-Sexy`, `Gentle`); los instalados en `<gentle-pi>/themes/` los reemplazan por nombre. Después los temas del usuario en `<agent dir>/themes/` y al final los esquemas populares de `SCHEMES`. Los nombres son únicos; gana el primero.
-- **Tema inicial** (`themes::pick_default`): el guardado en `dirs::data_dir()/gentle-shell-gpui/settings.json` (clave `theme`), si no el `theme` del `settings.json` de Pi, si no `DEFAULT_THEME` (`"Gentleman-Cute"`).
-- **Cambios en caliente**: `themes::select(index, cx)` y `themes::set_transparency(clear, persist, cx)` reinstalan la paleta, llaman a `ui::apply_theme` y refrescan todas las ventanas. Como los tokens se leen en cada render, ninguna vista guarda colores.
+- **Catalog** (`themes::load_catalog`): first the Gentle Shell themes embedded with `include_str!` from `crates/app/themes/` (`Gentleman-Cute`, `Gentleman-Sexy`, `Gentle`); themes installed in `<gentle-pi>/themes/` replace them by name. Then the user's themes in `<agent dir>/themes/` and finally the popular schemes in `SCHEMES`. Names are unique; the first one wins.
+- **Initial theme** (`themes::pick_default`): the one saved in `dirs::data_dir()/gentle-shell-gpui/settings.json` (key `theme`), otherwise the `theme` from Pi's `settings.json`, otherwise `DEFAULT_THEME` (`"Gentleman-Cute"`).
+- **Live changes**: `themes::select(index, cx)` and `themes::set_transparency(clear, persist, cx)` reinstall the palette, call `ui::apply_theme` and refresh all windows. Because tokens are read on every render, no view stores colors.
 
-Campos del JSON que usa `parse_pi_theme` (el resto del formato de Pi se ignora salvo para la tabla ANSI de la terminal):
+JSON fields used by `parse_pi_theme` (the rest of Pi's format is ignored, except for the terminal's ANSI table):
 
-| `Theme` | JSON | Si falta |
+| `Theme` | JSON | If missing |
 | --- | --- | --- |
-| `bg` | `export.pageBg`, si no `vars.bg` | `0xffffff` claro / `0x0e0e11` oscuro |
-| `fg`, `muted`, `faint` | `colors.text`, `colors.muted`, `colors.dim` | mezclas de `fg` y `bg` |
-| `accent`, `accent_active` | `colors.accent`, `colors.borderAccent` | `fg`; mezcla de `accent` y `fg` |
+| `bg` | `export.pageBg`, otherwise `vars.bg` | `0xffffff` light / `0x0e0e11` dark |
+| `fg`, `muted`, `faint` | `colors.text`, `colors.muted`, `colors.dim` | mixes of `fg` and `bg` |
+| `accent`, `accent_active` | `colors.accent`, `colors.borderAccent` | `fg`; mix of `accent` and `fg` |
 | `raised` | `colors.userMessageBg` | `mix(bg, accent, 0.14)` |
 | `border` | `colors.border` | `mix(bg, fg, 0.25)` |
-| `heading` | `colors.toolTitle`, si no `colors.mdHeading` | `warning` |
-| `info` | `vars.blue`, si no `colors.syntaxFunction` | ANSI azul |
-| `success`, `danger`, `warning` | `colors.success`, `colors.error`, `colors.warning` | valores fijos |
+| `heading` | `colors.toolTitle`, otherwise `colors.mdHeading` | `warning` |
+| `info` | `vars.blue`, otherwise `colors.syntaxFunction` | ANSI blue |
+| `success`, `danger`, `warning` | `colors.success`, `colors.error`, `colors.warning` | fixed values |
 | `selection` | `colors.selectedBg` | `mix(bg, accent, 0.25)` |
 
-`light` se decide por la luminancia de `bg` (> 0.5), o la de `text` si no hay fondo.
+`light` is decided by the luminance of `bg` (> 0.5), or that of `text` if there is no background.
 
 ### Tokens
 
-Todas son funciones sin argumentos en `crate::shared::ui` que devuelven `Hsla`.
+All are argument-less functions in `crate::shared::ui` that return `Hsla`.
 
-| Token | Sale de | Para qué |
+| Token | Comes from | Used for |
 | --- | --- | --- |
-| `fg()` | `fg` | Texto principal, títulos, valores. |
-| `muted()` | `muted` | Texto secundario, subtítulos, íconos de cabecera, cuerpo de tarjetas, estados de carga. |
-| `faint()` | `faint` | Metadatos, pistas, íconos dentro de campos, `section_label`, contadores de "N más". |
-| `accent()` | `accent` | Lo interactivo: enlaces, foco, selección, la sesión actual, jobs en curso. |
-| `petal()` | `accent` (el mismo color) | La marca: punto vivo, `✿`, panel enfocado, resplandores, efectos. |
-| `petal_active()` | `accent_active` | Variante más intensa de `petal`. |
-| `champagne()` | `heading` | Títulos de tarjetas de herramientas, íconos de secciones de Configuración, código destacado. |
-| `info()` | `info` | Modelos, chips de herramientas, estado "running". |
-| `success()` / `danger()` / `warning()` | homónimos | Estados; también en bordes de tarjetas con `.opacity(0.35)`. |
-| `panel()` | fondo teñido 4.5 % | Paneles, barra lateral. |
-| `surface()` | fondo teñido 9 % | Tarjetas (`card`), teclas (`kbd`), botones secundarios. |
-| `surface_hover()` | fondo teñido 15 % | Hover de filas y cabeceras plegables; fila activa en menús. |
-| `raised()` | `raised` | Mensajes del usuario, fila seleccionada, opción activa de `segmented`. |
-| `well()` | fondo apenas teñido | Hundido: código, salidas, campos de texto, marco de `segmented`. |
-| `border()` | fondo teñido 20 %, alfa 0.69 (oscuro) / 0.8 (claro) | Borde de tarjetas y líneas finas de pantallas. |
-| `border_strong()` | `border`, opaco | Campos, teclas, marco de pantallas e islas, separadores verticales. |
-| `screen_bg()` | fondo teñido 5.5 %, opaco | Pantallas completas y paleta. |
-| `popover_bg()` | fondo teñido 6.5 %, opaco | Islas, menús, tarjetas flotantes. |
-| `backdrop()` | negro, alfa 0.44 (oscuro) / 0.25 (claro) | Velo detrás de pantallas (`scrim`) y color de la sombra de `island`. |
+| `fg()` | `fg` | Main text, titles, values. |
+| `muted()` | `muted` | Secondary text, subtitles, header icons, card bodies, loading states. |
+| `faint()` | `faint` | Metadata, hints, icons inside fields, `section_label`, "N more" counters. |
+| `accent()` | `accent` | Interactive things: links, focus, selection, the current session, running jobs. |
+| `petal()` | `accent` (the same color) | The brand: live dot, `✿`, focused panel, glows, effects. |
+| `petal_active()` | `accent_active` | Stronger variant of `petal`. |
+| `champagne()` | `heading` | Tool card titles, Settings section icons, highlighted code. |
+| `info()` | `info` | Models, tool chips, "running" state. |
+| `success()` / `danger()` / `warning()` | same names | States; also on card borders with `.opacity(0.35)`. |
+| `panel()` | background tinted 4.5 % | Panels, sidebar. |
+| `surface()` | background tinted 9 % | Cards (`card`), keys (`kbd`), secondary buttons. |
+| `surface_hover()` | background tinted 15 % | Hover on rows and collapsible headers; active row in menus. |
+| `raised()` | `raised` | User messages, selected row, active option of `segmented`. |
+| `well()` | barely tinted background | Sunken: code, outputs, text fields, `segmented` frame. |
+| `border()` | background tinted 20 %, alpha 0.69 (dark) / 0.8 (light) | Card borders and thin lines in screens. |
+| `border_strong()` | `border`, opaque | Fields, keys, frame of screens and islands, vertical separators. |
+| `screen_bg()` | background tinted 5.5 %, opaque | Full screens and palette. |
+| `popover_bg()` | background tinted 6.5 %, opaque | Islands, menus, floating cards. |
+| `backdrop()` | black, alpha 0.44 (dark) / 0.25 (light) | Veil behind screens (`scrim`) and shadow color of `island`. |
 
-"Teñido" es `mix(bg, mix(fg, accent, 0.6), cantidad)`: el fondo inclinado hacia el texto con un toque del acento. `Palette` tiene además campos sin función pública (`window_bg`, `accent_deep`, `on_accent`, `danger_hover`, `danger_active`, `selection`, `scrollbar_hover`) que sólo usa `apply_theme`.
+"Tinted" is `mix(bg, mix(fg, accent, 0.6), amount)`: the background leaned toward the text with a touch of the accent. `Palette` also has fields without a public function (`window_bg`, `accent_deep`, `on_accent`, `danger_hover`, `danger_active`, `selection`, `scrollbar_hover`) that only `apply_theme` uses.
 
-### Transparencia
+### Transparency
 
-`Palette::new(theme, clear)` recibe la transparencia de la ventana (`clear`, 0 = vidrio más sólido, 1 = más claro; por defecto `DEFAULT_TRANSPARENCY = 0.6`, ajustable con el slider de Configuración). Cada superficie de vidrio baja su alfa desde un valor sólido hasta un piso que mantiene el texto legible (`fade(solid, floor)`); por ejemplo `panel` va de 0.93 a 0.16 y `surface` de 0.94 a 0.4. `popover_bg` y `screen_bg` no cambian.
+`Palette::new(theme, clear)` receives the window transparency (`clear`, 0 = most solid glass, 1 = clearest; default `DEFAULT_TRANSPARENCY = 0.6`, adjustable with the Settings slider). Each glass surface lowers its alpha from a solid value down to a floor that keeps text readable (`fade(solid, floor)`); for example `panel` goes from 0.93 to 0.16 and `surface` from 0.94 to 0.4. `popover_bg` and `screen_bg` do not change.
 
 ### gpui-component
 
-`ui::apply_theme(cx)` cambia `ThemeMode` a claro u oscuro según `Palette::light` y reescribe los colores de gpui-component, así los componentes de serie ya combinan:
+`ui::apply_theme(cx)` switches `ThemeMode` to light or dark according to `Palette::light` and rewrites the gpui-component colors, so the stock components already match:
 
 | gpui-component | Token |
 | --- | --- |
-| `primary`, `button_primary`, `ring`, `link`, `progress_bar`, `slider_bar` | `accent` (hover: `accent_active`; texto: `on_accent`) |
-| `button`, `secondary`, `muted` | `surface` (hover `surface_hover`, activo `raised`) |
+| `primary`, `button_primary`, `ring`, `link`, `progress_bar`, `slider_bar` | `accent` (hover: `accent_active`; text: `on_accent`) |
+| `button`, `secondary`, `muted` | `surface` (hover `surface_hover`, active `raised`) |
 | `danger`, `button_danger` | `danger` |
 | `list_hover` / `list_active` / `tab_active` | `surface_hover` / `raised` / `raised` |
 | `popover` | `popover_bg` |
 | `input`, `window_border`, `scrollbar_thumb` | `border_strong` |
-| `title_bar`, `title_bar_border`, `tab_bar`, `tab`, `list`, `scrollbar` | transparente |
+| `title_bar`, `title_bar_border`, `tab_bar`, `tab`, `list`, `scrollbar` | transparent |
 | `radius` / `radius_lg` | 8 px / 12 px |
 
-### Claro y oscuro
+### Light and dark
 
-Las vistas no ramifican por modo: usan tokens. Las diferencias viven en `Palette::new` (alfa de `window_bg`, `well` sin tinte en claro, alfa de `border`, `on_accent` blanco en claro, `backdrop` más suave) y en `apply_theme` (el `overlay` de gpui-component). Si algo realmente lo necesita, se lee con `themes::palette(|p| p.light)`.
+Views do not branch by mode: they use tokens. The differences live in `Palette::new` (alpha of `window_bg`, untinted `well` in light, alpha of `border`, white `on_accent` in light, softer `backdrop`) and in `apply_theme` (gpui-component's `overlay`). If something really needs it, read it with `themes::palette(|p| p.light)`.
 
-## Tipografía
+## Typography
 
-- **Fuente de interfaz**: la de gpui-component (`cx.theme().font_family`); la app no la cambia. `ui::island` la fija explícitamente para que un menú abierto desde una barra monoespaciada no la herede.
-- **Monoespaciada**: `ui::MONO` es `"Menlo"` en macOS, `"Consolas"` en Windows y `"DejaVu Sans Mono"` en el resto. Se usa para rutas, valores de configuración, código, contadores, relojes y tokens. `well_box` y `kbd` ya la aplican.
-- **Escala**: el rem es el `font_size` de gpui-component (16 px), así que `text_xs` = 12 px, `text_sm` = 14 px y `text_base` = 16 px.
+- **UI font**: gpui-component's (`cx.theme().font_family`); the app does not change it. `ui::island` sets it explicitly so a menu opened from a monospaced bar does not inherit that font.
+- **Monospaced**: `ui::MONO` is `"Menlo"` on macOS, `"Consolas"` on Windows and `"DejaVu Sans Mono"` elsewhere. It is used for paths, settings values, code, counters, clocks and tokens. `well_box` and `kbd` already apply it.
+- **Scale**: the rem is gpui-component's `font_size` (16 px), so `text_xs` = 12 px, `text_sm` = 14 px and `text_base` = 16 px.
 
-| Tamaño | Peso | Dónde |
+| Size | Weight | Where |
 | --- | --- | --- |
-| 10 px | `SEMIBOLD`, mayúsculas | `section_label` |
+| 10 px | `SEMIBOLD`, uppercase | `section_label` |
 | 10.5 px | normal | `chip`, `kbd` |
-| 11–12 px | normal | Pistas, filas de chips de estado, asuntos de herramientas en `MONO` |
-| 13 px | `SEMIBOLD` | Título de tarjeta (en `champagne`); cuerpo de tarjetas en 13 normal |
-| 14 px | normal / `SEMIBOLD` | Texto de mensajes y compositor; títulos de tarjetas de error y diálogos |
-| `text_xs` | normal | Subtítulos de pantalla, filas, metadatos (el más usado) |
-| `text_sm` | normal / `MEDIUM` | Títulos de filas, estados vacíos y de carga; título de la tarjeta de un chip |
-| `text_base` | `SEMIBOLD` | Título de pantalla en `screen_header` |
-| `text_lg` / `text_xl` | `SEMIBOLD` | Nombre de agente, héroe del onboarding |
-| 17 px | `SEMIBOLD`, `petal` | Título del control de esfuerzo |
-| 34 px / alto de línea 42 | `BOLD` | Encabezado del welcome |
-| 72 px en adelante | `EXTRA_BOLD`, `petal` | La palabra del final del welcome |
+| 11–12 px | normal | Hints, status chip rows, tool subjects in `MONO` |
+| 13 px | `SEMIBOLD` | Card title (in `champagne`); card body in 13 normal |
+| 14 px | normal / `SEMIBOLD` | Message and composer text; titles of error cards and dialogs |
+| `text_xs` | normal | Screen subtitles, rows, metadata (the most used) |
+| `text_sm` | normal / `MEDIUM` | Row titles, empty and loading states; title of a chip's card |
+| `text_base` | `SEMIBOLD` | Screen title in `screen_header` |
+| `text_lg` / `text_xl` | `SEMIBOLD` | Agent name, onboarding hero |
+| 17 px | `SEMIBOLD`, `petal` | Effort control title |
+| 34 px / line height 42 | `BOLD` | Welcome heading |
+| 72 px and up | `EXTRA_BOLD`, `petal` | The word at the end of the welcome |
 
-`SEMIBOLD` es el peso de los títulos; `MEDIUM` para títulos pequeños dentro de tarjetas flotantes; `BOLD` y `EXTRA_BOLD` sólo en el welcome.
+`SEMIBOLD` is the weight for titles; `MEDIUM` for small titles inside floating cards; `BOLD` and `EXTRA_BOLD` only in the welcome.
 
-## Espacio y radios
+## Spacing and radii
 
-| Radio | Medida | Se usa en |
+| Radius | Size | Used in |
 | --- | --- | --- |
-| `rounded_md` | 6 px | `chip`, `kbd`, opciones de `segmented` |
-| `rounded_lg` | 8 px | `well_box`, `field`, marco de `segmented`, filas de listas, recuadros de íconos |
-| `rounded_xl` | 12 px | `card`, paneles, barra lateral |
-| `rounded_2xl` | 16 px | Panel de `screen`, paleta |
+| `rounded_md` | 6 px | `chip`, `kbd`, `segmented` options |
+| `rounded_lg` | 8 px | `well_box`, `field`, `segmented` frame, list rows, icon boxes |
+| `rounded_xl` | 12 px | `card`, panels, sidebar |
+| `rounded_2xl` | 16 px | `screen` panel, palette |
 | `rounded(px(18.))` | 18 px | `island` |
-| `ISLAND_ROW` | 12 px | Filas dentro de una `island` con `p(px(6.))`: sus esquinas siguen las de la isla |
-| `rounded_full` / `rounded(px(999.))` | píldora | Puntos de estado, botones de enviar/detener, botón principal del welcome |
+| `ISLAND_ROW` | 12 px | Rows inside an `island` with `p(px(6.))`: their corners follow the island's |
+| `rounded_full` / `rounded(px(999.))` | pill | Status dots, send/stop buttons, welcome primary button |
 
-Medidas que se repiten:
+Recurring sizes:
 
-| Dónde | Medida |
+| Where | Size |
 | --- | --- |
-| Cuerpo de la ventana | `px_1p5`, `pb_1p5`, `gap_1p5` entre barra lateral y paneles; divisor de 6 px |
-| `screen` | margen de 32 px alrededor del panel; ancho fijo o, sin ancho, `size_full` con `max_w` 1280 |
+| Window body | `px_1p5`, `pb_1p5`, `gap_1p5` between sidebar and panels; 6 px divider |
+| `screen` | 32 px margin around the panel; fixed width or, without width, `size_full` with `max_w` 1280 |
 | `screen_header` | `px_5`, `py_3`, `gap_3` |
-| Cuerpo de pantalla | `p_4`, o `px_4 pt_4` con secciones en `gap_3` |
-| Pie de pantalla | `px_4`, `py_3`, `gap_2` |
-| Cabecera de tarjeta | `px_3`, `py_2`, `gap_2`; cuerpo `px_3 pb_2` |
-| Sección de Configuración | `card().p_4()` (`features/settings/layout.rs`) |
-| Campos | `field` mide 34 px de alto; 30 px en barras compactas |
-| Tarjeta de un chip | 360 px de ancho, `p_3`, lista con `max_h` 380 |
+| Screen body | `p_4`, or `px_4 pt_4` with sections in `gap_3` |
+| Screen footer | `px_4`, `py_3`, `gap_2` |
+| Card header | `px_3`, `py_2`, `gap_2`; body `px_3 pb_2` |
+| Settings section | `card().p_4()` (`features/settings/layout.rs`) |
+| Fields | `field` is 34 px tall; 30 px in compact bars |
+| Chip card | 360 px wide, `p_3`, list with `max_h` 380 |
 
-Anchos de pantalla actuales: Providers 640, Onboarding 720, Sessions y Usage 760, Configuración 820; Profiles, Memory y Agents usan `screen(None)` (Profiles lo limita a 1100 × 760).
+Current screen widths: Providers 640, Onboarding 720, Sessions and Usage 760, Settings 820; Profiles, Memory and Agents use `screen(None)` (Profiles caps it at 1100 × 760).
 
-## Superficies y componentes
+## Surfaces and components
 
-Orden de superficies, de atrás hacia adelante: ventana (`window_bg`) → `panel` → `card` (`surface`) → `well_box`/`field` (`well`, hundido). `raised` marca lo seleccionado. `island` y `screen` flotan, opacas.
+Surface order, back to front: window (`window_bg`) → `panel` → `card` (`surface`) → `well_box`/`field` (`well`, sunken). `raised` marks what is selected. `island` and `screen` float, opaque.
 
-| Pieza | Qué es | Cuándo |
+| Piece | What it is | When |
 | --- | --- | --- |
-| `card()` | Columna `rounded_xl`, `surface`, borde `border` | Tarjetas de herramientas, secciones de Configuración, tarjetas de uso. |
-| `well_box()` | Columna `rounded_lg`, `well`, `MONO`, `text_xs` | Código, salidas de comandos, diffs, stderr. |
-| `chip(text, color)` | Pastilla de 10.5 px: texto `color`, fondo `color.opacity(0.12)`, borde `color.opacity(0.22)` | Modelo, estado, conteos, "current", "N unsaved". |
-| `kbd(text)` | Tecla de 20 px en `MONO` | Pistas de atajos: `esc`, `↵`, `⌘↵`. |
-| `section_label(text)` | 10 px `SEMIBOLD` en `faint`, en mayúsculas | Encabezado de un grupo. |
-| `field()` | Fila de 34 px, `well`, borde `border_strong` | Marco para `Input::new(..).appearance(false)`, con ícono opcional a la izquierda. |
-| `segmented(id, labels, selected, on_select)` | Opciones de texto dentro de un `well` | Conmutadores de dos o tres opciones ("This project / All projects"). |
-| `island(cx)` | Tarjeta flotante opaca, radio 18, borde `border_strong().opacity(0.8)`, sombra con `backdrop()` | Menús del compositor, tarjetas de chips, isla de tareas, grupos del onboarding. |
-| `screen(width)` + `screen_header()` | Velo + panel centrado; fila de cabecera | Toda pantalla superpuesta (ver Patrones). |
+| `card()` | `rounded_xl` column, `surface`, `border` border | Tool cards, Settings sections, usage cards. |
+| `well_box()` | `rounded_lg` column, `well`, `MONO`, `text_xs` | Code, command outputs, diffs, stderr. |
+| `chip(text, color)` | 10.5 px pill: `color` text, `color.opacity(0.12)` background, `color.opacity(0.22)` border | Model, state, counts, "current", "N unsaved". |
+| `kbd(text)` | 20 px key in `MONO` | Shortcut hints: `esc`, `↵`, `⌘↵`. |
+| `section_label(text)` | 10 px `SEMIBOLD` in `faint`, uppercase | Heading of a group. |
+| `field()` | 34 px row, `well`, `border_strong` border | Frame for `Input::new(..).appearance(false)`, with an optional icon on the left. |
+| `segmented(id, labels, selected, on_select)` | Text options inside a `well` | Two- or three-option toggles ("This project / All projects"). |
+| `island(cx)` | Opaque floating card, radius 18, `border_strong().opacity(0.8)` border, shadow with `backdrop()` | Composer menus, chip cards, task island, onboarding groups. |
+| `screen(width)` + `screen_header()` | Veil + centered panel; header row | Every overlay screen (see Patterns). |
 
 ```rust
-// Sección de tarjeta con título y contenido hundido.
+// Card section with a title and sunken content.
 ui::card().p_4().gap_2()
     .child(ui::section_label("Task"))
     .child(ui::well_box().px_3().py_2().text_color(ui::fg()).child(task));
 
-// Campo de búsqueda.
+// Search field.
 ui::field()
     .child(Icon::new(IconName::Search).small().text_color(ui::faint()))
     .child(Input::new(&self.filter).appearance(false).small());
 
-// Menú flotante con filas que siguen las esquinas de la isla.
+// Floating menu with rows that follow the island's corners.
 ui::island(cx).p(px(6.)).child(
     div().px_3().py_1p5().rounded(px(ui::ISLAND_ROW))
         .hover(|s| s.bg(ui::surface_hover()))
@@ -184,67 +184,67 @@ ui::island(cx).p(px(6.)).child(
 );
 ```
 
-Un menú de gpui-component que deba verse como la isla se abre con `Popover::appearance(false)` y su contenido envuelto en `ui::island(cx)` (ver `chip_popover` más abajo).
+A gpui-component menu that should look like the island is opened with `Popover::appearance(false)` and its content wrapped in `ui::island(cx)` (see `chip_popover` below).
 
-Utilidades de presentación en el mismo módulo: `split_path` (prefijo `~/a/b/` y hoja, para mostrar el prefijo atenuado), `tail` (últimas N líneas y cuántas se ocultaron) y `format_duration`.
+Presentation utilities in the same module: `split_path` (prefix `~/a/b/` and leaf, to show the prefix dimmed), `tail` (last N lines and how many were hidden) and `format_duration`.
 
-## Movimiento
+## Motion
 
-| Función | Duración | Curva | Efecto | Uso típico |
+| Function | Duration | Curve | Effect | Typical use |
 | --- | --- | --- | --- | --- |
-| `appear(id, el)` | 220 ms | `ease_out_quint` | Opacidad 0→1 y `mt` de 6 px a 0 | Primera aparición: filas, contenido de Configuración, barra lateral, tarjetas de uso. |
-| `appear_after(id, delay, rise, el)` | `delay` + 420 ms | ease-out-quint calculado a mano (la espera queda lineal) | Opacidad y `top` relativo desde `rise` px | Entradas escalonadas (welcome, pasos del onboarding). |
-| `pop_in(id, el)` | 340 ms | `spring` | Opacidad y `top` relativo desde 12 px | Pantallas, diálogos, paleta. |
-| `popover_in(id, el)` | 300 ms | `spring` | Sólo opacidad, sin cambiar el tamaño medido | Contenido dentro de una `island` o un popover. |
-| `scrim(id)` | 220 ms | `ease_out_quint` | Velo `backdrop()` que aparece | Detrás de un panel (ya lo pone `screen`). |
-| `pulse(id, el)` | 1400 ms, repetida | `pulsating_between(0.35, 1.0)` | Respira la opacidad | Indicadores vivos: punto de actividad, agentes corriendo, `✿` del pensamiento. |
-| `spring(t)` | — | — | Resorte con ~3 % de sobrepaso | Dentro del animador para cualquier cosa que se abre. |
+| `appear(id, el)` | 220 ms | `ease_out_quint` | Opacity 0→1 and `mt` from 6 px to 0 | First appearance: rows, Settings content, sidebar, usage cards. |
+| `appear_after(id, delay, rise, el)` | `delay` + 420 ms | ease-out-quint computed by hand (the wait stays linear) | Opacity and relative `top` from `rise` px | Staggered entrances (welcome, onboarding steps). |
+| `pop_in(id, el)` | 340 ms | `spring` | Opacity and relative `top` from 12 px | Screens, dialogs, palette. |
+| `popover_in(id, el)` | 300 ms | `spring` | Opacity only, without changing the measured size | Content inside an `island` or a popover. |
+| `scrim(id)` | 220 ms | `ease_out_quint` | `backdrop()` veil fading in | Behind a panel (`screen` already adds it). |
+| `pulse(id, el)` | 1400 ms, repeating | `pulsating_between(0.35, 1.0)` | Breathes the opacity | Live indicators: activity dot, running agents, thinking `✿`. |
+| `spring(t)` | — | — | Spring with ~3 % overshoot | Inside the animator for anything that opens. |
 
-Pautas:
+Guidelines:
 
-- **Una animación por id.** GPUI reproduce una animación una vez por `ElementId`. Para repetirla se cambia el id con un contador (`ElementId::NamedInteger("effort-knob".into(), moves)` en `features/session/view/effort.rs`, `NamedInteger("max-surge".into(), run)` en `surge.rs`); para que no se repita al reabrir algo, el id debe quedarse estable.
-- **Escalonar con `appear_after`**: misma base y un hueco constante por paso (`self.entrance + STEP_GAP * (index + 1)` con `STEP_GAP = 110 ms` en `features/onboarding/sequence.rs`).
-- **No reproducir al desplazarse**: la conversación sólo aplica `appear` a una fila durante `APPEAR_WINDOW` (300 ms) desde que se vio por primera vez (`features/session/view/transcript_list.rs`).
-- **`spring` va en el animador, no como easing**: la easing de GPUI debe quedar en 0..=1 y el resorte se pasa de 1 (`pop_in` lo aplica dentro del closure).
-- **Mover sin empujar**: `pop_in` y `appear_after` desplazan con `.relative().top(..)`, que no mueve a los hermanos del flex; `appear` usa `mt`, que sí afecta el layout durante 220 ms.
-- **Efectos sólo de pintura**: los efectos grandes dibujan en un `canvas` con `window.paint_quad`, no reciben entrada ni cambian el layout. El temblor del surge se aplica como desplazamiento de la raíz de la ventana con `request_animation_frame`, sin envolverla en una animación, porque eso cambiaría la clave de cada elemento interior (`features/workspace/render.rs`). Un `Task` con un temporizador de la misma duración limpia el estado al terminar (`Workspace::play_surge`, `WelcomeView::enter`).
+- **One animation per id.** GPUI plays an animation once per `ElementId`. To repeat it, change the id with a counter (`ElementId::NamedInteger("effort-knob".into(), moves)` in `features/session/view/effort.rs`, `NamedInteger("max-surge".into(), run)` in `surge.rs`); to keep it from replaying when something reopens, the id must stay stable.
+- **Stagger with `appear_after`**: same base and a constant gap per step (`self.entrance + STEP_GAP * (index + 1)` with `STEP_GAP = 110 ms` in `features/onboarding/sequence.rs`).
+- **Do not replay on scroll**: the conversation only applies `appear` to a row during `APPEAR_WINDOW` (300 ms) after it was first seen (`features/session/view/transcript_list.rs`).
+- **`spring` goes in the animator, not as easing**: GPUI's easing must stay within 0..=1 and the spring goes past 1 (`pop_in` applies it inside the closure).
+- **Move without pushing**: `pop_in` and `appear_after` move with `.relative().top(..)`, which does not move flex siblings; `appear` uses `mt`, which does affect layout for 220 ms.
+- **Paint-only effects**: large effects draw in a `canvas` with `window.paint_quad`; they take no input and do not change layout. The surge shake is applied as an offset of the window root with `request_animation_frame`, without wrapping it in an animation, because that would change the key of every inner element (`features/workspace/render.rs`). A `Task` with a timer of the same duration clears the state when it ends (`Workspace::play_surge`, `WelcomeView::enter`).
 
-## Marca
+## Brand
 
-`crates/app/src/shared/banner.rs` dibuja el banner de Gentle Shell (la rosa en braille y el logotipo "Gentle Shell" en pixel art) como píxeles reales. El arte, las paletas y el formato de `banner.json` vienen de `extensions/startup-banner.ts` de gentle-pi.
+`crates/app/src/shared/banner.rs` draws the Gentle Shell banner (the braille rose and the "Gentle Shell" pixel art logotype) as real pixels. The art, the palettes and the `banner.json` format come from gentle-pi's `extensions/startup-banner.ts`.
 
-| API | Qué hace |
+| API | What it does |
 | --- | --- |
-| `banner(config, scale, reveal)` | Rosa + logotipo a `scale` px por píxel (~175 px de ancho por unidad de escala). `reveal` en 0..=1 escribe el logotipo de izquierda a derecha y hace aparecer la rosa; se anima pasando `t` desde un `with_animation`. |
-| `BannerConfig { show_rose, show_text_logo, palette }` | Qué partes mostrar y con qué paleta; `Default` muestra todo en `Pink`. |
-| `Palette::{Pink, Cyan, Yellow, Green}` | Rosa, tinta y sombra del logotipo en RGB fijos (no dependen del tema). |
-| `read_config(config_home)` | Lee `<config>/banner.json` (`showRose`, `showTextLogo`, `color`); lo que falte o esté mal vuelve al valor por defecto. |
-| `pixel_rose(height, color)` | Sólo la rosa, en un color del tema (el héroe del onboarding la usa en `petal` o `success`). |
-| `rose()` | Puntos y tamaño de la rosa, para otros efectos. |
+| `banner(config, scale, reveal)` | Rose + logotype at `scale` px per pixel (~175 px wide per scale unit). `reveal` in 0..=1 writes the logotype left to right and fades in the rose; animate it by passing `t` from a `with_animation`. |
+| `BannerConfig { show_rose, show_text_logo, palette }` | Which parts to show and with which palette; `Default` shows everything in `Pink`. |
+| `Palette::{Pink, Cyan, Yellow, Green}` | Rose, ink and shadow of the logotype in fixed RGB (they do not depend on the theme). |
+| `read_config(config_home)` | Reads `<config>/banner.json` (`showRose`, `showTextLogo`, `color`); anything missing or invalid falls back to the default. |
+| `pixel_rose(height, color)` | Only the rose, in a theme color (the onboarding hero uses it in `petal` or `success`). |
+| `rose()` | Points and size of the rose, for other effects. |
 
-El estilo pixel art comparte reglas: cuadrados planos pintados con `paint_quad`, ligeramente más pequeños que su celda para que se note la rejilla (`dot * 0.55` en la rosa, `dot * 0.9` en los sprites); sprites definidos como texto (`#` cuerpo, `o` línea) como `LIPS` y `HEART` en `features/welcome/finale.rs`; colores derivados de `petal()` cuando el efecto es de la app.
+The pixel art style shares rules: flat squares painted with `paint_quad`, slightly smaller than their cell so the grid shows (`dot * 0.55` in the rose, `dot * 0.9` in sprites); sprites defined as text (`#` body, `o` outline) like `LIPS` and `HEART` in `features/welcome/finale.rs`; colors derived from `petal()` when the effect belongs to the app.
 
-- **Final del welcome** (`features/welcome/finale.rs`, `FINALE = 5600 ms`): el banner se reescribe en cámara lenta, la rosa lanza 14 besos pixelados (uno de cada cuatro es un corazón en `petal`), "Sexyyyy" entra letra a letra con `spring` y la pantalla se disuelve desde `DISSOLVE = 0.86` con smoothstep.
-- **Surge de esfuerzo máximo** (`shared/surge.rs`, `DURATION = 4400 ms`): un cometa de píxeles recorre el borde de la ventana, la ventana tiembla, el núcleo eclosiona y sale la rosa. Lo dispara `SessionEvent::MaxEffort` y lo reproduce `Workspace::play_surge`; `surge::overlay(run)` pinta y `surge::shake_at(elapsed)` da el desplazamiento. Sus colores (`spark`, `wine`) se derivan del tono de `petal()`.
+- **Welcome finale** (`features/welcome/finale.rs`, `FINALE = 5600 ms`): the banner rewrites itself in slow motion, the rose throws 14 pixelated kisses (one in four is a heart in `petal`), "Sexyyyy" enters letter by letter with `spring` and the screen dissolves from `DISSOLVE = 0.86` with smoothstep.
+- **Max effort surge** (`shared/surge.rs`, `DURATION = 4400 ms`): a pixel comet runs along the window edge, the window shakes, the core hatches and the rose comes out. `SessionEvent::MaxEffort` triggers it and `Workspace::play_surge` plays it; `surge::overlay(run)` paints and `surge::shake_at(elapsed)` gives the offset. Its colors (`spark`, `wine`) are derived from the hue of `petal()`.
 
-## Íconos
+## Icons
 
-Los íconos son `IconName` de `gpui_kit::assets` (el catálogo Lucide) y se dibujan con `Icon::new(IconName::X)`, casi siempre `.small()` o `.xsmall()`. El binario sólo incluye el paquete por defecto de gpui-kit más los nombres listados en `ExtraIcons` (`crates/app/src/shared/assets.rs`); `AppAssets` busca primero en `ExtraIcons` y después en `gpui_kit::assets::Assets`, y es la fuente registrada con `.with_assets(assets::AppAssets)` en `app/mod.rs`.
+Icons are `IconName` from `gpui_kit::assets` (the Lucide catalog) and are drawn with `Icon::new(IconName::X)`, almost always `.small()` or `.xsmall()`. The binary only includes gpui-kit's default bundle plus the names listed in `ExtraIcons` (`crates/app/src/shared/assets.rs`); `AppAssets` looks in `ExtraIcons` first and then in `gpui_kit::assets::Assets`, and it is the source registered with `.with_assets(assets::AppAssets)` in `app/mod.rs`.
 
-Para usar un ícono de Lucide que no se ve:
+To use a Lucide icon that does not show up:
 
-1. Agregar su nombre a la lista de `gpui_kit::assets::icon_assets!(ExtraIcons, [...])`, con un comentario si pertenece a una funcionalidad concreta.
-2. Usarlo con `Icon::new(IconName::Nombre)`. No se copia ningún SVG: el macro toma el que trae `gpui-kit-assets`.
+1. Add its name to the `gpui_kit::assets::icon_assets!(ExtraIcons, [...])` list, with a comment if it belongs to a specific feature.
+2. Use it with `Icon::new(IconName::Name)`. No SVG is copied: the macro takes the one shipped with `gpui-kit-assets`.
 
-Un SVG propio, fuera de Lucide, necesitaría una rama más en `AppAssets::load`; hoy no existe ninguno.
+A custom SVG, outside Lucide, would need one more branch in `AppAssets::load`; none exists today.
 
-Color de los íconos: `muted` en cabeceras de pantalla y tarjetas neutras, `faint` dentro de campos y en estados vacíos, el color del tono en estados y tarjetas de extensiones, `champagne` en secciones de Configuración.
+Icon color: `muted` in screen headers and neutral cards, `faint` inside fields and in empty states, the tone color in states and extension cards, `champagne` in Settings sections.
 
-## Patrones
+## Patterns
 
-### Pantalla superpuesta
+### Overlay screen
 
-Settings, Providers, Usage, Sessions, Profiles, Memory y Agents siguen la misma forma (`features/usage/view.rs`, `features/sessions/render.rs`). Onboarding usa `ui::screen` sin `screen_header`: su héroe hace de cabecera y `kbd("esc")` + cerrar flotan arriba a la derecha. La paleta (`features/palette/view.rs`) repite el marco a mano (`screen_bg`, `rounded_2xl`, `border_strong`, `shadow_2xl`) con alto fijo de 560 px para que no salte al filtrar.
+Settings, Providers, Usage, Sessions, Profiles, Memory and Agents follow the same shape (`features/usage/view.rs`, `features/sessions/render.rs`). Onboarding uses `ui::screen` without `screen_header`: its hero acts as the header and `kbd("esc")` + close float at the top right. The palette (`features/palette/view.rs`) repeats the frame by hand (`screen_bg`, `rounded_2xl`, `border_strong`, `shadow_2xl`) with a fixed height of 560 px so it does not jump while filtering.
 
 ```rust
 let (backdrop, panel) = ui::screen(Some(760.));
@@ -267,78 +267,78 @@ backdrop.occlude().child(ui::pop_in(
 ))
 ```
 
-- Cabecera, en este orden: ícono `small` en `muted`, título `text_base SEMIBOLD`, subtítulo que ocupa el resto y se trunca, acciones opcionales (spinner, chip de conteo, `segmented`, botones `ghost().xsmall()` con tooltip), `kbd("esc")` y el botón de cerrar.
-- El cuerpo es la única parte que se desplaza (`flex_1().min_h_0().overflow_y_scroll()` con id).
-- La vista no maneja Esc: emite su evento `Close` y el `Workspace` la quita (`on_close_overlay`). El velo usa `.occlude()` para que no pasen clics a lo de atrás; sólo la paleta cierra al hacer clic en el velo.
+- Header, in this order: `small` icon in `muted`, `text_base SEMIBOLD` title, subtitle that takes the remaining space and truncates, optional actions (spinner, count chip, `segmented`, `ghost().xsmall()` buttons with tooltip), `kbd("esc")` and the close button.
+- The body is the only part that scrolls (`flex_1().min_h_0().overflow_y_scroll()` with an id).
+- The view does not handle Esc: it emits its `Close` event and the `Workspace` removes it (`on_close_overlay`). The veil uses `.occlude()` so clicks do not pass through to what is behind; only the palette closes on a click on the veil.
 
-### Pantalla completa: welcome
+### Full screen: welcome
 
-`features/welcome/` ocupa toda la ventana (bajo la barra de título de 36 px en Windows y Linux; en macOS deja una zona de arrastre bajo los semáforos).
+`features/welcome/` takes up the whole window (below the 36 px title bar on Windows and Linux; on macOS it leaves a drag area below the traffic lights).
 
-- Fondo `screen_bg()` con un degradado desde arriba: `petal().opacity(0.10)` mientras se instala, `success().opacity(0.10)` cuando todo lo requerido está listo y `petal().opacity(0.18)` durante la entrada.
-- Banner a escala 2.6 escribiéndose durante `INTRO` (1500 ms); al estar listo pasa a `Palette::Green` con `pop_in`. Encabezado (34 px `BOLD`) y pie entran con `appear_after` a `AFTER_INTRO` (1100 ms). Si la pantalla se vuelve a mostrar, `intro_done` dibuja todo en su sitio sin animar.
-- Contenido centrado con `max_w(px(680.))`; pie de 88 px con `px_10`; ↵ ejecuta el botón principal.
+- `screen_bg()` background with a gradient from the top: `petal().opacity(0.10)` while installing, `success().opacity(0.10)` when everything required is ready and `petal().opacity(0.18)` during the entrance.
+- Banner at scale 2.6, writing itself during `INTRO` (1500 ms); when ready it switches to `Palette::Green` with `pop_in`. Heading (34 px `BOLD`) and footer enter with `appear_after` at `AFTER_INTRO` (1100 ms). If the screen is shown again, `intro_done` draws everything in place without animating.
+- Content centered with `max_w(px(680.))`; 88 px footer with `px_10`; ↵ runs the primary button.
 
-### Chips de estado de la sesión
+### Session status chips
 
-`features/session/view/activity.rs` dibuja la línea de actividad sobre el compositor. A la izquierda, mientras el agente trabaja: `pulse` de un punto `petal` de 6 px, reloj en `MONO` y `muted`, un separador de 1×10 px en `border_strong`, `✿ fase…` en `petal` y la herramienta actual truncada en `muted`. A la derecha, los chips.
+`features/session/view/activity.rs` draws the activity line above the composer. On the left, while the agent works: `pulse` of a 6 px `petal` dot, clock in `MONO` and `muted`, a 1×10 px separator in `border_strong`, `✿ phase…` in `petal` and the current tool, truncated, in `muted`. On the right, the chips.
 
-Todo chip nuevo usa `chip_popover(id, icon, color, label, title, count, body)`: un `Button` `ghost().xsmall()` con `text_color(color)` que abre un `Popover` anclado `BottomRight`, de 360 px, con `appearance(false)`, contenido en `ui::island(cx)` + `ui::popover_in`. La tarjeta muestra ícono y título (`text_sm MEDIUM`), el conteo en `MONO` y una lista desplazable; `body` construye las filas sólo al abrir. Color del chip: `accent` si hay algo en curso, `muted` en reposo, `faint` para información pasiva (uso de tokens). En paneles más angostos que `TINY` los estados de extensiones se pliegan en un solo chip.
+Every new chip uses `chip_popover(id, icon, color, label, title, count, body)`: a `ghost().xsmall()` `Button` with `text_color(color)` that opens a `Popover` anchored `BottomRight`, 360 px wide, with `appearance(false)`, content in `ui::island(cx)` + `ui::popover_in`. The card shows icon and title (`text_sm MEDIUM`), the count in `MONO` and a scrollable list; `body` builds the rows only on open. Chip color: `accent` if something is running, `muted` at rest, `faint` for passive information (token usage). In panels narrower than `TINY`, extension states collapse into a single chip.
 
-### Tarjetas de la conversación
+### Conversation cards
 
-Tarjetas de herramientas (`render_card` en `features/session/view.rs`) y de mensajes de extensiones (`features/session/view/cards.rs`) comparten forma:
+Tool cards (`render_card` in `features/session/view.rs`) and extension message cards (`features/session/view/cards.rs`) share a shape:
 
-- `ui::card().w_full().overflow_hidden()`; si el tono es peligro o aviso, `border_color(color.opacity(0.35))`.
-- Cabecera `px_3 py_2 gap_2`: ícono `small` (tono o `muted`), título 13 px `SEMIBOLD` en `champagne` truncado, chip opcional (`info` en herramientas, el tono en extensiones), asunto en `MONO` 12 px `muted`, `+n` en `success` y `−n` en `danger`, chevron `faint` si se pliega. Una cabecera plegable tiene hover `surface_hover`.
-- Cuerpo `px_3 pb_2`: texto 13 px en `muted`; salidas en `MONO` 12 px (`CustomBody::Tail`); Markdown con `TextView` en `fg`. Lo largo se corta y ofrece "N more lines" / "Show less".
-- El tono (`Tone::{Success, Danger, Warning, Info, Muted}`) se decide con una función pura a partir del tipo y los `details` (`custom_look`), con pruebas.
+- `ui::card().w_full().overflow_hidden()`; if the tone is danger or warning, `border_color(color.opacity(0.35))`.
+- Header `px_3 py_2 gap_2`: `small` icon (tone or `muted`), 13 px `SEMIBOLD` title in `champagne`, truncated, optional chip (`info` for tools, the tone for extensions), subject in `MONO` 12 px `muted`, `+n` in `success` and `−n` in `danger`, `faint` chevron if it collapses. A collapsible header has a `surface_hover` hover.
+- Body `px_3 pb_2`: 13 px text in `muted`; outputs in `MONO` 12 px (`CustomBody::Tail`); Markdown with `TextView` in `fg`. Long content is cut and offers "N more lines" / "Show less".
+- The tone (`Tone::{Success, Danger, Warning, Info, Muted}`) is decided by a pure function from the type and the `details` (`custom_look`), with tests.
 
-### Botones y pies
+### Buttons and footers
 
-| Regla | Ejemplo |
+| Rule | Example |
 | --- | --- |
-| Secundarios `ghost()` a la izquierda, un espaciador (`div().flex_1()` o `ml_auto()`), el principal `primary()` al final a la derecha. | Pie de Sessions, de Usage, del welcome, de Profiles. |
-| Tamaños: `small()` en pies, `xsmall()` en cabeceras y barras, `large()` sólo en el welcome. | |
-| Botones sólo con ícono llevan `tooltip`. | Refrescar en cabeceras. |
-| Trabajo en curso: `.loading(busy)` y la etiqueta lo dice ("Installing…"); `.disabled(..)` cuando no se puede. | `welcome-primary`, `usage-refresh`, `welcome-recheck`. |
-| Destructivo: `danger()` en confirmaciones (Discard, Delete), `danger().outline()` para detener agentes. | `features/profiles/view/confirm.rs`, `features/session/agents.rs`. |
-| Confirmar en línea: `outline()`; cancelar: `ghost()` con "Cancel". | Renombrar perfil, modelo personalizado. |
-| Píldora (`rounded(px(999.))`) sólo para enviar/detener del compositor y el principal del welcome. | `features/session/view/composer.rs` |
+| Secondary `ghost()` buttons on the left, a spacer (`div().flex_1()` or `ml_auto()`), the primary `primary()` last on the right. | Footer of Sessions, Usage, welcome, Profiles. |
+| Sizes: `small()` in footers, `xsmall()` in headers and bars, `large()` only in the welcome. | |
+| Icon-only buttons have a `tooltip`. | Refresh in headers. |
+| Work in progress: `.loading(busy)` and the label says so ("Installing…"); `.disabled(..)` when the action is not possible. | `welcome-primary`, `usage-refresh`, `welcome-recheck`. |
+| Destructive: `danger()` in confirmations (Discard, Delete), `danger().outline()` to stop agents. | `features/profiles/view/confirm.rs`, `features/session/agents.rs`. |
+| Inline confirm: `outline()`; cancel: `ghost()` with "Cancel". | Rename profile, custom model. |
+| Pill (`rounded(px(999.))`) only for the composer's send/stop and the welcome primary button. | `features/session/view/composer.rs` |
 
-Pie de pantalla típico: `h_flex().px_4().py_3().gap_2().border_t_1().border_color(ui::border())`, con pistas (`kbd` + texto `text_xs muted`) o una línea de estado a la izquierda.
+Typical screen footer: `h_flex().px_4().py_3().gap_2().border_t_1().border_color(ui::border())`, with hints (`kbd` + `text_xs muted` text) or a status line on the left.
 
-### Vacío, carga y error
+### Empty, loading and error
 
-| Estado | Forma |
+| State | Shape |
 | --- | --- |
-| Cargando | `h_flex().gap_2().text_sm().text_color(ui::muted())` + `Spinner::new().small()` (en `muted` o `accent`) + "Reading sessions…". En línea, `Spinner::new().xsmall()`. |
-| Recargando con datos | La lista se queda y el botón de refrescar muestra `.loading(..)`. |
-| Vacío | `v_flex().items_center().py_8().gap_2()`, ícono en `faint` (`Inbox`, `Layers`) y una frase `text_sm muted` que dice qué hacer ("No profiles left. Create one with New."). |
-| Error | Texto `text_sm` en `danger` con un botón `ghost` "Retry"; o una `card` con `border_color(ui::danger().opacity(0.35))`, ícono `CircleAlert`, `section_label` y el mensaje; con salida técnica, ésta va en un `well_box`. |
-| Resultado de una acción | Línea `text_xs` con ícono `xsmall`: `muted` + `Info`, `success` + `CircleCheck`, `danger` + `CircleAlert` (pie de Profiles). |
+| Loading | `h_flex().gap_2().text_sm().text_color(ui::muted())` + `Spinner::new().small()` (in `muted` or `accent`) + "Reading sessions…". Inline, `Spinner::new().xsmall()`. |
+| Reloading with data | The list stays and the refresh button shows `.loading(..)`. |
+| Empty | `v_flex().items_center().py_8().gap_2()`, icon in `faint` (`Inbox`, `Layers`) and a `text_sm muted` sentence that says what to do ("No profiles left. Create one with New."). |
+| Error | `text_sm` text in `danger` with a `ghost` "Retry" button; or a `card` with `border_color(ui::danger().opacity(0.35))`, `CircleAlert` icon, `section_label` and the message; technical output, if any, goes in a `well_box`. |
+| Action result | `text_xs` line with an `xsmall` icon: `muted` + `Info`, `success` + `CircleCheck`, `danger` + `CircleAlert` (Profiles footer). |
 
-## Hacer y no hacer
+## Do and don't
 
-| Hacer | No hacer |
+| Do | Don't |
 | --- | --- |
-| Usar `ui::*` para todo color y las piezas de `ui.rs` para tarjetas, campos y chips. | Escribir `rgb(..)`/`hsla(..)` en una vista, salvo arte pixel con colores propios. |
-| Separar zonas con espacio y cambio de superficie. | Agregar bordes o líneas dentro de paneles, tarjetas o el chrome. |
-| Reservar `petal` para lo vivo y lo principal. | Usar `petal` o `accent` como fondo de bloques grandes. |
-| Texto secundario en `muted`, metadatos en `faint`, valores en `MONO`. | Subir todo a `fg` o a `text_sm`. |
-| Abrir pantallas con `screen` + `pop_in` y menús con `island` + `popover_in`. | Usar el marco de popover de serie o un velo propio. |
-| Ids de animación estables; un contador en el id sólo para repetirla. | Ids que cambian en cada render (la animación se reinicia sin parar). |
-| Efectos grandes en un `canvas`, sin entrada y con un `Task` que los limpia. | Envolver la raíz de la ventana en una animación. |
-| Probar en un tema claro (p. ej. Catppuccin Latte) y con la transparencia al máximo. | Suponer modo oscuro o fondo opaco. |
+| Use `ui::*` for every color and the `ui.rs` pieces for cards, fields and chips. | Write `rgb(..)`/`hsla(..)` in a view, except pixel art with its own colors. |
+| Separate zones with space and a change of surface. | Add borders or lines inside panels, cards or the chrome. |
+| Reserve `petal` for what is live and primary. | Use `petal` or `accent` as the background of large blocks. |
+| Secondary text in `muted`, metadata in `faint`, values in `MONO`. | Bump everything to `fg` or `text_sm`. |
+| Open screens with `screen` + `pop_in` and menus with `island` + `popover_in`. | Use the stock popover frame or a custom veil. |
+| Stable animation ids; a counter in the id only to repeat it. | Ids that change on every render (the animation restarts endlessly). |
+| Large effects in a `canvas`, without input and with a `Task` that clears them. | Wrap the window root in an animation. |
+| Test in a light theme (e.g. Catppuccin Latte) and with transparency at maximum. | Assume dark mode or an opaque background. |
 
-## Checklist para una pantalla nueva
+## Checklist for a new screen
 
-1. La vista vive en su funcionalidad (`features/<nombre>/`); lo que sea genérico y lo use más de una va a `shared/ui.rs`, no a la vista.
-2. `ui::screen(Some(ancho))` (640–820) o `None`, envuelto en `ui::pop_in("<nombre>-screen", ..)` y con `.occlude()` en el velo.
-3. Cabecera con `screen_header`: ícono `muted`, título `text_base SEMIBOLD`, subtítulo truncado, acciones `ghost().xsmall()` con tooltip, `kbd("esc")` y cerrar; la vista emite `Close` y la registra el `Workspace`.
-4. Cuerpo desplazable con id; grupos en `card()` con `section_label`; campos con `field()` + `Input::appearance(false)`; conmutadores con `segmented`.
-5. Estados de carga, vacío y error con las formas de arriba; nada queda en blanco mientras se lee.
-6. Pie con secundarios `ghost` a la izquierda y un único `primary` a la derecha; `.loading` y `.disabled` reflejan el trabajo en curso.
-7. Íconos nuevos agregados a `ExtraIcons`.
-8. Animaciones sólo con `appear`/`appear_after`/`pop_in`/`popover_in`/`pulse`, con ids estables.
-9. Revisada en un tema claro, en uno oscuro y con distintas transparencias.
+1. The view lives in its feature (`features/<name>/`); anything generic used by more than one feature goes to `shared/ui.rs`, not to the view.
+2. `ui::screen(Some(width))` (640–820) or `None`, wrapped in `ui::pop_in("<name>-screen", ..)` and with `.occlude()` on the veil.
+3. Header with `screen_header`: `muted` icon, `text_base SEMIBOLD` title, truncated subtitle, `ghost().xsmall()` actions with tooltip, `kbd("esc")` and close; the view emits `Close` and the `Workspace` handles it.
+4. Scrollable body with an id; groups in `card()` with `section_label`; fields with `field()` + `Input::appearance(false)`; toggles with `segmented`.
+5. Loading, empty and error states with the shapes above; nothing stays blank while reading.
+6. Footer with secondary `ghost` buttons on the left and a single `primary` on the right; `.loading` and `.disabled` reflect work in progress.
+7. New icons added to `ExtraIcons`.
+8. Animations only with `appear`/`appear_after`/`pop_in`/`popover_in`/`pulse`, with stable ids.
+9. Reviewed in a light theme, in a dark theme and with different transparencies.

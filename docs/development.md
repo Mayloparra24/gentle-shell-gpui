@@ -1,20 +1,20 @@
-# Desarrollo
+# Development
 
-Cómo compilar, ejecutar, probar y publicar Gentle Shell GPUI, y cómo trabajar en el proyecto día a día sin tocar la app ni los datos reales de quien desarrolla. Las fronteras y reglas de código están en [`architecture.md`](architecture.md) y en los [ADR](adr/); aquí sólo se enlazan.
+How to build, run, test and release Gentle Shell GPUI, and how to work on the project day to day without touching the developer's real app or data. Boundaries and code rules live in [`architecture.md`](architecture.md) and in the [ADRs](adr/); this page only links to them.
 
-## Requisitos
+## Requirements
 
-| Requisito | Detalle |
+| Requirement | Details |
 | --- | --- |
-| Rust | Estable, 1.88 o más nuevo (README). El workspace usa `edition = "2024"` y el código usa `if let … && …` (let chains). No hay `rust-toolchain` ni `rust-version`: CI instala `dtolnay/rust-toolchain@stable`. |
-| Componentes | `clippy` (CI lo instala explícitamente) y `rustfmt`. |
-| Gentle Shell | Para usar pestañas de agente: `npm install -g gentle-pi --allow-scripts=gentle-pi` y `gentle-shell setup`, o la instalación autocontenida en `~/.gentle-shell/bin/gentle-shell`. Sin él la app abre igual y muestra la pantalla de configuración. |
-| Node.js | En el PATH (o el que instala la app en `<data dir>/gentle-shell-gpui/toolchain`). |
-| Linux | Librerías de GPUI y WebKitGTK, las mismas que instala CI (`.github/workflows/ci.yml`). |
-| macOS (empaquetar) | `codesign`, `ditto`, `hdiutil`, `plutil` (vienen con el sistema/Xcode CLT). Regenerar íconos: `python3`, `swift`, `iconutil`. |
-| Windows (instalador) | Inno Setup 6 (`ISCC.exe`). |
+| Rust | Stable, 1.88 or newer (README). The workspace uses `edition = "2024"` and the code uses `if let … && …` (let chains). There is no `rust-toolchain` or `rust-version`: CI installs `dtolnay/rust-toolchain@stable`. |
+| Components | `clippy` (CI installs it explicitly) and `rustfmt`. |
+| Gentle Shell | Needed for agent tabs: `npm install -g gentle-pi --allow-scripts=gentle-pi` and `gentle-shell setup`, or the standalone install in `~/.gentle-shell/bin/gentle-shell`. Without it the app still opens and shows the setup screen. |
+| Node.js | On the PATH (or the one the app installs in `<data dir>/gentle-shell-gpui/toolchain`). |
+| Linux | GPUI and WebKitGTK libraries, the same ones CI installs (`.github/workflows/ci.yml`). |
+| macOS (packaging) | `codesign`, `ditto`, `hdiutil`, `plutil` (ship with the system/Xcode CLT). Regenerating icons: `python3`, `swift`, `iconutil`. |
+| Windows (installer) | Inno Setup 6 (`ISCC.exe`). |
 
-Paquetes de Linux (Debian/Ubuntu), copiados de CI:
+Linux packages (Debian/Ubuntu), copied from CI:
 
 ```bash
 sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
@@ -24,113 +24,113 @@ sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
 
 ## Workspace
 
-`Cargo.toml` raíz: `resolver = "2"`, miembros `crates/core`, `crates/pi-rpc`, `crates/app`. La versión, edición y licencia viven en `[workspace.package]` y los crates las heredan (`version.workspace = true`). Las dependencias compartidas (`anyhow`, `async-channel`, `regex`, `serde`, `serde_json`) se declaran en `[workspace.dependencies]`.
+Root `Cargo.toml`: `resolver = "2"`, members `crates/core`, `crates/pi-rpc`, `crates/app`. Version, edition and license live in `[workspace.package]` and the crates inherit them (`version.workspace = true`). Shared dependencies (`anyhow`, `async-channel`, `regex`, `serde`, `serde_json`) are declared in `[workspace.dependencies]`.
 
-| Crate | Paquete | Qué es |
+| Crate | Package | What it is |
 | --- | --- | --- |
-| `crates/app` | `gentle-shell-gpui` (binario, `src/main.rs`) | La app GPUI. `build.rs` incrusta ícono y versión en el `.exe` de Windows; en otros SO no hace nada. |
-| `crates/core` | `gentle-core` (lib `gentle_core`) | Lógica pura. Sólo depende de `regex`, `serde`, `serde_json`. |
-| `crates/pi-rpc` | `pi-rpc` | Resolución del launcher, homes, cliente JSONL, login (`login-helper.mjs`). Sin GPUI. |
+| `crates/app` | `gentle-shell-gpui` (binary, `src/main.rs`) | The GPUI app. `build.rs` embeds the icon and version in the Windows `.exe`; on other OSes it does nothing. |
+| `crates/core` | `gentle-core` (lib `gentle_core`) | Pure logic. Depends only on `regex`, `serde`, `serde_json`. |
+| `crates/pi-rpc` | `pi-rpc` | Launcher resolution, homes, JSONL client, login (`login-helper.mjs`). No GPUI. |
 
-Perfiles (`Cargo.toml`):
+Profiles (`Cargo.toml`):
 
-| Perfil | Uso |
+| Profile | Use |
 | --- | --- |
-| `dev` | `debug = "line-tables-only"`; las dependencias (`[profile.dev.package."*"]`) con `opt-level = 2`, así un `cargo run` sin `--release` es usable. |
-| `release` | Por defecto de Cargo: rápido de compilar, para probar localmente. |
-| `dist` | Hereda `release` con `lto = "thin"`, `codegen-units = 1`, `strip = true`. Lo usan los scripts de `packaging/` y los workflows. Binario ~1/3 más chico, compilación mucho más lenta. |
+| `dev` | `debug = "line-tables-only"`; dependencies (`[profile.dev.package."*"]`) use `opt-level = 2`, so a `cargo run` without `--release` is usable. |
+| `release` | Cargo default: fast to build, for local testing. |
+| `dist` | Inherits `release` with `lto = "thin"`, `codegen-units = 1`, `strip = true`. Used by the `packaging/` scripts and the workflows. Binary is ~1/3 smaller, build is much slower. |
 
-## Compilar y ejecutar
+## Build and run
 
 ```bash
 cargo run                         # dev
-cargo run --release -- .          # optimizado, abre la carpeta actual
-cargo build --profile dist -p gentle-shell-gpui   # como en una release
+cargo run --release -- .          # optimized, opens the current folder
+cargo build --profile dist -p gentle-shell-gpui   # as in a release
 ```
 
 ### CLI
 
 `crates/app/src/cli.rs`: `gentle-shell-gpui [FOLDER] [-p|--prompt TEXT]`.
 
-| Argumento | Efecto |
+| Argument | Effect |
 | --- | --- |
-| `FOLDER` | Selecciona (o crea) el workspace con esa raíz. Se ignora si no es un directorio. Sin carpeta se restaura el último workspace. |
-| `-p TEXT`, `--prompt TEXT` | Abre una pestaña de agente nueva y, cuando el backend arranca, ejecuta el texto como si se hubiera escrito en el compositor (`SessionView::run_text` en `features/session/submit.rs`). |
-| `-p "!cmd"` | Ejecuta `cmd` como comando de shell en esa pestaña; `-p "!!cmd"` lo mantiene fuera del contexto (convención de Pi). |
+| `FOLDER` | Selects (or creates) the workspace with that root. Ignored if it is not a directory. Without a folder, the last workspace is restored. |
+| `-p TEXT`, `--prompt TEXT` | Opens a new agent tab and, once the backend starts, runs the text as if it had been typed in the composer (`SessionView::run_text` in `features/session/submit.rs`). |
+| `-p "!cmd"` | Runs `cmd` as a shell command in that tab; `-p "!!cmd"` keeps it out of the context (Pi convention). |
 
-`-p` es útil en desarrollo para llevar la app a un estado concreto sin teclear en ella.
+`-p` is useful during development to bring the app to a specific state without typing into it.
 
-### Instancia única
+### Single instance
 
-`crates/app/src/platform/instance.rs`: una sola app por usuario, sea cual sea el build. La instancia primaria escucha en un puerto TCP de loopback y lo registra con un token aleatorio en `<data dir>/gentle-shell-gpui/instance.json` (modo 0600 en Unix). Un segundo lanzamiento envía su `OpenRequest { folder, prompt }` a la primaria y termina (`Role::Forwarded`); si no hay un listener vivo, se convierte en primaria.
+`crates/app/src/platform/instance.rs`: one app per user, whatever the build. The primary instance listens on a loopback TCP port and registers it with a random token in `<data dir>/gentle-shell-gpui/instance.json` (mode 0600 on Unix). A second launch sends its `OpenRequest { folder, prompt }` to the primary and exits (`Role::Forwarded`); if there is no live listener, it becomes the primary.
 
-Consecuencia práctica: con tu app instalada abierta, `cargo run` **no abre una ventana nueva**, sino que manda la carpeta y el prompt a la app que ya corre. Para correr un build de desarrollo al mismo tiempo, cambia el data dir (ver [Pruebas aisladas](#pruebas-aisladas)).
+Practical consequence: with your installed app open, `cargo run` **does not open a new window**; it sends the folder and prompt to the app that is already running. To run a development build at the same time, change the data dir (see [Isolated testing](#isolated-testing)).
 
 ### Data dir
 
-Todo lo de la app vive bajo `dirs::data_dir()/gentle-shell-gpui/`:
+Everything the app stores lives under `dirs::data_dir()/gentle-shell-gpui/`:
 
-| Archivo | Dueño |
+| File | Owner |
 | --- | --- |
 | `instance.json` | `platform/instance.rs` |
 | `workspaces.json` | `features/workspaces/store.rs` |
-| `settings.json` | `shared/themes.rs` (`store_path`): tema, transparencia y la clave `onboarding` (`{ "done": true, "version": … }`) que decide el primer arranque (`features/setup/mod.rs`: `first_run`, `mark_done`). |
+| `settings.json` | `shared/themes.rs` (`store_path`): theme, transparency and the `onboarding` key (`{ "done": true, "version": … }`) that decides the first run (`features/setup/mod.rs`: `first_run`, `mark_done`). |
 | `app-update.json` | `features/app_update/cache.rs` |
-| `toolchain/` | `features/setup/mod.rs` (Node y prefijo npm que instala la app) |
+| `toolchain/` | `features/setup/mod.rs` (Node and npm prefix installed by the app) |
 
-`dirs::data_dir()` es `~/Library/Application Support` en macOS, `$XDG_DATA_HOME` o `~/.local/share` en Linux y `%APPDATA%` en Windows. En macOS y Linux se deriva de `HOME`.
+`dirs::data_dir()` is `~/Library/Application Support` on macOS, `$XDG_DATA_HOME` or `~/.local/share` on Linux and `%APPDATA%` on Windows. On macOS and Linux it is derived from `HOME`.
 
-### Variables de entorno
+### Environment variables
 
-| Variable | Dónde se lee | Efecto |
+| Variable | Where it is read | Effect |
 | --- | --- | --- |
-| `GENTLE_SHELL_BIN` | `pi-rpc/src/launch.rs` (`resolve_backend`), `home.rs` | Launcher a usar. Orden normal: `GENTLE_SHELL_BIN`, instalación autocontenida (`bundled_launcher`: `~/.gentle-shell/bin/gentle-shell`; en Windows `%LOCALAPPDATA%\gentle-shell\bin\gentle-shell.cmd` o `%USERPROFILE%\.gentle-shell-bundle\bin\gentle-shell.cmd`), `gentle-shell` en el PATH combinado. Si está definida, el config home no se deriva del launcher autocontenido. |
-| `GENTLE_SHELL_ARGS` | `launch.rs` (`extra_args`), `home.rs` | Opciones antes de `--mode rpc` (separadas por espacios): `--link`, `--isolated`, `--home <dir>`. También deciden qué home usa la app para `auth.json` y config. |
-| `GENTLE_SHELL_HOME` | `home.rs` | Home aislado (por defecto `~/.gentle-shell/agent`). |
-| `GENTLE_SHELL_USER_PI_HOME`, `PI_CODING_AGENT_DIR` | `home.rs` | Home de Pi para `--link` (por defecto `~/.pi/agent`). |
-| `GENTLE_PI_CONFIG_HOME` | `home.rs` (`config_home`) | Gana sobre cualquier otra carpeta de config de Gentle Shell. |
-| `GENTLE_SHELL_CONFIG` | `features/updates/mod.rs`, `features/setup/gentle.rs` | Ruta del `config.json` del launcher (por defecto `~/.gentle-shell/config.json`). |
-| `GENTLE_PI_BACKGROUND_SUBAGENTS` | `features/settings/snapshot.rs` | Fuente de la política de background subagents mostrada en Configuración. |
-| `GENTLE_SHELL_GENTLE_AI_PIN` | `features/setup/gentle.rs` | Pin de Gentle AI usado por la comprobación de setup. |
-| `ENGRAM_URL`, `ENGRAM_PORT`, `ENGRAM_HTTP_TOKEN` | `features/memory/client.rs` | Servidor de Engram (puerto por defecto `7437`). |
-| `ENGRAM_BIN` | `features/setup/extras.rs` | Binario de Engram para la comprobación. |
-| `SHELL` | `launch.rs` (`login_shell_path`), `features/terminal/mod.rs` | Shell de login cuyo PATH se combina, y shell de los paneles de terminal. |
-| `HOME` / `USERPROFILE` | `home.rs` (`home_dir`), `dirs` | Base de todos los homes y, en macOS/Linux, del data dir. |
+| `GENTLE_SHELL_BIN` | `pi-rpc/src/launch.rs` (`resolve_backend`), `home.rs` | Launcher to use. Normal order: `GENTLE_SHELL_BIN`, standalone install (`bundled_launcher`: `~/.gentle-shell/bin/gentle-shell`; on Windows `%LOCALAPPDATA%\gentle-shell\bin\gentle-shell.cmd` or `%USERPROFILE%\.gentle-shell-bundle\bin\gentle-shell.cmd`), `gentle-shell` on the combined PATH. If set, the config home is not derived from the standalone launcher. |
+| `GENTLE_SHELL_ARGS` | `launch.rs` (`extra_args`), `home.rs` | Options before `--mode rpc` (space-separated): `--link`, `--isolated`, `--home <dir>`. They also decide which home the app uses for `auth.json` and config. |
+| `GENTLE_SHELL_HOME` | `home.rs` | Isolated home (default `~/.gentle-shell/agent`). |
+| `GENTLE_SHELL_USER_PI_HOME`, `PI_CODING_AGENT_DIR` | `home.rs` | Pi home for `--link` (default `~/.pi/agent`). |
+| `GENTLE_PI_CONFIG_HOME` | `home.rs` (`config_home`) | Wins over any other Gentle Shell config folder. |
+| `GENTLE_SHELL_CONFIG` | `features/updates/mod.rs`, `features/setup/gentle.rs` | Path to the launcher's `config.json` (default `~/.gentle-shell/config.json`). |
+| `GENTLE_PI_BACKGROUND_SUBAGENTS` | `features/settings/snapshot.rs` | Source of the background subagents policy shown in Settings. |
+| `GENTLE_SHELL_GENTLE_AI_PIN` | `features/setup/gentle.rs` | Gentle AI pin used by the setup check. |
+| `ENGRAM_URL`, `ENGRAM_PORT`, `ENGRAM_HTTP_TOKEN` | `features/memory/client.rs` | Engram server (default port `7437`). |
+| `ENGRAM_BIN` | `features/setup/extras.rs` | Engram binary for the check. |
+| `SHELL` | `launch.rs` (`login_shell_path`), `features/terminal/mod.rs` | Login shell whose PATH is combined, and the shell for terminal panels. |
+| `HOME` / `USERPROFILE` | `home.rs` (`home_dir`), `dirs` | Base of all homes and, on macOS/Linux, of the data dir. |
 
-La app siempre pasa al backend `GENTLE_SHELL_INTERACTIVE_HOST=1` y el `PATH` combinado (`LaunchSpec.env`). El resto del entorno (claves de proveedores, `GENTLE_SHELL_NO_AUTO_SETUP`, …) se hereda.
+The app always passes `GENTLE_SHELL_INTERACTIVE_HOST=1` and the combined `PATH` to the backend (`LaunchSpec.env`). The rest of the environment (provider keys, `GENTLE_SHELL_NO_AUTO_SETUP`, …) is inherited.
 
-### PATH de los procesos hijos
+### Child process PATH
 
-Una app lanzada desde Finder o un `.desktop` hereda un PATH mínimo, sin nvm/fnm/mise. Por eso `pi-rpc` (`launch.rs`, `search_path`) arma un PATH propio:
+An app launched from Finder or a `.desktop` file inherits a minimal PATH, without nvm/fnm/mise. That is why `pi-rpc` (`launch.rs`, `search_path`) builds its own PATH:
 
-1. Directorios extra que registra la app (`pi_rpc::set_extra_path`, llamado por `setup::apply_toolchain_path` al arrancar y antes de cada comprobación).
-2. El PATH de un shell de login interactivo: `$SHELL -l -i -c "printf '__GENTLE_PATH_START__%s__GENTLE_PATH_END__' \"$PATH\""`, con 5 s de límite (sólo Unix).
-3. El PATH heredado, sin duplicados.
+1. Extra directories registered by the app (`pi_rpc::set_extra_path`, called by `setup::apply_toolchain_path` at startup and before each check).
+2. The PATH of an interactive login shell: `$SHELL -l -i -c "printf '__GENTLE_PATH_START__%s__GENTLE_PATH_END__' \"$PATH\""`, with a 5 s timeout (Unix only).
+3. The inherited PATH, without duplicates.
 
-Se cachea hasta `pi_rpc::forget_cached()`. Todo proceso hijo que necesite herramientas del usuario debe usar `pi_rpc::child_path()` y crearse con `pi_rpc::command` (en Windows añade `CREATE_NO_WINDOW`).
+It is cached until `pi_rpc::forget_cached()`. Every child process that needs the user's tools must use `pi_rpc::child_path()` and be created with `pi_rpc::command` (on Windows it adds `CREATE_NO_WINDOW`).
 
-## Pruebas aisladas
+## Isolated testing
 
-Regla: **nunca** pruebes contra la app o los datos reales. No envíes teclas ni clics a una app que el usuario tenga abierta, ni edites su `workspaces.json`/`settings.json`.
+Rule: **never** test against the real app or data. Do not send keystrokes or clicks to an app the user has open, and do not edit their `workspaces.json`/`settings.json`.
 
-### HOME temporal (primer arranque)
+### Temporary HOME (first run)
 
 ```bash
 cargo build
 HOME="$(mktemp -d)" ./target/debug/gentle-shell-gpui
 ```
 
-Con un `HOME` vacío el data dir es otro, así que:
+With an empty `HOME` the data dir is different, so:
 
-- `instance.json` es otro: el build se convierte en primario aunque tu app esté abierta.
-- No hay `settings.json`: se abre la pantalla de bienvenida (`features/welcome/`), y sin `onboarding.done` vuelve a abrirse en cada arranque con ese mismo `HOME`.
-- No hay `~/.gentle-shell` ni `auth.json`: Gentle Shell aparece sin configurar ni sesión iniciada.
+- `instance.json` is different: the build becomes the primary even if your app is open.
+- There is no `settings.json`: the welcome screen opens (`features/welcome/`), and without `onboarding.done` it opens again on every launch with that same `HOME`.
+- There is no `~/.gentle-shell` or `auth.json`: Gentle Shell shows up unconfigured and signed out.
 
-En Linux, si `XDG_DATA_HOME` está definida, también hay que apuntarla al directorio temporal. En Windows `HOME` no cambia `%APPDATA%`; este método es para macOS y Linux.
+On Linux, if `XDG_DATA_HOME` is set, point it at the temporary directory too. On Windows `HOME` does not change `%APPDATA%`; this method is for macOS and Linux.
 
-### Máquina limpia (PATH mínimo)
+### Clean machine (minimal PATH)
 
-`HOME` temporal no basta para simular una máquina sin Node ni Gentle Shell: `pi-rpc` combina el PATH del shell de login, que vuelve a traer nvm, Homebrew, etc. Para quitarlo, usa un `SHELL` falso que imprima un PATH mínimo con los marcadores que espera `login_shell_path`:
+A temporary `HOME` is not enough to simulate a machine without Node or Gentle Shell: `pi-rpc` combines the login shell's PATH, which brings nvm, Homebrew, etc. back. To remove it, use a fake `SHELL` that prints a minimal PATH with the markers `login_shell_path` expects:
 
 ```bash
 sandbox="$(mktemp -d)"
@@ -143,23 +143,23 @@ HOME="$sandbox" SHELL="$sandbox/fake-shell" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
   ./target/debug/gentle-shell-gpui
 ```
 
-El `PATH` heredado también se reduce porque se combina detrás del de login. Efectos secundarios: los paneles de terminal también usan `$SHELL` (`features/terminal/mod.rs`), así que en este modo no sirven; y las instalaciones de la configuración inicial escriben de verdad dentro de `$sandbox`.
+The inherited `PATH` is also reduced because it is combined after the login one. Side effects: terminal panels also use `$SHELL` (`features/terminal/mod.rs`), so they do not work in this mode; and the initial setup installs really write inside `$sandbox`.
 
-Advertencia sobre el launcher autocontenido: `~/.gentle-shell/bin/gentle-shell` es un script generado con **rutas absolutas** al prefijo real (`<prefix>/runtime/node-<v>/bin/node`, `<prefix>/current/node_modules/gentle-pi/…`). Copiarlo al `HOME` temporal o apuntarle con `GENTLE_SHELL_BIN` ejecuta el Node y el paquete reales; `bundled_install` y `config_home` deducen el prefijo de la ubicación del launcher, así que una copia no encuentra `runtime/` y la detección queda a medias. Ese entorno no es una máquina limpia.
+Warning about the standalone launcher: `~/.gentle-shell/bin/gentle-shell` is a generated script with **absolute paths** to the real prefix (`<prefix>/runtime/node-<v>/bin/node`, `<prefix>/current/node_modules/gentle-pi/…`). Copying it into the temporary `HOME` or pointing `GENTLE_SHELL_BIN` at it runs the real Node and package; `bundled_install` and `config_home` derive the prefix from the launcher's location, so a copy does not find `runtime/` and detection is only partial. That environment is not a clean machine.
 
-### Comprobaciones visuales
+### Visual checks
 
-Toma capturas de la ventana del sandbox, no de la pantalla del usuario. En macOS:
+Take screenshots of the sandbox window, not of the user's screen. On macOS:
 
 ```bash
 screencapture -l <windowid> -o /tmp/shot.png
 ```
 
-El id de ventana se obtiene de `CGWindowListCopyWindowInfo` (por ejemplo, un script `swift` que filtre por el PID del proceso del sandbox). Para llegar a un estado concreto usa `-p "texto"` / `-p "!cmd"` y la carpeta de la CLI en vez de simular entrada.
+Get the window id from `CGWindowListCopyWindowInfo` (for example, a `swift` script that filters by the sandbox process PID). To reach a specific state, use `-p "text"` / `-p "!cmd"` and the CLI folder instead of simulating input.
 
-Si para alcanzar una pantalla hace falta código temporal (forzar un estado, un `eprintln!`, datos falsos), se elimina antes de hacer commit.
+If reaching a screen needs temporary code (forcing a state, an `eprintln!`, fake data), remove it before committing.
 
-## Antes de hacer commit
+## Before committing
 
 ```bash
 cargo fmt
@@ -167,167 +167,167 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 ```
 
-CI ejecuta clippy y las pruebas en macOS, Linux y Windows, pero **no** `cargo fmt --check`: el formato es responsabilidad local. `--locked` falla si `Cargo.lock` no está al día; commitea el lock junto con cualquier cambio de dependencias. Clippy corre con `-D warnings`, así que un `#[cfg(windows)]` con variables sin usar en macOS rompe CI en otra plataforma (el patrón existente es `#[cfg_attr(not(windows), allow(unused_mut))]`, `features/setup/mod.rs`).
+CI runs clippy and the tests on macOS, Linux and Windows, but **not** `cargo fmt --check`: formatting is a local responsibility. `--locked` fails if `Cargo.lock` is out of date; commit the lock together with any dependency change. Clippy runs with `-D warnings`, so a `#[cfg(windows)]` with variables unused on macOS breaks CI on another platform (the existing pattern is `#[cfg_attr(not(windows), allow(unused_mut))]`, `features/setup/mod.rs`).
 
-[`architecture.md`](architecture.md) pide además una prueba de humo de la ruta modificada; hazla en un entorno aislado.
+[`architecture.md`](architecture.md) also asks for a smoke test of the changed path; do it in an isolated environment.
 
-### Convenciones de pruebas
+### Testing conventions
 
-| Tipo | Dónde |
+| Kind | Where |
 | --- | --- |
-| Lógica pura | En `crates/core`, módulo `#[cfg(test)] mod tests` al final de cada archivo. Si una regla puede vivir en `core`, su prueba va allí, no en `app`. |
-| Lógica de `app` | `#[cfg(test)] mod tests` en el mismo archivo (`features/app_update/release.rs`, `features/notices/store.rs`, …). |
-| Efectos de archivo | Archivo `tests.rs` propio (`features/profiles/tests.rs`, `features/sessions/tests.rs`, `features/workspaces/tests.rs`) o ayudas compartidas (`features/app_update/mod.rs`: `mod test_support` con `temp_dir`, `release`, `fake_bundle`). |
-| `pi-rpc` | `mod tests` en `launch.rs`, `home.rs`, etc.; algunos sólo Unix (`#[cfg(all(test, unix))]`). |
+| Pure logic | In `crates/core`, a `#[cfg(test)] mod tests` module at the end of each file. If a rule can live in `core`, its test goes there, not in `app`. |
+| `app` logic | `#[cfg(test)] mod tests` in the same file (`features/app_update/release.rs`, `features/notices/store.rs`, …). |
+| File effects | Its own `tests.rs` file (`features/profiles/tests.rs`, `features/sessions/tests.rs`, `features/workspaces/tests.rs`) or shared helpers (`features/app_update/mod.rs`: `mod test_support` with `temp_dir`, `release`, `fake_bundle`). |
+| `pi-rpc` | `mod tests` in `launch.rs`, `home.rs`, etc.; some Unix only (`#[cfg(all(test, unix))]`). |
 
-No hay pruebas de integración en `tests/` ni pruebas de UI GPUI. Las pruebas con archivos usan `std::env::temp_dir()` con un nombre único (prefijo `gs-…`, PID y a veces la hora) y lo borran al final; ver `platform/instance.rs` (`second_launch_is_forwarded_to_the_primary`). Las funciones con efectos reciben rutas como parámetro (por ejemplo `bundled_candidates(home, local_app_data, windows)`) para no depender del `HOME` real. Qué probar y qué no: [ADR-0003](adr/0003-refactors-sin-cambio-funcional.md).
+There are no integration tests in `tests/` and no GPUI UI tests. File-based tests use `std::env::temp_dir()` with a unique name (`gs-…` prefix, PID and sometimes the time) and delete it at the end; see `platform/instance.rs` (`second_launch_is_forwarded_to_the_primary`). Functions with effects take paths as parameters (for example `bundled_candidates(home, local_app_data, windows)`) so they do not depend on the real `HOME`. What to test and what not to: [ADR-0003](adr/0003-behavior-preserving-refactors.md).
 
-## Convenciones de código
+## Code conventions
 
-Están en [`architecture.md`](architecture.md); lo esencial:
+They are in [`architecture.md`](architecture.md); the essentials:
 
-- Una carpeta por funcionalidad en `crates/app/src/features/<nombre>/` con `mod.rs` como API; hijos con bloques `impl` y `pub(super)`.
-- `shared/` sólo para piezas usadas por varias funcionalidades sin lógica de producto; `platform/` para integración con el SO.
-- Lógica pura a `gentle-core` por comportamiento completo ([ADR-0002](adr/0002-nucleo-puro-incremental.md)); sin traits para una sola implementación.
-- Refactors sin cambio funcional, separados de cambios de comportamiento ([ADR-0003](adr/0003-refactors-sin-cambio-funcional.md)); el historial los marca con `(no behavior change)`.
-- Monolito modular ([ADR-0001](adr/0001-monolito-modular.md)).
+- One folder per feature in `crates/app/src/features/<name>/` with `mod.rs` as the API; children with `impl` blocks and `pub(super)`.
+- `shared/` only for pieces used by several features with no product logic; `platform/` for OS integration.
+- Pure logic moves to `gentle-core` one complete behavior at a time ([ADR-0002](adr/0002-incremental-pure-core.md)); no traits for a single implementation.
+- Behavior-preserving refactors, kept separate from behavior changes ([ADR-0003](adr/0003-behavior-preserving-refactors.md)); the history marks them with `(no behavior change)`.
+- Modular monolith ([ADR-0001](adr/0001-modular-monolith.md)).
 
-## Commits y pull requests
+## Commits and pull requests
 
-Prefijos usados en `git log`:
+Prefixes used in `git log`:
 
-| Prefijo | Uso |
+| Prefix | Use |
 | --- | --- |
-| `feat(<área>):` | Comportamiento nuevo (`feat(welcome): …`). |
-| `fix(<área>):` | Corrección (`fix(windows): …`, `fix(session): …`). |
-| `refactor(<área>):` | Reorganización; termina en `(no behavior change)`. |
-| `test(<área>):`, `docs:`, `perf:`, `ci:` | Menos frecuentes. |
-| `release: X.Y.Z` | Sólo el cambio de versión (`Cargo.toml` + `Cargo.lock`). |
+| `feat(<area>):` | New behavior (`feat(welcome): …`). |
+| `fix(<area>):` | Fix (`fix(windows): …`, `fix(session): …`). |
+| `refactor(<area>):` | Reorganization; ends in `(no behavior change)`. |
+| `test(<area>):`, `docs:`, `perf:`, `ci:` | Less frequent. |
+| `release: X.Y.Z` | Only the version bump (`Cargo.toml` + `Cargo.lock`). |
 
-El área suele ser el nombre de la funcionalidad (`session`, `providers`, `app_update`) o de la plataforma. El asunto describe el efecto observable, en inglés y en minúscula tras los dos puntos.
+The area is usually the feature name (`session`, `providers`, `app_update`) or the platform. The subject describes the observable effect, in English and lowercase after the colon.
 
-Una PR por cambio, desde una rama `feat/…` o `refactor/…`. Se integran con merge commit (sin squash): la historia de la rama queda y el merge lleva el título de la PR con su número (`Welcome screen: … (#9)`).
+One PR per change, from a `feat/…` or `refactor/…` branch. PRs are merged with a merge commit (no squash): the branch history is kept and the merge carries the PR title with its number (`Welcome screen: … (#9)`).
 
 ## CI
 
-| Workflow | Disparadores | Qué hace |
+| Workflow | Triggers | What it does |
 | --- | --- | --- |
-| `ci.yml` (CI) | `push` a `main` y `pull_request`, ambos con `paths-ignore: ["**.md", "packaging/icons/**"]` | Matriz `macos-latest`, `ubuntu-latest`, `windows-latest` (`fail-fast: false`): `cargo clippy --workspace --all-targets --locked -- -D warnings` y `cargo test --workspace --locked`. Caché `Swatinem/rust-cache@v2`. |
-| `cache-warm.yml` (Cache warm) | `push` a `main` que toque `Cargo.lock`, `**/Cargo.toml`, `cache-warm.yml` o `release.yml`; `workflow_dispatch` | Compila `--profile dist` para los cuatro targets y guarda la caché con `shared-key: dist-<target>`. Existe porque un tag sólo puede restaurar cachés de la rama por defecto. |
-| `release.yml` (Release) | Tags `v*`; `workflow_dispatch` (dry run) | Ver [Releases](#releases). |
+| `ci.yml` (CI) | `push` to `main` and `pull_request`, both with `paths-ignore: ["**.md", "packaging/icons/**"]` | Matrix `macos-latest`, `ubuntu-latest`, `windows-latest` (`fail-fast: false`): `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked`. Cache `Swatinem/rust-cache@v2`. |
+| `cache-warm.yml` (Cache warm) | `push` to `main` touching `Cargo.lock`, `**/Cargo.toml`, `cache-warm.yml` or `release.yml`; `workflow_dispatch` | Builds `--profile dist` for the four targets and saves the cache with `shared-key: dist-<target>`. It exists because a tag can only restore caches from the default branch. |
+| `release.yml` (Release) | Tags `v*`; `workflow_dispatch` (dry run) | See [Releases](#releases). |
 
-Concurrencia: CI usa `group: ci-${{ github.ref }}` con `cancel-in-progress: true` (un push nuevo a la misma rama cancela el anterior); Cache warm cancela también; Release usa `cancel-in-progress: false`.
+Concurrency: CI uses `group: ci-${{ github.ref }}` with `cancel-in-progress: true` (a new push to the same branch cancels the previous one); Cache warm also cancels; Release uses `cancel-in-progress: false`.
 
-Un cambio que sólo toca Markdown o `packaging/icons/` no ejecuta CI.
+A change that only touches Markdown or `packaging/icons/` does not run CI.
 
 ## Releases
 
-Assets que produce `release.yml` (los nombres los consume el actualizador):
+Assets produced by `release.yml` (the updater consumes these names):
 
-| Plataforma | Runner / target | Assets |
+| Platform | Runner / target | Assets |
 | --- | --- | --- |
 | macOS Apple silicon | `macos-latest`, `aarch64-apple-darwin` | `gentle-shell-gpui-<v>-macos-aarch64.dmg`, `.zip` |
-| macOS Intel | `macos-latest` (compilación cruzada), `x86_64-apple-darwin` | `gentle-shell-gpui-<v>-macos-x86_64.dmg`, `.zip` |
+| macOS Intel | `macos-latest` (cross-compiled), `x86_64-apple-darwin` | `gentle-shell-gpui-<v>-macos-x86_64.dmg`, `.zip` |
 | Windows | `windows-latest`, `x86_64-pc-windows-msvc` | `gentle-shell-gpui-<v>-windows-x86_64.zip` (exe), `…-windows-x86_64-setup.exe` |
 | Linux | `ubuntu-22.04`, `x86_64-unknown-linux-gnu` | `gentle-shell-gpui-<v>-linux-x86_64.tar.gz` |
-| Todas | `ubuntu-latest` | `SHA256SUMS` (`sha256sum` de los siete assets) |
+| All | `ubuntu-latest` | `SHA256SUMS` (`sha256sum` of the seven assets) |
 
-Pasos del workflow:
+Workflow steps:
 
-1. `version`: lee `[workspace.package] version` de `Cargo.toml`. En un tag, falla si `GITHUB_REF_NAME != v<version>`; en `workflow_dispatch`, el input `version` opcional debe coincidir.
-2. `build`: restaura la caché `dist-<target>` (`save-if: false`), instala librerías en Linux y empaqueta: `packaging/macos/bundle.sh <target> <v>` (con `MACOSX_DEPLOYMENT_TARGET=11.0`, firma ad hoc `codesign --sign -`, zip con `ditto` sin `._*`, DMG con acceso directo a `/Applications`), `packaging/linux/package.sh <target> <v>` (binario, `.desktop`, `icon-512.png`), y en Windows `cargo build --profile dist`, `Compress-Archive` y `ISCC` sobre `packaging/windows/installer.iss` (instala Inno Setup con `choco` si falta).
-3. `release`: comprueba que estén los siete assets, escribe `SHA256SUMS` y, sólo en `push`, publica con `gh release create --verify-tag --generate-notes`, título `Gentle Shell <v>`. Una versión con `-` (`0.2.0-rc.1`) sale como `--prerelease`. En `workflow_dispatch` sube todo como artefacto `release-dry-run-<v>` sin publicar.
+1. `version`: reads `[workspace.package] version` from `Cargo.toml`. On a tag, it fails if `GITHUB_REF_NAME != v<version>`; on `workflow_dispatch`, the optional `version` input must match.
+2. `build`: restores the `dist-<target>` cache (`save-if: false`), installs libraries on Linux and packages: `packaging/macos/bundle.sh <target> <v>` (with `MACOSX_DEPLOYMENT_TARGET=11.0`, ad hoc signing `codesign --sign -`, zip with `ditto` without `._*`, DMG with a shortcut to `/Applications`), `packaging/linux/package.sh <target> <v>` (binary, `.desktop`, `icon-512.png`), and on Windows `cargo build --profile dist`, `Compress-Archive` and `ISCC` on `packaging/windows/installer.iss` (installs Inno Setup with `choco` if missing).
+3. `release`: checks that all seven assets are present, writes `SHA256SUMS` and, only on `push`, publishes with `gh release create --verify-tag --generate-notes`, title `Gentle Shell <v>`. A version with `-` (`0.2.0-rc.1`) is published as `--prerelease`. On `workflow_dispatch` it uploads everything as a `release-dry-run-<v>` artifact without publishing.
 
-### Cortar una release
+### Cutting a release
 
-1. En `main` actualizado, cambia `version` en `[workspace.package]` del `Cargo.toml` raíz y ejecuta `cargo check` para que `Cargo.lock` se actualice.
-2. Commit sólo con esos dos archivos: `release: X.Y.Z`. Push a `main`.
-3. Espera a que CI de `main` pase (y Cache warm, que se dispara porque cambió `Cargo.lock`, para que el tag reutilice la caché).
-4. Opcional: dry run desde Actions → Release → Run workflow.
+1. On an up-to-date `main`, change `version` in `[workspace.package]` of the root `Cargo.toml` and run `cargo check` so `Cargo.lock` updates.
+2. Commit only those two files: `release: X.Y.Z`. Push to `main`.
+3. Wait for CI on `main` to pass (and Cache warm, which triggers because `Cargo.lock` changed, so the tag reuses the cache).
+4. Optional: dry run from Actions → Release → Run workflow.
 5. `git tag vX.Y.Z && git push origin vX.Y.Z`.
-6. Revisa que la release tenga los ocho archivos.
+6. Check that the release has all eight files.
 
-### Cómo los consume el actualizador
+### How the updater consumes them
 
 `crates/app/src/features/app_update/`:
 
-| Módulo | Papel |
+| Module | Role |
 | --- | --- |
-| `network.rs` | `GET https://api.github.com/repos/ismaelosuna7824/gentle-shell-gpui/releases/latest`, descarga con SHA-256 y progreso. |
-| `release.rs` | Sólo cuenta releases publicadas, no `draft`, no `prerelease`, con `vX.Y.Z` estable. `asset_name(version, os, arch)` elige `macos-<arch>.zip`, `windows-x86_64.zip` o `linux-x86_64.tar.gz` (no hay asset para Linux/Windows aarch64). `expected_digest` lee `SHA256SUMS`. `is_dev`: `0.0.0` o versión no estable no comprueba al arrancar. |
-| `cache.rs` | `app-update.json`: caché de 6 h (`TTL_MS`) y versión saltada. |
-| `archive.rs` | Extracción segura de zip y tar.gz. |
-| `install.rs` | `install_target`: en macOS reemplaza el `.app` que contiene al ejecutable (sin bundle, o en `AppTranslocation`, no instala); en Linux el ejecutable (conserva permisos); en Windows el exe en uso. En Windows y Linux rechaza ejecutables bajo `target/[<triple>/]{debug,release,dist}/` (`in_cargo_target`). |
-| `relaunch.rs` | Proceso que reabre la app al salir; `remove_leftovers` borra al arrancar el `gentle-shell-gpui.exe.old` que deja una actualización en Windows. |
+| `network.rs` | `GET https://api.github.com/repos/ismaelosuna7824/gentle-shell-gpui/releases/latest`, download with SHA-256 and progress. |
+| `release.rs` | Only counts published releases, not `draft`, not `prerelease`, with a stable `vX.Y.Z`. `asset_name(version, os, arch)` picks `macos-<arch>.zip`, `windows-x86_64.zip` or `linux-x86_64.tar.gz` (there is no asset for Linux/Windows aarch64). `expected_digest` reads `SHA256SUMS`. `is_dev`: `0.0.0` or a non-stable version does not check at startup. |
+| `cache.rs` | `app-update.json`: 6 h cache (`TTL_MS`) and skipped version. |
+| `archive.rs` | Safe zip and tar.gz extraction. |
+| `install.rs` | `install_target`: on macOS replaces the `.app` that contains the executable (without a bundle, or under `AppTranslocation`, it does not install); on Linux the executable (keeps permissions); on Windows the running exe. On Windows and Linux it rejects executables under `target/[<triple>/]{debug,release,dist}/` (`in_cargo_target`). |
+| `relaunch.rs` | Process that reopens the app on exit; `remove_leftovers` deletes at startup the `gentle-shell-gpui.exe.old` left by an update on Windows. |
 
-Por eso: renombrar un asset, cambiar el formato de `SHA256SUMS` o el nombre del binario (`BINARY = "gentle-shell-gpui"`) rompe las actualizaciones de las versiones ya instaladas. Las prereleases nunca se ofrecen dentro de la app. El DMG y el `setup.exe` no los usa el actualizador.
+Therefore: renaming an asset, changing the `SHA256SUMS` format or the binary name (`BINARY = "gentle-shell-gpui"`) breaks updates for versions already installed. Prereleases are never offered inside the app. The updater does not use the DMG or the `setup.exe`.
 
-## Notas por plataforma
+## Platform notes
 
 ### macOS
 
-- `packaging/macos/Info.plist` (identificador `io.github.ismaelosuna7824.gentle-shell-gpui`, `@VERSION@` y `@MIN_MACOS@` sustituidos por `bundle.sh`). `GENTLE_BIN=<ruta>` empaqueta un binario ya compilado.
-- Fuera de un `.app` (`cargo run`), `platform/icons.rs` (`set_dock_icon`) pone el ícono del Dock en tiempo de ejecución con `icon-512.png`; dentro del bundle usa `AppIcon.icns`.
-- Firma ad hoc, sin notarizar: el primer arranque lo bloquea Gatekeeper (README). `bundle.sh` limpia xattrs antes de firmar porque romperían el sello.
+- `packaging/macos/Info.plist` (identifier `io.github.ismaelosuna7824.gentle-shell-gpui`, `@VERSION@` and `@MIN_MACOS@` replaced by `bundle.sh`). `GENTLE_BIN=<path>` packages an already built binary.
+- Outside a `.app` (`cargo run`), `platform/icons.rs` (`set_dock_icon`) sets the Dock icon at runtime from `icon-512.png`; inside the bundle it uses `AppIcon.icns`.
+- Ad hoc signing, not notarized: Gatekeeper blocks the first launch (README). `bundle.sh` clears xattrs before signing because they would break the seal.
 
 ### Windows
 
-- `main.rs`: `#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]`. Un build release no tiene consola (no hay `stderr` visible); un build debug sí.
-- Todo proceso hijo pasa por `pi_rpc::command` (`CREATE_NO_WINDOW`) para no abrir ventanas de consola.
-- `crates/app/build.rs` incrusta `packaging/icons/icon.ico` (recurso 1, el que GPUI usa para la ventana) y la versión del paquete con `embed-resource`.
-- `installer.iss`: por usuario (`PrivilegesRequired=lowest`), en `{localappdata}\Programs\Gentle Shell`, `CloseApplications=yes`, `RestartApplications=yes`. No cambies `AppId`: Windows identifica las actualizaciones y el desinstalador por él.
+- `main.rs`: `#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]`. A release build has no console (no visible `stderr`); a debug build does.
+- Every child process goes through `pi_rpc::command` (`CREATE_NO_WINDOW`) so it does not open console windows.
+- `crates/app/build.rs` embeds `packaging/icons/icon.ico` (resource 1, the one GPUI uses for the window) and the package version with `embed-resource`.
+- `installer.iss`: per user (`PrivilegesRequired=lowest`), in `{localappdata}\Programs\Gentle Shell`, `CloseApplications=yes`, `RestartApplications=yes`. Do not change `AppId`: Windows identifies updates and the uninstaller by it.
 
 ### Linux
 
-- El ícono de ventana sólo lo aplica GPUI en X11: `platform/icons.rs` (`window_icon`) lo reduce a 128 px por los límites de `_NET_WM_ICON`. `app_id` es `dev.gentle-shell.gpui`, igual que `StartupWMClass` en `packaging/linux/gentle-shell-gpui.desktop`.
-- El navegador integrado usa WebKitGTK como hijo de la ventana X11 (`wry` con `x11`, `gtk`); Wayland no tiene ventanas hijas.
-- En ejecución hace falta `libwebkit2gtk-4.1-0`.
+- GPUI only applies the window icon on X11: `platform/icons.rs` (`window_icon`) scales it down to 128 px because of `_NET_WM_ICON` limits. `app_id` is `dev.gentle-shell.gpui`, the same as `StartupWMClass` in `packaging/linux/gentle-shell-gpui.desktop`.
+- The built-in browser uses WebKitGTK as a child of the X11 window (`wry` with `x11`, `gtk`); Wayland has no child windows.
+- At runtime `libwebkit2gtk-4.1-0` is required.
 
-### Íconos
+### Icons
 
-Fuente: el arte `ROSE` de `crates/app/src/shared/banner.rs`. Tras editarlo, en macOS:
+Source: the `ROSE` art in `crates/app/src/shared/banner.rs`. After editing it, on macOS:
 
 ```bash
 packaging/icons/generate.sh
 ```
 
-Ejecuta `generate.py` (SVG), `render.swift` (PNG en varios tamaños), `iconutil` (`AppIcon.icns`) e `ico.py` (`icon.ico`), y escribe `icon-1024.png`, `icon-512.png`. CI nunca lo ejecuta: commitea los resultados. `icon-512.png` se incrusta en el binario con `include_bytes!`, así que un cambio de ícono requiere recompilar.
+It runs `generate.py` (SVG), `render.swift` (PNG in several sizes), `iconutil` (`AppIcon.icns`) and `ico.py` (`icon.ico`), and writes `icon-1024.png`, `icon-512.png`. CI never runs it: commit the results. `icon-512.png` is embedded in the binary with `include_bytes!`, so an icon change requires a rebuild.
 
-## Solución de problemas
+## Troubleshooting
 
-| Síntoma | Causa y salida |
+| Symptom | Cause and fix |
 | --- | --- |
-| `cargo run` no abre ventana y termina | Otra instancia (tu app instalada) recibió la petición. Usa un `HOME` temporal. |
-| `gentle-shell was not found on your PATH` | `resolve_backend` no encontró launcher. Instala `gentle-pi`, o define `GENTLE_SHELL_BIN`. |
-| Desde Finder/`.desktop` no se encuentra Node | La app hereda un PATH mínimo. Comprueba que tu shell de login (`$SHELL -l -i`) exporte el PATH de nvm/fnm/mise y responda en menos de 5 s; si imprime mucho, no importa (se recorta entre marcadores). Tras instalar algo, `pi_rpc::forget_cached()` recalcula el PATH. |
-| Perfiles, rutas de modelos o permisos dejaron de aplicarse tras actualizar Gentle Shell a 4.7 | La instalación autocontenida lee su config de `<prefix>/config/gentle-ai`, no de `~/.gentle-shell/gentle-ai`. `main.rs` llama a `pi_rpc::adopt_standalone_config()` al arrancar: copia una vez lo que falta (no sobrescribe; deja el marcador `.adopted-standalone-config`) e informa por `stderr`. |
-| Un global `gentle-pi` del PATH no se usa | Gana la instalación autocontenida (`bundled_launcher`) salvo que definas `GENTLE_SHELL_BIN`. |
-| La bienvenida aparece en cada arranque | Falta `onboarding.done` en `settings.json` del data dir (normal con `HOME` temporal). |
-| La app no ofrece o no instala una actualización | No la ofrece: versión de desarrollo (`is_dev`), caché de 6 h en `app-update.json`, versión saltada, o la última release es prerelease. No la instala: binario fuera de un `.app` (macOS) o bajo `target/` (`install_target`). |
-| Iniciar o cerrar sesión de un proveedor reinicia las pestañas | El backend sólo lee credenciales al arrancar; es intencional (README, Providers). |
-| CI falla sólo en Linux | Faltan librerías del sistema o código bajo `cfg(target_os = "linux")` que no se compila en macOS; revisa los avisos de clippy de esa plataforma. |
-| `--locked` falla en CI | `Cargo.lock` no se commiteó tras cambiar dependencias o la versión. |
+| `cargo run` opens no window and exits | Another instance (your installed app) received the request. Use a temporary `HOME`. |
+| `gentle-shell was not found on your PATH` | `resolve_backend` found no launcher. Install `gentle-pi`, or set `GENTLE_SHELL_BIN`. |
+| Node is not found when launched from Finder/`.desktop` | The app inherits a minimal PATH. Check that your login shell (`$SHELL -l -i`) exports the nvm/fnm/mise PATH and responds in under 5 s; extra output does not matter (it is trimmed between markers). After installing something, `pi_rpc::forget_cached()` recomputes the PATH. |
+| Profiles, model routes or permissions stopped applying after updating Gentle Shell to 4.7 | The standalone install reads its config from `<prefix>/config/gentle-ai`, not from `~/.gentle-shell/gentle-ai`. `main.rs` calls `pi_rpc::adopt_standalone_config()` at startup: it copies what is missing once (does not overwrite; leaves the `.adopted-standalone-config` marker) and reports on `stderr`. |
+| A global `gentle-pi` on the PATH is not used | The standalone install (`bundled_launcher`) wins unless you set `GENTLE_SHELL_BIN`. |
+| The welcome screen appears on every launch | `onboarding.done` is missing from `settings.json` in the data dir (normal with a temporary `HOME`). |
+| The app does not offer or does not install an update | Not offered: development version (`is_dev`), 6 h cache in `app-update.json`, skipped version, or the latest release is a prerelease. Not installed: binary outside a `.app` (macOS) or under `target/` (`install_target`). |
+| Signing in to or out of a provider restarts the tabs | The backend only reads credentials at startup; this is intentional (README, Providers). |
+| CI fails only on Linux | Missing system libraries, or code under `cfg(target_os = "linux")` that is not compiled on macOS; check the clippy warnings for that platform. |
+| `--locked` fails in CI | `Cargo.lock` was not committed after changing dependencies or the version. |
 
 ## Checklist
 
 ### Pull request
 
-- [ ] Una funcionalidad o corrección por PR; refactors aparte y marcados `(no behavior change)`.
-- [ ] Código en la carpeta de su funcionalidad; lógica pura en `gentle-core` con pruebas.
-- [ ] Pruebas para reglas, límites o errores nuevos; las de archivos usan directorios temporales únicos.
+- [ ] One feature or fix per PR; refactors separate and marked `(no behavior change)`.
+- [ ] Code in its feature's folder; pure logic in `gentle-core` with tests.
+- [ ] Tests for new rules, limits or errors; file-based ones use unique temporary directories.
 - [ ] `cargo fmt`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo test --workspace --locked`.
-- [ ] Prueba de humo en un `HOME` temporal; capturas sólo de la ventana del sandbox.
-- [ ] Sin código temporal para alcanzar estados.
-- [ ] `Cargo.lock` incluido si cambió.
-- [ ] `architecture.md` o un ADR actualizado si cambia una frontera; README si cambia algo visible.
-- [ ] Commits con prefijo `feat|fix|refactor|test|docs(<área>):`.
+- [ ] Smoke test in a temporary `HOME`; screenshots only of the sandbox window.
+- [ ] No temporary code for reaching states.
+- [ ] `Cargo.lock` included if it changed.
+- [ ] `architecture.md` or an ADR updated if a boundary changes; README if something visible changes.
+- [ ] Commits prefixed `feat|fix|refactor|test|docs(<area>):`.
 
 ### Release
 
-- [ ] `main` verde en CI.
-- [ ] `version` cambiada en `[workspace.package]`, `cargo check` ejecutado, commit `release: X.Y.Z` con `Cargo.toml` y `Cargo.lock`.
-- [ ] CI de ese commit verde (y Cache warm terminado).
-- [ ] Opcional: dry run de Release.
-- [ ] Tag `vX.Y.Z` igual a la versión del workspace, empujado.
-- [ ] Release publicada con 7 assets y `SHA256SUMS`; nombres sin cambiar.
-- [ ] Si es estable, la versión anterior instalada ofrece la actualización (Configuración → App → Check for updates).
+- [ ] `main` green in CI.
+- [ ] `version` changed in `[workspace.package]`, `cargo check` run, `release: X.Y.Z` commit with `Cargo.toml` and `Cargo.lock`.
+- [ ] CI for that commit green (and Cache warm finished).
+- [ ] Optional: Release dry run.
+- [ ] Tag `vX.Y.Z` matching the workspace version, pushed.
+- [ ] Release published with 7 assets and `SHA256SUMS`; names unchanged.
+- [ ] If stable, the previously installed version offers the update (Settings → App → Check for updates).

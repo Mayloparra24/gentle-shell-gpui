@@ -1,51 +1,51 @@
 # AGENTS.md
 
-Contexto corto para quien trabaje en este repositorio, persona o agente de IA. El detalle está en [`docs/`](docs/README.md); aquí sólo lo que hay que saber antes de tocar código.
+Short context for anyone working in this repository, person or AI agent. The details live in [`docs/`](docs/README.md); this file only covers what you need to know before touching code.
 
-## Qué es
+## What it is
 
-Aplicación de escritorio en Rust (GPUI + gpui-kit) para los agentes de Gentle Shell. Cada pestaña de agente es un proceso `gentle-shell --mode rpc` con el que la app habla por JSONL (`crates/pi-rpc`). Corre en macOS, Windows y Linux.
+A desktop app in Rust (GPUI + gpui-kit) for Gentle Shell's coding agents. Each agent tab is a `gentle-shell --mode rpc` process the app talks to over JSONL (`crates/pi-rpc`). It runs on macOS, Windows and Linux.
 
-## Comandos
+## Commands
 
 ```bash
-cargo run -p gentle-shell-gpui -- [CARPETA] [-p "texto"]   # -p "!cmd" corre un comando de shell
+cargo run -p gentle-shell-gpui -- [FOLDER] [-p "text"]   # -p "!cmd" runs a shell command
 cargo fmt
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test
 ```
 
-Antes de cada commit: `fmt`, `clippy` y `test` en verde. El CI corre `clippy` y `test` en los tres sistemas operativos.
+Before every commit: `fmt`, `clippy` and `test` must pass. CI runs `clippy` and `test` on all three operating systems.
 
-## Dónde va cada cosa
+## Where things go
 
-| Necesitas… | Va en |
+| You need… | It goes in |
 | --- | --- |
-| Una pantalla o funcionalidad nueva | `crates/app/src/features/<nombre>/` (carpeta propia, entrada `mod.rs`) |
-| Lógica pura: parsers, reglas, cálculos, formato | `crates/core/src/` (`gentle-core`), con sus tests |
-| Hablar con el proceso de Gentle Shell, resolver su lanzador o sus homes | `crates/pi-rpc/src/` |
-| Una pieza visual usada por varias pantallas | `crates/app/src/shared/` (sobre todo `ui.rs`) |
-| Algo específico del sistema operativo | `crates/app/src/platform/` |
+| A new screen or feature | `crates/app/src/features/<name>/` (its own folder, `mod.rs` as the entry) |
+| Pure logic: parsers, rules, calculations, formatting | `crates/core/src/` (`gentle-core`), with its tests |
+| Talking to the Gentle Shell process, resolving its launcher or its homes | `crates/pi-rpc/src/` |
+| A visual piece used by several screens | `crates/app/src/shared/` (mostly `ui.rs`) |
+| Something specific to one operating system | `crates/app/src/platform/` |
 
-Reglas de dependencias y anatomía de una funcionalidad: [`docs/architecture.md`](docs/architecture.md).
+Dependency rules and the anatomy of a feature: [`docs/architecture.md`](docs/architecture.md).
 
-## Reglas
+## Rules
 
-- **Diseño:** usa los tokens y componentes de `crates/app/src/shared/ui.rs`; no inventes colores, bordes ni animaciones sueltas. El chrome de la ventana no lleva líneas: separa con espacio y cambios de superficie. Dentro de una pantalla superpuesta sólo existen las líneas finas de `ui::screen_header` y los pies. Ver [`docs/design-system.md`](docs/design-system.md).
-- **Refactors sin cambio funcional** ([ADR 0003](docs/adr/0003-refactors-sin-cambio-funcional.md)): mover código no cambia lo que hace; un arreglo encontrado de paso va en su propio commit.
-- **Sin abstracciones de una sola implementación:** no crees traits, adaptadores ni crates nuevos sin una segunda necesidad real.
-- **Tests:** la lógica pura se prueba en `gentle-core`; los efectos de archivo, con directorios temporales. Nada de tests que sólo repiten la implementación.
-- **Configuración de Gentle Shell:** la app lee y escribe archivos que también son de Gentle Shell. Antes de tocar uno, revisa quién es su dueño en [`docs/integrations.md`](docs/integrations.md).
-- **Windows y Linux:** el código bajo `#[cfg(windows)]` o `#[cfg(target_os = "linux")]` no compila en macOS; cuida imports y rutas ahí, y confía en el CI para comprobarlo.
+- **Design:** use the tokens and components in `crates/app/src/shared/ui.rs`; don't invent one-off colors, borders or animations. The window chrome has no lines: separate with space and surface changes. Inside an overlay screen, the only lines are the thin ones from `ui::screen_header` and the footers. See [`docs/design-system.md`](docs/design-system.md).
+- **Behavior-preserving refactors** ([ADR 0003](docs/adr/0003-behavior-preserving-refactors.md)): moving code doesn't change what it does; a fix found along the way goes in its own commit.
+- **No single-implementation abstractions:** don't create traits, adapters or new crates without a real second need.
+- **Tests:** pure logic is tested in `gentle-core`; file effects use temporary directories. No tests that only restate the implementation.
+- **Gentle Shell configuration:** the app reads and writes files that Gentle Shell also owns. Before touching one, check who owns it in [`docs/integrations.md`](docs/integrations.md).
+- **Windows and Linux:** code under `#[cfg(windows)]` or `#[cfg(target_os = "linux")]` doesn't compile on macOS; be careful with imports and paths there, and rely on CI to check it.
 
-## Probar sin romper nada
+## Testing without breaking anything
 
-- **No uses la app real de nadie para probar:** nunca le mandes clics ni teclas a una app que está usando una persona.
-- **Abre una copia aislada (macOS y Linux):** `HOME=$(mktemp -d) target/release/gentle-shell-gpui` abre la app como primera vez (bienvenida incluida), sin tocar datos reales ni chocar con la instancia abierta. En Windows los datos van a `%APPDATA%`, así que un `HOME` temporal no aísla.
-- **Andamios temporales:** si para llegar a un estado necesitas cambiar código (un temporizador, una variable de entorno), quítalo antes del commit y verifica con `grep` que no quedó.
+- **Never test on someone's real app:** never send clicks or keystrokes to an app a person is using.
+- **Open an isolated copy (macOS and Linux):** `HOME=$(mktemp -d) target/release/gentle-shell-gpui` opens the app as a first run (welcome included), without touching real data or clashing with the running instance. On Windows the data goes to `%APPDATA%`, so a temporary `HOME` doesn't isolate it.
+- **Temporary scaffolding:** if reaching a state needs a code change (a timer, an environment variable), remove it before committing and check with `grep` that nothing is left.
 
-Detalle, variantes de "máquina limpia" y capturas: [`docs/development.md`](docs/development.md).
+Details, "clean machine" variants and screenshots: [`docs/development.md`](docs/development.md).
 
-## Publicar
+## Releasing
 
-`[workspace.package] version` en `Cargo.toml` → commit `release: X.Y.Z` → CI de `main` en verde → tag `vX.Y.Z` → el workflow `release.yml` compila y publica. Pasos completos en [`docs/development.md`](docs/development.md).
+`[workspace.package] version` in `Cargo.toml` → commit `release: X.Y.Z` → `main` CI green → tag `vX.Y.Z` → the `release.yml` workflow builds and publishes. Full steps in [`docs/development.md`](docs/development.md).
