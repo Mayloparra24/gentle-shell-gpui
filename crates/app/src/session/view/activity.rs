@@ -51,7 +51,8 @@ impl SessionView {
                 _ => None,
             });
         let provider = self
-            .model
+            .models
+            .current
             .as_ref()
             .map_or_else(|| "the agent".to_string(), |m| m.provider.clone());
 
@@ -75,7 +76,7 @@ impl SessionView {
                     )
                 })
                 .child(div().h(px(10.)).w(px(1.)).bg(ui::border_strong()))
-                .map(|this| match (waiting, self.phase) {
+                .map(|this| match (waiting, self.activity.phase) {
                     (Some(_), _) => this.child(
                         div()
                             .text_color(ui::petal())
@@ -100,6 +101,7 @@ impl SessionView {
 
         let width = self.pane_width.get();
         let statuses: Vec<(String, String)> = self
+            .extension
             .statuses
             .iter()
             .filter(|(k, _)| !matches!(k.as_str(), "gentle:mode" | "gentle:yolo" | "gentle-jobs"))
@@ -111,7 +113,7 @@ impl SessionView {
             statuses
                 .iter()
                 .map(|(_, s)| s.clone())
-                .chain(self.rate_limits.values().map(|l| l.text.clone()))
+                .chain(self.extension.rate_limits.values().map(|l| l.text.clone()))
                 .collect()
         } else {
             Vec::new()
@@ -147,11 +149,14 @@ impl SessionView {
                         .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx)),
                 )
             })
-            .when(!self.jobs.is_empty(), |this| {
+            .when(!self.activity.jobs.is_empty(), |this| {
                 this.child(self.render_jobs_chip())
             })
-            .when(self.queued > 0, |this| {
-                this.child(ui::chip(format!("{} queued", self.queued), ui::warning()))
+            .when(self.activity.queued > 0, |this| {
+                this.child(ui::chip(
+                    format!("{} queued", self.activity.queued),
+                    ui::warning(),
+                ))
             })
             // Tern-style: jobs, widgets and last-response usage live in chips
             // here instead of a side panel. The task list floats at the top of
@@ -161,31 +166,31 @@ impl SessionView {
                 this.children(self.render_usage_chip())
             })
             .when(
-                self.agents.as_ref().is_some_and(|a| !a.tasks.is_empty()),
+                self.activity
+                    .agents
+                    .as_ref()
+                    .is_some_and(|a| !a.tasks.is_empty()),
                 |this| this.child(self.render_helpers_chip(cx)),
             )
-            .children(
-                self.rate_limits
-                    .iter()
-                    .filter(|_| !collapse)
-                    .map(|(window, limit)| {
-                        let color = if limit.percent >= 95 {
-                            ui::danger()
-                        } else if limit.percent >= 80 {
-                            ui::warning()
-                        } else {
-                            ui::muted()
-                        };
-                        let tip = limit.text.clone();
-                        div()
-                            .id(ElementId::Name(format!("limit-{window}").into()))
-                            .child(ui::chip(
-                                format!("{} {}%", limit_label(window), limit.percent),
-                                color,
-                            ))
-                            .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
-                    }),
-            )
+            .children(self.extension.rate_limits.iter().filter(|_| !collapse).map(
+                |(window, limit)| {
+                    let color = if limit.percent >= 95 {
+                        ui::danger()
+                    } else if limit.percent >= 80 {
+                        ui::warning()
+                    } else {
+                        ui::muted()
+                    };
+                    let tip = limit.text.clone();
+                    div()
+                        .id(ElementId::Name(format!("limit-{window}").into()))
+                        .child(ui::chip(
+                            format!("{} {}%", limit_label(window), limit.percent),
+                            color,
+                        ))
+                        .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                },
+            ))
             .child(self.render_mode_picker(cx));
 
         h_flex()
@@ -205,14 +210,15 @@ impl SessionView {
 
     /// Background jobs: "⧗ 2 running" or "Jobs 3", with the list on click.
     fn render_jobs_chip(&self) -> impl IntoElement + use<> {
-        let running = self.jobs.iter().filter(|j| j.is_running()).count();
-        let total = self.jobs.len();
+        let running = self.activity.jobs.iter().filter(|j| j.is_running()).count();
+        let total = self.activity.jobs.len();
         let color = if running > 0 {
             ui::accent()
         } else {
             ui::muted()
         };
         let rows: Vec<(String, &'static str, Hsla, String)> = self
+            .activity
             .jobs
             .iter()
             .take(20)
@@ -278,9 +284,13 @@ impl SessionView {
     }
 
     /// Extension widgets (`setWidget`): one chip each, its lines on click.
+    /// Gentle Shell's YOLO banner (`gentle:yolo`) is left out: the
+    /// permission chip already shows the mode.
     fn render_widget_chips(&self) -> Vec<AnyElement> {
-        self.widgets
+        self.extension
+            .widgets
             .iter()
+            .filter(|(key, _)| key.as_str() != "gentle:yolo")
             .map(|(key, lines)| {
                 let lines = lines.clone();
                 let title = key.clone();
@@ -314,7 +324,7 @@ impl SessionView {
     /// Helpers (subagents): "1/3" active of total; the card lists each with
     /// its status, task and last step, and opens the full Agents window.
     fn render_helpers_chip(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let (active, rows) = match &self.agents {
+        let (active, rows) = match &self.activity.agents {
             Some(activity) => (
                 activity.summary.running + activity.summary.waiting + activity.summary.queued,
                 activity
