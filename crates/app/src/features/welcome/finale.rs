@@ -1,34 +1,66 @@
-//! The entrance after Continue: the green banner glides to the center with a
-//! little spring, rings ripple out of it, pixel sparks burst around it,
-//! "Welcome to Gentle Shell." comes in, and the whole screen dissolves into
-//! the app. Paint and layout only; it takes no input.
+//! The entrance after Continue, in three beats: Gentle Shell's banner writes
+//! itself in again in slow motion, the rose blows pixel kisses (and a few
+//! hearts) that float up and pop, then "Sexyyyy" springs in letter by
+//! letter, the y's stretching one after another. The screen then dissolves
+//! into the app. Paint and layout only; it takes no input.
 
-use std::f32::consts::TAU;
 use std::time::Duration;
 
-use gpui_kit::component::v_flex;
+use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
-use crate::shared::banner::{BannerConfig, Palette, banner};
+use crate::shared::banner::{BannerConfig, banner};
 use crate::shared::ui;
 
 /// From Continue to the app.
-pub(super) const FINALE: Duration = Duration::from_millis(3000);
+pub(super) const FINALE: Duration = Duration::from_millis(5600);
 /// The dissolve starts this far in (0..1).
-pub(super) const DISSOLVE: f32 = 0.7;
+pub(super) const DISSOLVE: f32 = 0.86;
 
-/// The box the banner, rings and sparks share.
+/// The box the banner and the kisses share.
 const STAGE_W: f32 = 760.;
-const STAGE_H: f32 = 360.;
+const STAGE_H: f32 = 300.;
 const BANNER_SCALE: f32 = 2.6;
-const RINGS: usize = 3;
-const SPARKS: usize = 96;
+/// The banner is ~175 px wide per unit of scale; the rose is its left part.
+const BANNER_W: f32 = 175. * BANNER_SCALE;
+
+/// The slow-motion letters: when they start and how long they take.
+const LETTERS_AT: f32 = 0.25;
+const LETTERS_FOR: f32 = 2.2;
+/// The kisses fly from here (seconds), one after another.
+const KISSES_AT: f32 = 2.0;
+const KISS_GAP: f32 = 0.16;
+const KISS_LIFE: f32 = 1.7;
+const KISSES: usize = 14;
+/// "Sexyyyy" starts here (seconds), a letter at a time.
+const WORD_AT: f32 = 3.0;
+const LETTER_GAP: f32 = 0.11;
+const WORD: &str = "Sexyyyy";
+
+/// Pixel lips: `#` the lips, `o` the line between them.
+const LIPS: [&str; 6] = [
+    "..###.###..",
+    ".#########.",
+    "###########",
+    "#ooooooooo#",
+    ".#########.",
+    "..#######..",
+];
+/// A pixel heart.
+const HEART: [&str; 6] = [
+    ".##.##.", "#######", "#######", ".#####.", "..###..", "...#...",
+];
 
 fn ease_out(t: f32) -> f32 {
     1. - (1. - t.clamp(0., 1.)).powi(3)
 }
 
-/// A stable pseudo-random value in 0..1 for spark `i`'s `salt`.
+fn smoothstep(t: f32) -> f32 {
+    let t = t.clamp(0., 1.);
+    t * t * (3. - 2. * t)
+}
+
+/// A stable pseudo-random value in 0..1 for kiss `i`'s `salt`.
 fn noise(i: usize, salt: u32) -> f32 {
     let mut x = (i as u32).wrapping_mul(0x9E37_79B9) ^ salt.wrapping_mul(0x85EB_CA6B);
     x ^= x >> 15;
@@ -37,167 +69,204 @@ fn noise(i: usize, salt: u32) -> f32 {
     (x & 0xFFFF) as f32 / 65535.
 }
 
-/// The banner in the center, the rings and the sparks around it.
-fn stage(config: BannerConfig) -> impl IntoElement {
-    let mut config = config;
-    config.palette = Palette::Green;
-    // A burst of light out of the rose, under everything else: stacked
-    // translucent discs, so it fades toward its edge instead of ending in one.
-    let flash = (0..5usize).map(|layer| {
-        let spread = 0.45 + layer as f32 * 0.14;
-        div()
-            .absolute()
-            .rounded_full()
-            .bg(ui::success())
-            .with_animation(
-                ("finale-flash", layer),
-                Animation::new(Duration::from_millis(1200)),
-                move |el, t| {
-                    let size = (120. + 900. * ease_out(t)) * spread;
-                    el.size(px(size))
-                        .left(px((STAGE_W - size) / 2.))
-                        .top(px((STAGE_H - size) / 2.))
-                        .opacity(0.07 * (1. - t).powi(2))
-                },
-            )
-    });
-    let rings = (0..RINGS).map(|i| {
-        let color = if i % 2 == 0 {
-            ui::success()
-        } else {
-            ui::petal()
-        };
-        div()
-            .absolute()
-            .rounded_full()
-            .border(px(3.))
-            .border_color(color)
-            .with_animation(
-                ("finale-ring", i),
-                Animation::new(Duration::from_millis(1700)),
-                move |el, t| {
-                    // Each ring leaves a little after the one before it.
-                    let local = ((t * 1.7 - i as f32 * 0.22) / 1.1).clamp(0., 1.);
-                    let size = 90. + 700. * ease_out(local);
-                    let alpha = if local <= 0. {
-                        0.
-                    } else {
-                        (1. - local).powf(1.3)
-                    };
-                    el.size(px(size))
-                        .left(px((STAGE_W - size) / 2.))
-                        .top(px((STAGE_H - size) / 2.))
-                        .opacity(alpha)
-                },
-            )
-    });
-    let sparks = div().absolute().inset_0().with_animation(
-        "finale-sparks",
-        Animation::new(Duration::from_millis(2000)),
-        |el, t| {
+/// Paint `sprite` centered on `center`, `dot` px per pixel.
+fn paint_sprite(
+    window: &mut Window,
+    sprite: &[&str],
+    center: Point<Pixels>,
+    dot: f32,
+    body: Hsla,
+    line: Hsla,
+) {
+    let rows = sprite.len() as f32;
+    let cols = sprite[0].len() as f32;
+    let left = center.x - px(cols * dot / 2.);
+    let top = center.y - px(rows * dot / 2.);
+    for (y, row) in sprite.iter().enumerate() {
+        for (x, cell) in row.chars().enumerate() {
+            let color = match cell {
+                '#' => body,
+                'o' => line,
+                _ => continue,
+            };
+            let origin = point(left + px(x as f32 * dot), top + px(y as f32 * dot));
+            window.paint_quad(fill(
+                Bounds::new(origin, size(px(dot * 0.9), px(dot * 0.9))),
+                color,
+            ));
+        }
+    }
+}
+
+/// The kisses the rose blows: each leaves the rose, floats up swaying,
+/// swells, and fades. Every fourth one is a heart.
+fn kisses() -> impl IntoElement {
+    let total = FINALE.as_secs_f32();
+    div().absolute().inset_0().with_animation(
+        "finale-kisses",
+        Animation::new(FINALE),
+        move |el, t| {
+            let now = t * total;
             el.child(
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, _| {
                         let center = bounds.center();
-                        let colors = [ui::success(), ui::petal(), ui::champagne()];
-                        for i in 0..SPARKS {
-                            // Sparks leave in three quick waves.
-                            let start = [0.02, 0.1, 0.18][i % 3];
-                            let local = ((t - start) / (1. - start)).clamp(0., 1.);
-                            if local <= 0. || local >= 1. {
+                        // The rose sits at the banner's left.
+                        let rose = point(
+                            center.x - px(BANNER_W / 2. - BANNER_W * 0.15),
+                            center.y - px(STAGE_H * 0.08),
+                        );
+                        for i in 0..KISSES {
+                            let born = KISSES_AT + i as f32 * KISS_GAP;
+                            let age = (now - born) / KISS_LIFE;
+                            if !(0. ..1.).contains(&age) {
                                 continue;
                             }
-                            let angle = i as f32 / SPARKS as f32 * TAU + noise(i, 1) * 0.5;
-                            let reach = 180. + 320. * noise(i, 2);
-                            let distance = reach * ease_out(local);
-                            // A slight fall, like embers.
-                            let fall = 50. * local * local;
-                            let side = 4. + 5. * noise(i, 3);
-                            let alpha = (1. - local).powf(1.2);
-                            let color = colors[i % colors.len()];
-                            let x = center.x + px(angle.cos() * distance * 1.4);
-                            let y = center.y + px(angle.sin() * distance * 0.8 + fall);
-                            // A soft glow under each spark, then the spark.
-                            for (scale, strength) in [(2.2, 0.12), (1., 1.)] {
-                                let s = side * scale;
-                                window.paint_quad(
-                                    fill(
-                                        Bounds::new(
-                                            point(x - px(s / 2.), y - px(s / 2.)),
-                                            size(px(s), px(s)),
-                                        ),
-                                        color.opacity(alpha * strength),
-                                    )
-                                    .corner_radii(px(s / 2. * (scale - 1.).min(1.))),
-                                );
-                            }
+                            // Mostly up and outward, alternating sides.
+                            let side = if i % 2 == 0 { 1. } else { -1. };
+                            let drift = side * (60. + 180. * noise(i, 1));
+                            let rise = 160. + 160. * noise(i, 2);
+                            let sway = (age * 9. + i as f32).sin() * 10.;
+                            let travel = ease_out(age);
+                            let at = point(
+                                rose.x + px(drift * travel + sway),
+                                rose.y - px(rise * travel),
+                            );
+                            // Pops in, swells a little, fades at the end.
+                            let grow = ui::spring((age * 3.).min(1.));
+                            let dot = (2.2 + 1.6 * noise(i, 3)) * (0.4 + 0.6 * grow);
+                            let alpha = if age > 0.7 { (1. - age) / 0.3 } else { 1. };
+                            let heart = i % 4 == 3;
+                            let (body, line) = if heart {
+                                (ui::petal(), ui::petal())
+                            } else {
+                                (
+                                    hsla(340. / 360., 0.85, 0.62, alpha),
+                                    hsla(340. / 360., 0.70, 0.30, alpha),
+                                )
+                            };
+                            paint_sprite(
+                                window,
+                                if heart { &HEART } else { &LIPS },
+                                at,
+                                dot,
+                                body.opacity(alpha),
+                                line.opacity(alpha),
+                            );
                         }
                     },
                 )
                 .size_full(),
             )
         },
-    );
-    let mark = div().flex().items_center().justify_center().with_animation(
-        "finale-banner",
-        Animation::new(Duration::from_millis(900)),
-        move |el, t| {
-            let s = ui::spring(t);
-            el.child(banner(config, BANNER_SCALE + 0.5 * s, 1.))
-        },
-    );
-    div()
-        .relative()
-        .w(px(STAGE_W))
-        .h(px(STAGE_H))
-        .flex()
-        .items_center()
-        .justify_center()
-        .children(flash)
-        .children(rings)
-        .child(sparks)
-        .child(mark)
+    )
 }
 
-/// The whole entrance: the stage gliding down from where the banner sat,
-/// then the welcome line.
+/// The banner writing itself in again, slowly.
+fn letters(config: BannerConfig) -> impl IntoElement {
+    let total = FINALE.as_secs_f32();
+    div().flex().items_center().justify_center().with_animation(
+        "finale-letters",
+        Animation::new(FINALE),
+        move |el, t| {
+            let reveal = smoothstep((t * total - LETTERS_AT) / LETTERS_FOR);
+            el.child(banner(config, BANNER_SCALE, reveal))
+        },
+    )
+}
+
+/// A big kiss that lands beside the word once it's spelled out, like a
+/// lipstick mark.
+fn stamp() -> impl IntoElement {
+    const DOT: f32 = 5.;
+    let total = FINALE.as_secs_f32();
+    let at = WORD_AT + WORD.len() as f32 * LETTER_GAP + 0.45;
+    div()
+        .w(px(LIPS[0].len() as f32 * DOT))
+        .h(px(LIPS.len() as f32 * DOT))
+        .child(
+            canvas(
+                |_, _, _| {},
+                |bounds, _, window, _| {
+                    paint_sprite(
+                        window,
+                        &LIPS,
+                        bounds.center(),
+                        DOT,
+                        hsla(340. / 360., 0.85, 0.62, 1.),
+                        hsla(340. / 360., 0.70, 0.30, 1.),
+                    );
+                },
+            )
+            .size_full(),
+        )
+        .with_animation("finale-stamp", Animation::new(FINALE), move |el, t| {
+            let local = ((t * total - at) / 0.45).clamp(0., 1.);
+            let s = ui::spring(local);
+            el.opacity(local).relative().top(px((1. - s) * -28.))
+        })
+}
+
+/// "Sexyyyy", one letter at a time with a little spring; each y lands a
+/// touch later and lower than the one before, so the word stretches out.
+fn word() -> impl IntoElement {
+    let total = FINALE.as_secs_f32();
+    h_flex()
+        .items_end()
+        .children(WORD.chars().enumerate().map(move |(i, letter)| {
+            let tail = WORD[..i].matches('y').count() as f32;
+            let at = WORD_AT + i as f32 * LETTER_GAP + tail * 0.06;
+            div()
+                .text_size(px(72. + tail * 4.))
+                .line_height(px(84.))
+                .font_weight(FontWeight::EXTRA_BOLD)
+                .text_color(ui::petal())
+                .child(letter.to_string())
+                .with_animation(
+                    ("finale-letter", i),
+                    Animation::new(FINALE),
+                    move |el, t| {
+                        let local = ((t * total - at) / 0.5).clamp(0., 1.);
+                        let s = ui::spring(local);
+                        el.opacity(local.min(1.) * 1.0)
+                            .relative()
+                            .top(px((1. - s) * 36. + tail * 2.))
+                    },
+                )
+        }))
+}
+
+/// The whole entrance.
 pub(super) fn render(config: BannerConfig) -> impl IntoElement {
+    let total = FINALE.as_secs_f32();
     v_flex()
         .size_full()
         .items_center()
         .justify_center()
-        .gap_2()
-        .child(div().child(stage(config)).with_animation(
-            "finale-glide",
-            Animation::new(Duration::from_millis(750)),
-            |el, t| el.relative().top(px(-(1. - ease_out(t)) * 200.)),
-        ))
-        .child(ui::appear_after(
-            "finale-title",
-            Duration::from_millis(500),
-            16.,
+        .gap_1()
+        .child(
             div()
+                .relative()
+                .w(px(STAGE_W))
+                .h(px(STAGE_H))
                 .flex()
-                .text_size(px(44.))
-                .line_height(px(52.))
-                .font_weight(FontWeight::BOLD)
-                .text_color(ui::fg())
-                .child("Welcome to\u{a0}")
-                .child(div().text_color(ui::success()).child("Gentle Shell"))
-                .child("."),
-        ))
-        .child(ui::appear_after(
-            "finale-line",
-            Duration::from_millis(750),
-            12.,
+                .items_center()
+                .justify_center()
+                .child(letters(config))
+                .child(kisses()),
+        )
+        .child(h_flex().items_center().gap_3().child(word()).child(stamp()))
+        .child(
             div()
-                .max_w(px(520.))
                 .text_base()
-                .text_center()
                 .text_color(ui::muted())
-                .child(
-                    "Your agents are waiting. Open a tab, describe the work, and let them cook.",
-                ),
-        ))
+                .child("Welcome to Gentle Shell.")
+                .with_animation("finale-line", Animation::new(FINALE), move |el, t| {
+                    let local = ((t * total - (WORD_AT + 1.0)) / 0.5).clamp(0., 1.);
+                    el.opacity(local)
+                        .relative()
+                        .top(px((1. - ease_out(local)) * 10.))
+                }),
+        )
 }

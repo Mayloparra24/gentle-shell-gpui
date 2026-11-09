@@ -185,16 +185,19 @@ impl Render for WelcomeView {
             .on_key_down(cx.listener(Self::on_key))
             .bg(ui::screen_bg())
             .child(
-                // A soft glow from the top, petal while setting up, green once
-                // everything required is ready, brighter for the entrance.
+                // A soft glow from the top: petal while setting up, green once
+                // everything required is ready, a brighter petal for the
+                // entrance.
                 div().absolute().inset_0().bg(linear_gradient(
                     180.,
                     linear_color_stop(
-                        if ready { ui::success() } else { ui::petal() }.opacity(if entrance {
-                            0.16
+                        if entrance {
+                            ui::petal().opacity(0.18)
+                        } else if ready {
+                            ui::success().opacity(0.10)
                         } else {
-                            0.10
-                        }),
+                            ui::petal().opacity(0.10)
+                        },
                         0.,
                     ),
                     linear_color_stop(ui::petal().opacity(0.), 0.6),
