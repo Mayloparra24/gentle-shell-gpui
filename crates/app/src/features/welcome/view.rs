@@ -8,7 +8,7 @@ use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{AFTER_INTRO, INTRO, WelcomeEvent, WelcomeView, finale};
+use super::{AFTER_INTRO, INTRO, WelcomeView, finale};
 use crate::shared::banner::{Palette, banner};
 use crate::shared::ui;
 
@@ -138,7 +138,7 @@ impl WelcomeView {
                         .ghost()
                         .label("Skip for now")
                         .disabled(busy)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(WelcomeEvent::Close))),
+                        .on_click(cx.listener(|this, _, _, cx| this.enter(cx))),
                 )
             })
             .child(

@@ -98,16 +98,26 @@ impl WelcomeView {
             return;
         }
         if self.ready(cx) {
-            setup::mark_done();
-            self.finale = Some(cx.spawn(async move |this, cx| {
-                cx.background_executor().timer(finale::FINALE).await;
-                let _ = this.update(cx, |_, cx| cx.emit(WelcomeEvent::Close));
-            }));
-            cx.notify();
+            self.enter(cx);
         } else if self.setup.read(cx).can_install() {
             self.setup
                 .update(cx, |setup, cx| setup.install_everything(cx));
         }
+    }
+
+    /// Continue, or Skip for now: the welcome is seen (anything still
+    /// missing comes back as the onboarding card on a later launch), the
+    /// entrance plays, then the app.
+    fn enter(&mut self, cx: &mut Context<Self>) {
+        if self.busy(cx) {
+            return;
+        }
+        setup::mark_done();
+        self.finale = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(finale::FINALE).await;
+            let _ = this.update(cx, |_, cx| cx.emit(WelcomeEvent::Close));
+        }));
+        cx.notify();
     }
 
     fn check_again(&mut self, cx: &mut Context<Self>) {
