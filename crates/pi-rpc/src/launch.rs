@@ -17,7 +17,8 @@ pub struct LaunchSpec {
 
 /// Resolve `gentle-shell` and build the RPC launch for `cwd`.
 ///
-/// Order: `$GENTLE_SHELL_BIN`, then `gentle-shell` on the PATH. GUI launches
+/// Order: `$GENTLE_SHELL_BIN`, then Gentle Shell's self-contained install
+/// ([`bundled_launcher`]), then `gentle-shell` on the PATH. GUI launches
 /// (Finder, a desktop entry) inherit a minimal PATH without the user's Node
 /// version manager, so on Unix the login shell's PATH is merged in first; the
 /// child gets the same PATH so the launcher's `#!/usr/bin/env node` resolves.
@@ -25,12 +26,15 @@ pub fn resolve_backend(cwd: &Path) -> Result<LaunchSpec> {
     let path = search_path();
     let program = match std::env::var_os("GENTLE_SHELL_BIN") {
         Some(bin) if !bin.is_empty() => PathBuf::from(bin),
-        _ => match which::which_in("gentle-shell", Some(&path), cwd) {
-            Ok(program) => program,
-            Err(_) => bail!(
-                "gentle-shell was not found on your PATH.\n\
-                 Install it with `npm i -g gentle-pi`, or set GENTLE_SHELL_BIN to the launcher."
-            ),
+        _ => match bundled_launcher() {
+            Some(program) => program,
+            None => match which::which_in("gentle-shell", Some(&path), cwd) {
+                Ok(program) => program,
+                Err(_) => bail!(
+                    "gentle-shell was not found on your PATH.\n\
+                     Install it with `npm i -g gentle-pi`, or set GENTLE_SHELL_BIN to the launcher."
+                ),
+            },
         },
     };
     // Launcher options such as `--link` or `--home <dir>` go before the Pi args.
@@ -47,6 +51,37 @@ pub fn resolve_backend(cwd: &Path) -> Result<LaunchSpec> {
             ("PATH".into(), path),
         ],
     })
+}
+
+/// Gentle Shell's self-contained install, when present: what its installer
+/// and `gentle-shell upgrade` (since 4.7) set up, with its own Node and Pi.
+/// It wins over a global npm `gentle-pi` found on the PATH, which upgrading
+/// leaves behind and which may come first there.
+pub fn bundled_launcher() -> Option<PathBuf> {
+    let local_app_data = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    bundled_candidates(
+        &crate::home::home_dir(),
+        local_app_data.as_deref(),
+        cfg!(windows),
+    )
+    .into_iter()
+    .find(|launcher| launcher.is_file())
+}
+
+/// Where the self-contained install keeps its launcher: `~/.gentle-shell/bin`
+/// on macOS and Linux; on Windows `%LOCALAPPDATA%\gentle-shell\bin`, or
+/// `%USERPROFILE%\.gentle-shell-bundle\bin` when the first folder was refused.
+fn bundled_candidates(home: &Path, local_app_data: Option<&Path>, windows: bool) -> Vec<PathBuf> {
+    if windows {
+        let launcher = Path::new("bin").join("gentle-shell.cmd");
+        local_app_data
+            .map(|dir| dir.join("gentle-shell").join(&launcher))
+            .into_iter()
+            .chain([home.join(".gentle-shell-bundle").join(&launcher)])
+            .collect()
+    } else {
+        vec![home.join(".gentle-shell").join("bin").join("gentle-shell")]
+    }
 }
 
 /// Launcher options from `GENTLE_SHELL_ARGS`.
@@ -257,6 +292,30 @@ mod tests {
     use std::fs::File;
     use std::os::unix::fs::PermissionsExt as _;
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn bundled_install_lives_in_gentle_shells_own_folder() {
+        let home = Path::new("/home/me");
+        assert_eq!(
+            bundled_candidates(home, None, false),
+            [PathBuf::from("/home/me/.gentle-shell/bin/gentle-shell")]
+        );
+        // Windows: LOCALAPPDATA first, the fallback folder after it.
+        let local = Path::new("/home/me/AppData/Local");
+        assert_eq!(
+            bundled_candidates(home, Some(local), true),
+            [
+                local
+                    .join("gentle-shell")
+                    .join("bin")
+                    .join("gentle-shell.cmd"),
+                home.join(".gentle-shell-bundle")
+                    .join("bin")
+                    .join("gentle-shell.cmd"),
+            ]
+        );
+        assert_eq!(bundled_candidates(home, None, true).len(), 1);
+    }
 
     fn set_mtime(path: &Path, secs: u64) {
         let file = File::options().write(true).open(path).unwrap();

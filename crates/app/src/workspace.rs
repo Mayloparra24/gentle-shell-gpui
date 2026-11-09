@@ -1932,7 +1932,10 @@ impl Workspace {
                         tab.update(cx, |session, cx| session.restart_for_update(window, cx));
                     }
                 }
-                SettingsEvent::OpenSetup => this.open_onboarding(None, window, cx),
+                SettingsEvent::Setup(event) => {
+                    let usable = view.read(cx).setup_usable(cx);
+                    this.on_setup_event(event, usable, window, cx);
+                }
                 SettingsEvent::ShellCommand(text) => {
                     let view = view.downgrade();
                     let report = move |result: Result<(), String>, cx: &mut App| {
@@ -2014,25 +2017,41 @@ impl Workspace {
         let subscription = cx.subscribe_in(
             &view,
             window,
-            |this, view, event: &OnboardingEvent, window, cx| match event {
-                OnboardingEvent::Close => this.close_overlay(window, cx),
-                OnboardingEvent::Installed => {
-                    if view.read(cx).usable() {
-                        this.retry_failed_sessions(window, cx);
-                    }
-                }
-                OnboardingEvent::SignIn => {
-                    this.close_overlay(window, cx);
-                    this.open_providers(window, cx);
-                }
-                OnboardingEvent::Terminal(command) => {
-                    this.close_overlay(window, cx);
-                    this.open_setup_terminal(command.clone(), window, cx);
-                }
+            |this, view, event: &OnboardingEvent, window, cx| {
+                let usable = view.read(cx).usable();
+                this.on_setup_event(event, usable, window, cx);
             },
         );
         self.overlay = Some((Overlay::Onboarding(view), subscription));
         cx.notify();
+    }
+
+    /// An action from the setup checklist, on the onboarding screen or in
+    /// Configuration (which is closed first, like the screen, when the action
+    /// moves elsewhere). `usable`: gentle-shell can start as of its last look.
+    fn on_setup_event(
+        &mut self,
+        event: &OnboardingEvent,
+        usable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            OnboardingEvent::Close => self.close_overlay(window, cx),
+            OnboardingEvent::Installed => {
+                if usable {
+                    self.retry_failed_sessions(window, cx);
+                }
+            }
+            OnboardingEvent::SignIn => {
+                self.close_overlay(window, cx);
+                self.open_providers(window, cx);
+            }
+            OnboardingEvent::Terminal(command) => {
+                self.close_overlay(window, cx);
+                self.open_setup_terminal(command.clone(), window, cx);
+            }
+        }
     }
 
     /// A terminal tab with `command` typed at the prompt for the user to run

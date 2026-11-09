@@ -122,6 +122,7 @@ fn push_lines(log: &mut Vec<String>, chunk: &str) {
     }
 }
 
+#[derive(Clone, Debug)]
 pub enum OnboardingEvent {
     /// Continue (after recording completion) or Skip.
     Close,
@@ -135,6 +136,9 @@ pub enum OnboardingEvent {
 }
 
 pub struct OnboardingView {
+    /// Shown inside Configuration: the checklist and its actions, without
+    /// the screen's hero, footer and frame.
+    embedded: bool,
     platform: Option<String>,
     first_run: bool,
     /// `None` until the first look finishes.
@@ -159,6 +163,7 @@ impl OnboardingView {
     /// `probe` is a look already taken (the startup check); `None` looks now.
     pub fn new(probe: Option<Probe>, cx: &mut Context<Self>) -> Self {
         let mut this = Self {
+            embedded: false,
             platform: None,
             first_run: false,
             checks: None,
@@ -176,6 +181,14 @@ impl OnboardingView {
             Some(probe) => this.apply(probe, cx),
             None => this.refresh(cx),
         }
+        this
+    }
+
+    /// The checklist for Configuration → Setup & requirements: looks at the
+    /// machine now, installs and hands off actions like the screen does.
+    pub fn embedded(cx: &mut Context<Self>) -> Self {
+        let mut this = Self::new(None, cx);
+        this.embedded = true;
         this
     }
 
@@ -543,7 +556,9 @@ impl OnboardingView {
     }
 
     fn render_checks(&self, checks: &[Check], cx: &mut Context<Self>) -> Div {
-        let mut column = v_flex().gap_5().px_6().pb_2();
+        let mut column = v_flex()
+            .gap_5()
+            .when(!self.embedded, |column| column.px_6().pb_2());
         let mut index = 0;
         for (need, label) in [
             (Need::Required, "Required"),
@@ -635,6 +650,47 @@ impl OnboardingView {
                 }
             })
     }
+
+    /// Configuration's header for the embedded checklist: the platform, then
+    /// Check again and Install everything.
+    fn render_embedded_bar(&self, cx: &mut Context<Self>) -> Div {
+        let busy = self.installing.is_some();
+        let plan = self.checks.as_deref().map(install_plan).unwrap_or_default();
+        h_flex()
+            .pb_3()
+            .gap_2()
+            .items_center()
+            .when_some(self.platform.clone(), |d, platform| {
+                d.child(ui::chip(platform, ui::muted()).border_0().rounded_full())
+            })
+            .child(div().flex_1())
+            .child(
+                Button::new("setup-recheck")
+                    .small()
+                    .ghost()
+                    .icon(Icon::new(IconName::RefreshCw))
+                    .label("Check again")
+                    .loading(self.checking)
+                    .disabled(busy || self.checking)
+                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+            )
+            .when(!plan.is_empty() || busy, |d| {
+                d.child(
+                    Button::new("setup-install-all")
+                        .small()
+                        .primary()
+                        .icon(Icon::new(IconName::ArrowDown))
+                        .label(if busy {
+                            "Installing…"
+                        } else {
+                            "Install everything"
+                        })
+                        .loading(busy)
+                        .disabled(busy || self.checking)
+                        .on_click(cx.listener(|this, _, _, cx| this.install_all(cx))),
+                )
+            })
+    }
 }
 
 /// Gentle Shell's pixel rose, `height` px tall, in `color`.
@@ -673,42 +729,52 @@ impl Render for OnboardingView {
             Some(checks) => self.render_checks(checks, cx).into_any_element(),
         };
         let busy = self.busy();
-        let (backdrop, panel) = ui::screen(Some(720.));
-        backdrop.occlude().child(ui::pop_in(
-            "onboarding-screen",
-            panel
+        if self.embedded {
+            return v_flex()
                 .w_full()
-                .max_w(px(720.))
-                .relative()
-                .child(
-                    div()
-                        .id("onboarding-body")
-                        .flex_1()
-                        .min_h_0()
-                        .overflow_y_scroll()
-                        .child(self.render_hero())
-                        .child(body),
-                )
-                .child(self.render_footer(cx))
-                .child(
-                    h_flex()
-                        .absolute()
-                        .top_3()
-                        .right_3()
-                        .gap_2()
-                        .child(ui::kbd("esc"))
-                        .child(
-                            Button::new("onboarding-close")
-                                .ghost()
-                                .xsmall()
-                                .icon(Icon::new(IconName::X))
-                                .disabled(busy)
-                                .on_click(
-                                    cx.listener(|_, _, _, cx| cx.emit(OnboardingEvent::Close)),
-                                ),
-                        ),
-                ),
-        ))
+                .child(self.render_embedded_bar(cx))
+                .child(body)
+                .into_any_element();
+        }
+        let (backdrop, panel) = ui::screen(Some(720.));
+        backdrop
+            .occlude()
+            .child(ui::pop_in(
+                "onboarding-screen",
+                panel
+                    .w_full()
+                    .max_w(px(720.))
+                    .relative()
+                    .child(
+                        div()
+                            .id("onboarding-body")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .child(self.render_hero())
+                            .child(body),
+                    )
+                    .child(self.render_footer(cx))
+                    .child(
+                        h_flex()
+                            .absolute()
+                            .top_3()
+                            .right_3()
+                            .gap_2()
+                            .child(ui::kbd("esc"))
+                            .child(
+                                Button::new("onboarding-close")
+                                    .ghost()
+                                    .xsmall()
+                                    .icon(Icon::new(IconName::X))
+                                    .disabled(busy)
+                                    .on_click(
+                                        cx.listener(|_, _, _, cx| cx.emit(OnboardingEvent::Close)),
+                                    ),
+                            ),
+                    ),
+            ))
+            .into_any_element()
     }
 }
 
