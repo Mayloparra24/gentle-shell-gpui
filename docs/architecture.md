@@ -44,6 +44,9 @@ flowchart TD
 | `text::first_line` | `ui.rs`: el resto de utilidades de presentación. |
 | `usage`: modelos y parsers de ventanas de suscripción (Codex, NaN), agrupación, claim de cuenta; registros de sesión, agregación de estadísticas, fechas ISO y días civiles | `usage/`: leer `auth.json`, resolver claves (`$VAR`, `!comando`), peticiones HTTP, recorrer y cachear archivos de sesión, reloj y desplazamiento horario local. |
 | `profiles`: modelo de enrutado, formato de `profiles.json`, pins, frontmatter de agentes, notas | `profiles/`: homes y descubrimiento de agentes, escrituras atómicas, enrutado guardado y materializado, settings de Pi, archivos de pin y worktree, Make default. |
+| `fuzzy`: puntuación difusa y ranking de archivos | `palette/`: recorrer archivos, leer ramas con git. |
+| `sessions`: resumen de sesión, nombre de carpeta por cwd, orden, fechas ISO y tiempo relativo | `sessions/`: buscar y leer archivos `.jsonl` (el escaneo por líneas va unido a la lectura), caché. |
+| `git`: parsers de status (v1 y v2), numstat, refs, stash, worktrees, submódulos, ahead/behind; recorte de diffs | `git.rs`, `git/`: ejecutar `git`, contar líneas de archivos no rastreados, operaciones de stage, commit, push y ramas. |
 
 ## Organización
 
@@ -173,6 +176,37 @@ settings/
 ├── upgrade.rs      # gentle-shell upgrade, su resultado y la tarjeta
 ├── packages.rs     # instalar y quitar paquetes
 └── notifications.rs, theme.rs, app.rs, models.rs  # una sección cada uno
+
+palette.rs          # PaletteView, acciones, eventos, categorías
+palette/
+├── commands.rs     # pantallas, comandos de panel y comandos `/` del backend
+├── sources.rs      # archivos bajo la raíz y ramas locales
+├── rows.rs         # filas y grupos para la consulta y la categoría
+├── keyboard.rs     # selección, ejecutar fila, categorías, renombrar workspace
+└── view.rs         # Render
+
+sessions.rs         # SessionsView, SessionsEvent, Scope
+sessions/
+├── discovery.rs    # sessionDir y archivos .jsonl por carpeta o todos
+├── summary.rs      # escaneo ligero del JSONL y caché por archivo
+├── view.rs         # estado y acciones
+├── render.rs       # filas, lista y Render
+└── tests.rs        # pruebas con archivos de sesión temporales
+
+git.rs              # ejecutar git, toplevel; reexporta los tipos que usan los llamadores
+git/
+├── snapshot.rs     # cambios para el panel y el árbol
+├── changes.rs      # pestaña Changes: stage, discard, stash, commit, push
+└── refs.rs         # pestaña Branches: ramas, stash, checkout remoto
+
+app_update.rs       # AppUpdate (Global), Status, Problem; check, install, skip, restart
+app_update/
+├── release.rs      # versiones, asset por SO, parseo de releases y SHA256SUMS, decisión
+├── cache.rs        # app-update.json: caché de 6 h y versión saltada
+├── network.rs      # pedir la release, descargar con sha256 y progreso
+├── archive.rs      # extracción segura de zip y tar.gz; payload por SO
+├── install.rs      # reemplazo del bundle (macOS), del archivo (Linux) y del exe en uso (Windows)
+└── relaunch.rs     # proceso que reabre la app al salir
 ```
 
 ## Flujo de datos

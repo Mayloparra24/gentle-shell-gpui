@@ -107,7 +107,7 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// Color for a collapsed porcelain status letter (see [`crate::features::git::FileChange`]).
+/// Color for a collapsed porcelain status letter (see [`gentle_core::git::status::FileChange`]).
 fn status_color(status: char) -> Hsla {
     match status {
         'A' | '?' => ui::success(),

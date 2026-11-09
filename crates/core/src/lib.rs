@@ -4,9 +4,12 @@
 
 pub mod activity;
 pub mod commands;
+pub mod fuzzy;
 pub mod gentle_state;
+pub mod git;
 pub mod notifications;
 pub mod profiles;
+pub mod sessions;
 pub mod text;
 pub mod tools;
 pub mod transcript;
