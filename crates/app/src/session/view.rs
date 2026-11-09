@@ -1,9 +1,6 @@
 //! Rendering for [`SessionView`]: the conversation (tool cards, thinking,
 //! messages), the composer with its pickers, extension dialogs and the rail.
 
-use std::collections::HashMap;
-use std::hash::Hash;
-use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -26,367 +23,16 @@ use super::attachments;
 use super::{Backend, CONTEXT, ModelInfo, SessionView};
 use crate::gentle_state::PermissionMode;
 use crate::tools;
-use crate::transcript::{Block, Dirty, Item, NoticeLevel, ToolStatus, format_tokens};
+use crate::transcript::{Block, Item, NoticeLevel, ToolStatus, format_tokens};
 use crate::ui;
 
-// ── Display-only state ─────────────────────────────────────────────────────
+mod live;
+mod transcript_list;
 
-/// What the view tracks beside the transcript: when running things started
-/// (live timers), the prompt Pi has not picked up yet, picker and dialog
-/// highlights. Reset with the conversation.
-#[derive(Default)]
-pub(super) struct Live {
-    turn: Option<Instant>,
-    /// Tool and shell items by transcript index.
-    tools: HashMap<usize, Span>,
-    /// Thinking blocks by (item, block).
-    thinking: HashMap<(usize, usize), Span>,
-    /// Spans in `tools` and `thinking` still running (their labels show tenths).
-    open_spans: usize,
-    pending: Option<Pending>,
-    /// Keyboard highlight of the front dialog, by dialog id.
-    dialog_cursor: Option<(String, usize)>,
-    model_picker: bool,
-    model_cursor: usize,
-    model_query: String,
-    model_scroll: ScrollHandle,
-    /// The `/` menu's keyboard highlight, for the composer text it was moved
-    /// on (other text starts at the top), its scroll, and the text Esc
-    /// dismissed it for.
-    slash_cursor: usize,
-    slash_query: String,
-    slash_scroll: ScrollHandle,
-    slash_dismissed: Option<String>,
-    /// Where the effort knob springs from (0..=1 along the slider), when the
-    /// level last changed, and a counter that restarts its animation on
-    /// every change.
-    effort_from: f32,
-    effort_moved_at: Option<Instant>,
-    effort_moves: u64,
-    /// Re-renders running timers while something is live.
-    ticker: Option<Task<()>>,
-    /// The ticker's loop is still going (it also ends by itself once idle).
-    ticking: bool,
-    /// Ticks so far, and the timer text they last painted.
-    ticks: u64,
-    stamp: Option<LabelStamp>,
-}
-
-/// How often live timers are re-checked.
-const TICK: Duration = Duration::from_millis(200);
-
-/// What the live timer labels read: a repaint is due only when it changes.
-/// `fine` is set while a tenths-of-a-second label (running tool or
-/// thinking block) shows, and changes every tick.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct LabelStamp {
-    fine: Option<u64>,
-    turn_secs: Option<u64>,
-    pending_secs: Option<u64>,
-}
-
-fn label_stamp(
-    fine_tick: Option<u64>,
-    turn: Option<Duration>,
-    pending: Option<Duration>,
-) -> LabelStamp {
-    LabelStamp {
-        fine: fine_tick,
-        turn_secs: turn.map(|d| d.as_secs()),
-        pending_secs: pending.map(|d| d.as_secs()),
-    }
-}
-
-/// Whether live timers need ticking: a turn, a `!command` or a prompt in flight.
-fn ticker_needed(running: bool, shells: bool, pending: bool) -> bool {
-    running || shells || pending
-}
-
-#[derive(Clone, Copy)]
-struct Span {
-    start: Instant,
-    took: Option<Duration>,
-}
-
-impl Span {
-    fn elapsed(&self) -> Duration {
-        self.took.unwrap_or_else(|| self.start.elapsed())
-    }
-}
-
-/// A prompt sent while idle, shown right away until Pi's own events arrive.
-struct Pending {
-    text: String,
-    /// The attachments it carries, shown until Pi echoes them.
-    images: Vec<Arc<Image>>,
-    /// Transcript length when it was sent: Pi's user message lands here.
-    base: usize,
-    since: Instant,
-    /// Pi answered the `prompt` request.
-    acked: Option<Instant>,
-    /// Pi reported the agent running.
-    started: bool,
-}
-
-impl Live {
-    pub(super) fn expect_reply(&mut self, text: &str, images: Vec<Arc<Image>>, base: usize) {
-        self.pending = Some(Pending {
-            text: text.trim().to_string(),
-            images,
-            base,
-            since: Instant::now(),
-            acked: None,
-            started: false,
-        });
-    }
-
-    pub(super) fn reply_acknowledged(&mut self) {
-        if let Some(pending) = &mut self.pending {
-            pending.acked.get_or_insert_with(Instant::now);
-        }
-    }
-
-    pub(super) fn reply_failed(&mut self) {
-        self.pending = None;
-    }
-}
-
-/// Rate-limit usage an extension reported (`51% used (seven_day)`).
-pub(super) struct RateLimit {
-    pub(super) percent: u32,
-    pub(super) text: String,
-}
-
-/// Open or close `key`'s span; returns the change in open spans.
-fn track<K: Eq + Hash>(map: &mut HashMap<K, Span>, key: K, live: bool, now: Instant) -> isize {
-    match map.get_mut(&key) {
-        Some(span) if live && span.took.is_some() => {
-            *span = Span {
-                start: now,
-                took: None,
-            };
-            1
-        }
-        Some(span) if !live && span.took.is_none() => {
-            span.took = Some(now - span.start);
-            -1
-        }
-        Some(_) => 0,
-        None if live => {
-            map.insert(
-                key,
-                Span {
-                    start: now,
-                    took: None,
-                },
-            );
-            1
-        }
-        None => 0,
-    }
-}
-
-// ── Transcript list ────────────────────────────────────────────────────────
-
-/// Rows after the transcript items.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Tail {
-    /// The prompt just sent, in the slot (`base`) Pi's echo of it takes.
-    PendingBubble(usize),
-    /// "Thinking…" until Pi picks the prompt up.
-    Pending(usize),
-    /// "Working…" between tool calls, at this item count.
-    Between(usize),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Row {
-    /// The hero and the backend state (empty once both are gone).
-    Header,
-    Item(usize),
-    Tail(Tail),
-    /// The column's bottom padding.
-    Footer,
-}
-
-/// The list's rows: the header, one per transcript item, the tail rows and
-/// the footer.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct Shape {
-    items: usize,
-    tail: Vec<Tail>,
-}
-
-impl Shape {
-    fn len(&self) -> usize {
-        self.items + self.tail.len() + 2
-    }
-
-    fn row(&self, ix: usize) -> Option<Row> {
-        let tail_start = 1 + self.items;
-        match ix {
-            0 => Some(Row::Header),
-            ix if ix < tail_start => Some(Row::Item(ix - 1)),
-            ix if ix < tail_start + self.tail.len() => Some(Row::Tail(self.tail[ix - tail_start])),
-            ix if ix + 1 == self.len() => Some(Row::Footer),
-            _ => None,
-        }
-    }
-}
-
-/// How the list's rows change from `old` to `new`, given the first changed
-/// item: rows to re-measure in place, then rows to replace.
-#[derive(Debug, PartialEq, Eq)]
-struct ListUpdate {
-    remeasure: Range<usize>,
-    /// Old rows replaced, and how many new rows take their place.
-    splice: Option<(Range<usize>, usize)>,
-}
-
-fn list_update(old: &Shape, new: &Shape, dirty_from: Option<usize>) -> ListUpdate {
-    let (old_len, new_len) = (old.len(), new.len());
-    let mut first = old_len.max(new_len);
-    if let Some(from) = dirty_from {
-        first = first.min(1 + from);
-    }
-    if old.items != new.items {
-        first = first.min(1 + old.items.min(new.items));
-    } else if let Some(i) =
-        (0..old.tail.len().max(new.tail.len())).find(|&i| old.tail.get(i) != new.tail.get(i))
-    {
-        first = first.min(1 + old.items + i);
-    }
-    let common = old_len.min(new_len);
-    ListUpdate {
-        remeasure: first.min(common)..common,
-        splice: (old_len != new_len).then(|| (common..old_len, new_len - common)),
-    }
-}
-
-/// What the header row shows; a change re-measures it (and the first row,
-/// whose top padding depends on it).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct HeaderKey {
-    hero: bool,
-    backend: u8,
-}
-
-/// Display data derived once per change of an item, not per frame.
-enum Prepared {
-    Card(CardSpec),
-    /// A custom message's line count.
-    Lines(usize),
-}
-
-/// How long after it first shows a row still fades in.
-const APPEAR_WINDOW: Duration = Duration::from_millis(300);
-
-/// The conversation as a virtualized list: only rows on screen render, and
-/// rows are re-measured only from the first changed item on.
-pub(super) struct TranscriptList {
-    state: ListState,
-    /// The rows `state` was last told about.
-    shape: Shape,
-    header: Option<HeaderKey>,
-    /// By transcript index.
-    prepared: HashMap<usize, Prepared>,
-    /// When each animated row first rendered: it animates in only then, not
-    /// each time it scrolls back into view.
-    born: HashMap<(&'static str, usize), Instant>,
-}
-
-impl TranscriptList {
-    pub(super) fn new() -> Self {
-        let shape = Shape::default();
-        Self {
-            state: ListState::new(shape.len(), ListAlignment::Top, px(600.)),
-            shape,
-            header: None,
-            prepared: HashMap::new(),
-            born: HashMap::new(),
-        }
-    }
-
-    /// The transcript was replaced: indices name other items now.
-    fn forget_items(&mut self) {
-        self.prepared.clear();
-        self.born.clear();
-    }
-
-    /// Derive display data for items `from..`.
-    fn prepare(&mut self, items: &[Item], from: usize) {
-        let changed = items.get(from..).unwrap_or_default();
-        for (ix, item) in (from..).zip(changed) {
-            let prepared = match item {
-                Item::Tool { .. } | Item::Shell { .. } => card_spec(item).map(Prepared::Card),
-                Item::Custom { text, .. } => Some(Prepared::Lines(line_count(text))),
-                Item::CommandOutput { notices, .. } => Some(Prepared::Lines(
-                    notices.iter().map(|(_, text)| line_count(text)).sum(),
-                )),
-                _ => None,
-            };
-            match prepared {
-                Some(prepared) => {
-                    self.prepared.insert(ix, prepared);
-                }
-                None => {
-                    self.prepared.remove(&ix);
-                }
-            }
-        }
-    }
-
-    /// Tell the list which rows changed since the last sync.
-    fn sync(&mut self, items: usize, tail: Vec<Tail>, header: HeaderKey, dirty: Option<Dirty>) {
-        let shape = Shape { items, tail };
-        if dirty.is_some_and(|d| d.reset) {
-            self.state.reset(shape.len());
-        } else {
-            if self.header.is_some_and(|old| old != header) {
-                self.state.remeasure_items(0..self.shape.len().min(2));
-            }
-            let update = list_update(&self.shape, &shape, dirty.map(|d| d.from));
-            if !update.remeasure.is_empty() {
-                self.state.remeasure_items(update.remeasure);
-            }
-            if let Some((range, count)) = update.splice {
-                self.state.splice(range, count);
-            }
-        }
-        self.header = Some(header);
-        self.shape = shape;
-    }
-
-    /// Item `ix` changed height (a fold toggled).
-    fn remeasure_item(&self, ix: usize) {
-        let row = ix + 1;
-        if row < self.shape.len() {
-            self.state.remeasure_items(row..row + 1);
-        }
-    }
-
-    /// Scroll to the bottom at the next layout.
-    pub(super) fn scroll_to_end(&self) {
-        self.state.scroll_to_end();
-    }
-
-    /// Scrolled to (within a few lines of) the bottom: new output follows.
-    pub(super) fn at_bottom(&self) -> bool {
-        let offset = -self.state.scroll_px_offset_for_scrollbar().y;
-        let max = self.state.max_offset_for_scrollbar().y;
-        offset >= max - px(48.)
-    }
-
-    /// `element`, fading in if the row first showed just now.
-    fn appear(&mut self, id: (&'static str, usize), now: Instant, element: Div) -> AnyElement {
-        let born = *self.born.entry(id).or_insert(now);
-        if now.duration_since(born) < APPEAR_WINDOW {
-            ui::appear(id, element).into_any_element()
-        } else {
-            element.into_any_element()
-        }
-    }
-}
+pub(super) use live::{Live, RateLimit};
+use live::{Span, TICK, label_stamp, ticker_needed, track};
+pub(super) use transcript_list::TranscriptList;
+use transcript_list::{HeaderKey, Prepared, Row, Tail};
 
 // Keys into `SessionView::expanded`: one per foldable region.
 const OUTPUT: usize = 0;
@@ -920,7 +566,7 @@ impl SessionView {
             }
             Item::Tool { .. } | Item::Shell { .. } => {
                 let computed;
-                let spec = match self.list.prepared.get(&ix) {
+                let spec = match self.list.prepared(ix) {
                     Some(Prepared::Card(spec)) => spec,
                     _ => {
                         computed = card_spec(item);
@@ -942,14 +588,14 @@ impl SessionView {
                 text,
                 details,
             } => {
-                let lines = match self.list.prepared.get(&ix) {
+                let lines = match self.list.prepared(ix) {
                     Some(Prepared::Lines(lines)) => *lines,
                     _ => line_count(text),
                 };
                 self.render_custom(ix, kind, text, details, lines, cx)
             }
             Item::CommandOutput { command, notices } => {
-                let lines = match self.list.prepared.get(&ix) {
+                let lines = match self.list.prepared(ix) {
                     Some(Prepared::Lines(lines)) => *lines,
                     _ => notices.iter().map(|(_, text)| line_count(text)).sum(),
                 };
@@ -3556,7 +3202,7 @@ impl SessionView {
     /// One row of the transcript list; `cx.processor` calls it for the
     /// rows on screen (and in the overdraw) only.
     fn render_row(&mut self, ix: usize, _: &mut Window, cx: &mut Context<Self>) -> AnyElement {
-        let Some(row) = self.list.shape.row(ix) else {
+        let Some(row) = self.list.row(ix) else {
             return div().into_any_element();
         };
         let hero = self.hero_shown();
@@ -3663,7 +3309,7 @@ impl Render for SessionView {
             .child(
                 div().id("transcript").flex_1().min_h_0().child(
                     list(
-                        self.list.state.clone(),
+                        self.list.state(),
                         cx.processor(|this, ix, window, cx| this.render_row(ix, window, cx)),
                     )
                     .size_full(),
@@ -4904,17 +4550,14 @@ fn limit_label(window: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
     use super::{CustomBody, Tone, custom_look};
     use super::{
         EFFORT_INSET, EFFORT_KNOB, EFFORT_TRACK_W, effort_fill_w, effort_fraction, effort_stop_x,
     };
     use super::{
-        ListUpdate, Row, Shape, TODO_LIST_PAD, TODO_ROW, TODO_ROW_GAP, TODO_ROW_NOTE, Tail,
-        checkbox_option, command_language, head_slice, label_stamp, language_for_path, limit_label,
-        line_count, list_update, option_matches, parse_diff_line, parse_rate_limit, split_current,
-        tail_slice, ticker_needed, todo_content_height, todo_left,
+        TODO_LIST_PAD, TODO_ROW, TODO_ROW_GAP, TODO_ROW_NOTE, checkbox_option, command_language,
+        head_slice, language_for_path, limit_label, line_count, option_matches, parse_diff_line,
+        parse_rate_limit, split_current, tail_slice, todo_content_height, todo_left,
     };
     use serde_json::json;
 
@@ -5022,100 +4665,6 @@ mod tests {
         }
         assert_eq!(head_slice("a\nb\nc\n", 3, 2), ("a\nb", 1));
         assert_eq!(tail_slice("a\nb\nc\n", 3, 2), ("b\nc", 1));
-    }
-
-    #[test]
-    fn rows_map_to_header_items_tail_and_footer() {
-        let shape = Shape {
-            items: 2,
-            tail: vec![Tail::Between(2)],
-        };
-        assert_eq!(shape.len(), 5);
-        assert_eq!(shape.row(0), Some(Row::Header));
-        assert_eq!(shape.row(2), Some(Row::Item(1)));
-        assert_eq!(shape.row(3), Some(Row::Tail(Tail::Between(2))));
-        assert_eq!(shape.row(4), Some(Row::Footer));
-        assert_eq!(shape.row(5), None);
-    }
-
-    #[test]
-    fn list_updates_start_at_the_first_changed_row() {
-        let shape = |items, tail: &[Tail]| Shape {
-            items,
-            tail: tail.to_vec(),
-        };
-        // Streaming into the last of 3 items: only its row is re-measured.
-        assert_eq!(
-            list_update(&shape(3, &[]), &shape(3, &[]), Some(2)),
-            ListUpdate {
-                remeasure: 3..5,
-                splice: None
-            }
-        );
-        // Nothing changed: nothing to do.
-        assert_eq!(
-            list_update(&shape(3, &[]), &shape(3, &[]), None),
-            ListUpdate {
-                remeasure: 5..5,
-                splice: None
-            }
-        );
-        // An item appended: the old footer slot is re-measured, one row added.
-        assert_eq!(
-            list_update(&shape(3, &[]), &shape(4, &[]), Some(3)),
-            ListUpdate {
-                remeasure: 4..5,
-                splice: Some((5..5, 1))
-            }
-        );
-        // The pending bubble becomes the real message; the indicator goes.
-        let pending = [Tail::PendingBubble(1), Tail::Pending(1)];
-        assert_eq!(
-            list_update(&shape(1, &pending), &shape(2, &[]), Some(1)),
-            ListUpdate {
-                remeasure: 2..4,
-                splice: Some((4..5, 0))
-            }
-        );
-        // Only the tail changed.
-        assert_eq!(
-            list_update(&shape(2, &[]), &shape(2, &[Tail::Between(2)]), None),
-            ListUpdate {
-                remeasure: 3..4,
-                splice: Some((4..4, 1))
-            }
-        );
-    }
-
-    #[test]
-    fn timers_stop_once_nothing_is_live() {
-        assert!(!ticker_needed(false, false, false));
-        assert!(ticker_needed(true, false, false));
-        assert!(ticker_needed(false, true, false));
-        assert!(ticker_needed(false, false, true));
-    }
-
-    #[test]
-    fn timer_repaints_only_when_labels_change() {
-        let at = |ms| Some(Duration::from_millis(ms));
-        // Whole-second clocks: the same second reads the same.
-        assert_eq!(
-            label_stamp(None, at(1_100), None),
-            label_stamp(None, at(1_900), None)
-        );
-        assert_ne!(
-            label_stamp(None, at(1_900), None),
-            label_stamp(None, at(2_100), None)
-        );
-        assert_ne!(
-            label_stamp(None, None, at(900)),
-            label_stamp(None, None, at(1_000))
-        );
-        // A tenths label (running tool) changes every tick.
-        assert_ne!(
-            label_stamp(Some(1), at(1_100), None),
-            label_stamp(Some(2), at(1_300), None)
-        );
     }
 
     #[test]
