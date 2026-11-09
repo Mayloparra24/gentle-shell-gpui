@@ -45,26 +45,27 @@ flowchart TD
 | `usage`: modelos y parsers de ventanas de suscripción (Codex, NaN), agrupación, claim de cuenta; registros de sesión, agregación de estadísticas, fechas ISO y días civiles | `usage/`: leer `auth.json`, resolver claves (`$VAR`, `!comando`), peticiones HTTP, recorrer y cachear archivos de sesión, reloj y desplazamiento horario local. |
 | `profiles`: modelo de enrutado, formato de `profiles.json`, pins, frontmatter de agentes, notas | `profiles/`: homes y descubrimiento de agentes, escrituras atómicas, enrutado guardado y materializado, settings de Pi, archivos de pin y worktree, Make default. |
 
-## Organización objetivo
-
-La migración es incremental. La estructura objetivo no obliga a mover código que todavía cambia junto o cuya separación añadiría ceremonia.
+## Organización
 
 ```text
 crates/
 ├── app/
 │   └── src/
 │       ├── main.rs              # arranque: CLI, instancia única, PATH de toolchains, adopción de config
-│       ├── app.rs               # composition root: GPUI, temas, atajos, menús y ventana
+│       ├── app.rs, app/         # composition root: GPUI, temas, atajos, menús, ventana; integration.rs registra paneles y sidebar
 │       ├── cli.rs               # argumentos (`[FOLDER] [-p TEXT]`) y carpeta inicial
-│       ├── session/             # conversación y backend de una pestaña
-│       ├── files/               # árbol, cambios, referencias y visor
-│       ├── setup/               # comprobaciones e instalación
-│       ├── terminal/            # PTY y presentación de terminal
-│       ├── platform.rs          # ícono del Dock (macOS) y de la ventana (X11); crece a platform/ cuando compense
-│       └── shared/              # UI reutilizable sin estado de negocio, cuando compense
+│       ├── features/            # una carpeta o archivo por funcionalidad
+│       │   ├── session/  workspace/  profiles/  settings/  usage/  setup/  browser/  files/  terminal/
+│       │   ├── workspaces.rs  sessions.rs  palette.rs  providers.rs  memory.rs  onboarding.rs
+│       │   └── notices.rs  alerts.rs  git.rs  app_update.rs  updates.rs
+│       ├── platform/            # integración con el SO: instancia única, íconos del Dock y de la ventana
+│       └── shared/              # piezas usadas por varias funcionalidades sin lógica propia:
+│                                # ui, themes, assets, banner, surge, pane, gentle_state
 ├── core/                        # lógica pura compartida (gentle-core)
 └── pi-rpc/
 ```
+
+Las rutas siguen la carpeta: `crate::features::session`, `crate::shared::ui`, `crate::platform::instance`. `features/`, `platform/` y `shared/` sólo listan módulos (`mod.rs`); cada funcionalidad con hijos usa `nombre.rs` + `nombre/`. Una funcionalidad nueva va en `features/`; algo pasa a `shared/` sólo cuando lo usa más de una funcionalidad y no tiene lógica de producto.
 
 `core` crece por comportamiento completo y sólo con lógica pura; lo que necesite IO, procesos, reloj o GPUI se queda en `app` y llama a `core`. No se introducen traits ni adaptadores para poder mover algo a `core`.
 
@@ -126,7 +127,7 @@ session/
 
 `transcript_list.rs` es dueño de la forma de las filas, el cálculo de actualizaciones parciales, la caché de datos preparados y el estado de la lista GPUI. `view.rs` decide qué contenido renderizar para cada fila, pero no modifica directamente la estructura interna de la lista.
 
-Los módulos hijos añaden bloques `impl SessionView` propios; lo que otro módulo consume se marca `pub(super)` y lo que usa `session/mod.rs` se marca `pub(in crate::session)` o se reexporta desde `view.rs`. Las constantes de anchura (`NARROW`, `TINY`), los plegados y las piezas compartidas (`clock`, `image_tile`, `number_badge`) permanecen en `view.rs`.
+Los módulos hijos añaden bloques `impl SessionView` propios; lo que otro módulo consume se marca `pub(super)` y lo que usa `session/mod.rs` se marca `pub(in crate::features::session)` o se reexporta desde `view.rs`. Las constantes de anchura (`NARROW`, `TINY`), los plegados y las piezas compartidas (`clock`, `image_tile`, `number_badge`) permanecen en `view.rs`.
 
 ### Otras funcionalidades divididas
 

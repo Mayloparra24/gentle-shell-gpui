@@ -85,7 +85,7 @@ Gentle Shell's own variables (`GENTLE_PI_CONFIG_HOME`, `GENTLE_SHELL_NO_AUTO_SET
 
 ## Packages and releases
 
-The app icon (the Gentle Shell pixel rose) lives in `packaging/icons/`. `generate.py` builds it from the `ROSE` art in `crates/app/src/banner.rs`; run `packaging/icons/generate.sh` on macOS after editing and commit the outputs (`AppIcon.icns`, `icon.ico`, PNGs). A bare `cargo run` shows a generic icon in the Dock; the bundled app shows the rose.
+The app icon (the Gentle Shell pixel rose) lives in `packaging/icons/`. `generate.py` builds it from the `ROSE` art in `crates/app/src/shared/banner.rs`; run `packaging/icons/generate.sh` on macOS after editing and commit the outputs (`AppIcon.icns`, `icon.ico`, PNGs). A bare `cargo run` shows a generic icon in the Dock; the bundled app shows the rose.
 
 Build packages locally:
 

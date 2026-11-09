@@ -1,16 +1,21 @@
 //! Composition root: starts GPUI, installs themes, key bindings and menus,
 //! and opens the window around the workspace.
 
+pub mod integration;
+
 use std::path::PathBuf;
 
 use gpui_kit::component::{Theme, ThemeMode, TitleBar};
 use gpui_kit::*;
 
-use crate::workspace::{
+use crate::features::workspace::{
     ClosePane, CloseTab, FocusNextPane, FocusPrevPane, NewTab, NewTerminalTab, NextTab, PrevTab,
     Quit, SplitDown, SplitRight, ToggleSidebar, Workspace,
 };
-use crate::{app_update, assets, files, instance, integration, session, themes, workspace};
+use crate::{
+    features::app_update, features::files, features::session, features::workspace,
+    platform::instance, shared::assets, shared::themes,
+};
 
 /// Runs the app until its last window closes. `requests` carries later
 /// launches' folders and prompts to this window.
@@ -26,7 +31,7 @@ pub fn run(
             Theme::change(ThemeMode::Dark, None, cx);
             themes::init(cx);
             #[cfg(target_os = "macos")]
-            crate::platform::set_dock_icon();
+            crate::platform::icons::set_dock_icon();
             app_update::init(cx);
 
             bind_keys(cx);
@@ -51,7 +56,7 @@ pub fn run(
                 }),
                 app_id: Some("dev.gentle-shell.gpui".into()),
                 #[cfg(target_os = "linux")]
-                icon: crate::platform::window_icon(),
+                icon: crate::platform::icons::window_icon(),
                 ..TitleBar::window_options()
             };
             integration::register(cx);

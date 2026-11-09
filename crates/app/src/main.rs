@@ -1,37 +1,13 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-mod alerts;
 mod app;
-mod app_update;
-mod assets;
-mod banner;
-mod browser;
 mod cli;
-mod files;
-mod gentle_state;
-mod git;
-mod instance;
-mod integration;
-mod memory;
-mod notices;
-mod onboarding;
-mod palette;
-mod pane;
+mod features;
 mod platform;
-mod profiles;
-mod providers;
-mod session;
-mod sessions;
-mod settings;
-mod setup;
-mod surge;
-mod terminal;
-mod themes;
-mod ui;
-mod updates;
-mod usage;
-mod workspace;
-mod workspaces;
+mod shared;
+
+use features::setup;
+use platform::instance;
 
 fn main() {
     // An explicit folder selects (or creates) the workspace rooted there;
