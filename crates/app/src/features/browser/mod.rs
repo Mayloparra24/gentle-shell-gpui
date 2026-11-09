@@ -26,13 +26,13 @@ use crate::shared::ui;
 // place, load_url, reload}`, plus `pump` for a toolkit loop GPUI doesn't run
 // (`NEEDS_PUMP`).
 #[cfg(target_os = "linux")]
-#[path = "browser/linux.rs"]
+#[path = "linux.rs"]
 mod native;
 #[cfg(target_os = "macos")]
-#[path = "browser/macos.rs"]
+#[path = "macos.rs"]
 mod native;
 #[cfg(target_os = "windows")]
-#[path = "browser/windows.rs"]
+#[path = "windows.rs"]
 mod native;
 
 /// How often GTK's loop is pumped while the card is open (Linux).
