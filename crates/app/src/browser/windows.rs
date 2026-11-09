@@ -79,21 +79,23 @@ fn register_class() {
     });
 }
 
-fn owner_hwnd(window: &Window) -> Option<HWND> {
+/// The app's window, which owns the popup.
+pub(super) struct Host(HWND);
+
+pub(super) fn host(window: &Window) -> Result<Host, String> {
     // GPUI's own `Window::window_handle` shadows the trait's.
-    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
-        RawWindowHandle::Win32(handle) => Some(HWND(handle.hwnd.get() as *mut c_void)),
-        _ => None,
+    match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
+        Ok(RawWindowHandle::Win32(handle)) => Ok(Host(HWND(handle.hwnd.get() as *mut c_void))),
+        _ => Err("The browser could not find the app's window.".into()),
     }
 }
 
 impl NativeView {
-    pub(super) fn new(
-        window: &Window,
-        url: &str,
-        background: (u8, u8, u8, u8),
-    ) -> Result<Self, String> {
-        let owner = owner_hwnd(window).ok_or("The browser could not find the app's window.")?;
+    /// Pumps the thread's messages until WebView2 is ready
+    /// (`webview2_com::wait_with_pump`), so it must run outside any GPUI
+    /// update: GPUI's window procedure re-enters and would panic.
+    pub(super) fn new(host: Host, url: &str, background: (u8, u8, u8, u8)) -> Result<Self, String> {
+        let owner = host.0;
         register_class();
         let popup = unsafe {
             let module = GetModuleHandleW(None).map_err(|error| error.to_string())?;

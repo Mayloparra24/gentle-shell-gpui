@@ -22,8 +22,9 @@ use gpui_kit::*;
 use crate::ui;
 
 // The native web view, one module per system with the same interface:
-// `NativeView::{new, place, load_url, reload}`, plus `pump` for a toolkit
-// loop GPUI doesn't run (`NEEDS_PUMP`).
+// `host` (the window to build in, taken during a frame), `NativeView::{new,
+// place, load_url, reload}`, plus `pump` for a toolkit loop GPUI doesn't run
+// (`NEEDS_PUMP`).
 #[cfg(target_os = "linux")]
 #[path = "browser/linux.rs"]
 mod native;
@@ -227,8 +228,10 @@ pub struct BrowserPanel {
     drag: Option<Drag>,
     /// The window area the card lives in, as last laid out.
     area: Rc<Cell<(f32, f32)>>,
-    /// The native web view, created when the card is first laid out.
+    /// The native web view, created after the card is first laid out.
     view: Option<native::NativeView>,
+    /// The view is being built (see `place_webview`).
+    creating: bool,
     failed: Option<String>,
     /// Pumps GTK's loop while the card is open (Linux).
     _pump: Option<Task<()>>,
@@ -257,6 +260,7 @@ impl BrowserPanel {
             drag: None,
             area: Rc::new(Cell::new((0., 0.))),
             view: None,
+            creating: false,
             failed: None,
             _pump: pump,
             _window_moves: None,
@@ -330,25 +334,49 @@ impl BrowserPanel {
         }
     }
 
-    /// Place the native view over the card's body, creating it on first use.
-    /// Returns whether it just failed, so the card can say why.
-    fn place_webview(&mut self, bounds: Bounds<Pixels>, window: &Window) -> bool {
-        if self.failed.is_some() {
-            return false;
-        }
-        if self.view.is_none() {
-            match native::NativeView::new(window, &self.url, page_background()) {
-                Ok(view) => self.view = Some(view),
-                Err(error) => {
-                    self.failed = Some(error);
-                    return true;
-                }
-            }
+    /// Place the native view over the card's body. The first call builds it in
+    /// a task instead: that runs outside GPUI's update, which matters because
+    /// WebView2 pumps the thread's messages while it starts and GPUI's window
+    /// procedure would re-enter a borrowed window and abort the app.
+    fn place_webview(&mut self, bounds: Bounds<Pixels>, window: &Window, cx: &mut Context<Self>) {
+        if self.failed.is_some() || self.creating {
+            return;
         }
         if let Some(view) = &mut self.view {
             view.place(window, bounds, !self.covered);
+            return;
         }
-        false
+        let host = match native::host(window) {
+            Ok(host) => host,
+            Err(error) => {
+                self.failed = Some(error);
+                cx.notify();
+                return;
+            }
+        };
+        self.creating = true;
+        let url = self.url.clone();
+        let background = page_background();
+        cx.spawn(async move |this, cx| {
+            let view = native::NativeView::new(host, &url, background);
+            // A card closed meanwhile drops the view, and its popup with it.
+            let _ = this.update(cx, |panel, cx| {
+                panel.creating = false;
+                match view {
+                    Ok(view) => {
+                        // The canvas moved on while the view was starting.
+                        if panel.url != url {
+                            view.load_url(&panel.url);
+                        }
+                        panel.view = Some(view);
+                    }
+                    Err(error) => panel.failed = Some(error),
+                }
+                // The next frame places the view.
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -461,11 +489,7 @@ impl BrowserPanel {
             .child(
                 canvas(
                     move |bounds, window, cx| {
-                        this.update(cx, |panel, cx| {
-                            if panel.place_webview(bounds, window) {
-                                cx.notify();
-                            }
-                        });
+                        this.update(cx, |panel, cx| panel.place_webview(bounds, window, cx));
                     },
                     |_, _, _, _| {},
                 )

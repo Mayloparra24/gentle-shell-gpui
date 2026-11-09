@@ -31,13 +31,26 @@ static GTK: LazyLock<Result<(), String>> = LazyLock::new(|| {
 });
 
 /// The app's X window, as the Xlib handle `wry` asks for.
-struct Parent(c_ulong);
+pub(super) struct Host(c_ulong);
 
-impl HasWindowHandle for Parent {
+impl HasWindowHandle for Host {
     fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
         let raw = RawWindowHandle::Xlib(XlibWindowHandle::new(self.0));
         // SAFETY: the app's window outlives the web view.
         Ok(unsafe { WindowHandle::borrow_raw(raw) })
+    }
+}
+
+pub(super) fn host(window: &Window) -> Result<Host, String> {
+    // GPUI's own `Window::window_handle` shadows the trait's.
+    match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
+        Ok(RawWindowHandle::Xcb(handle)) => Ok(Host(handle.window.get() as c_ulong)),
+        Ok(RawWindowHandle::Xlib(handle)) => Ok(Host(handle.window)),
+        _ => Err(
+            "The in-app browser needs an X11 session; on Wayland the canvas \
+                  opens in your browser."
+                .into(),
+        ),
     }
 }
 
@@ -48,29 +61,13 @@ pub(super) struct NativeView {
 }
 
 impl NativeView {
-    pub(super) fn new(
-        window: &Window,
-        url: &str,
-        background: (u8, u8, u8, u8),
-    ) -> Result<Self, String> {
-        // GPUI's own `Window::window_handle` shadows the trait's.
-        let id = match HasWindowHandle::window_handle(window).map(|handle| handle.as_raw()) {
-            Ok(RawWindowHandle::Xcb(handle)) => handle.window.get() as c_ulong,
-            Ok(RawWindowHandle::Xlib(handle)) => handle.window,
-            _ => {
-                return Err(
-                    "The in-app browser needs an X11 session; on Wayland the canvas \
-                            opens in your browser."
-                        .into(),
-                );
-            }
-        };
+    pub(super) fn new(host: Host, url: &str, background: (u8, u8, u8, u8)) -> Result<Self, String> {
         GTK.clone()?;
         let webview = wry::WebViewBuilder::new()
             .with_url(url)
             .with_background_color(background)
             .with_visible(false)
-            .build_as_child(&Parent(id))
+            .build_as_child(&host)
             .map_err(|error| {
                 format!("The browser could not start: {error}. It needs WebKitGTK 4.1.")
             })?;

@@ -60,6 +60,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 # The in-app browser for the Gentle Design canvas (WKWebView as a child view),
 # and its layer, rounded to the card's corners.
 wry = { version = "0.57", default-features = false }
+raw-window-handle = "0.6"
 objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer"] }
 
 # Embeds the exe icon and version info (see build.rs).
