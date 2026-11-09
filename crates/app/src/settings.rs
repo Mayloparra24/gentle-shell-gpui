@@ -28,6 +28,8 @@ pub enum SettingsEvent {
     ShellCommand(String),
     /// `gentle-shell upgrade` finished: agent tabs restart on the new version.
     BackendUpdated,
+    /// Open the onboarding screen (dependency checks and installs).
+    OpenSetup,
 }
 
 /// Recommended packages, with why. `pi-claude-bridge` is the provider Gentle
@@ -1417,7 +1419,17 @@ impl Render for SettingsView {
                                                         dir.display()
                                                     ))
                                                 })
-                                        }),
+                                        })
+                                        .child(
+                                            Button::new("open-setup")
+                                                .ghost()
+                                                .small()
+                                                .icon(Icon::new(IconName::CircleCheck))
+                                                .label("Setup & requirements")
+                                                .on_click(cx.listener(|_, _, _, cx| {
+                                                    cx.emit(SettingsEvent::OpenSetup)
+                                                })),
+                                        ),
                                 ),
                         )
                         .child(theme_section(&self.transparency, cx))

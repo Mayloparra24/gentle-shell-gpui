@@ -15,8 +15,8 @@ pub use home::{Homes, pi_package, resolve_homes};
 pub use login::{AuthEvent, AuthPrompt, LoginHelper, LoginMessage, PromptOption, ProviderInfo};
 
 pub use launch::{
-    LaunchSpec, backend_version, child_path, forget_versions, resolve_backend, resolve_node,
-    version_output,
+    LaunchSpec, backend_version, child_path, find_program, forget_cached, forget_versions,
+    resolve_backend, resolve_node, set_extra_path, version_output,
 };
 pub use record::{Record, Response, UiMethod, UiRequest, parse_record};
 

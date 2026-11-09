@@ -483,7 +483,7 @@ pub fn read_pi_setting(agent: &Path) -> Option<String> {
 }
 
 /// Set `key` in the app's settings file, keeping every other key.
-fn write_key(path: &Path, key: &str, new: Value) -> std::io::Result<()> {
+pub(crate) fn write_key(path: &Path, key: &str, new: Value) -> std::io::Result<()> {
     let mut value = read_settings(path)
         .filter(Value::is_object)
         .unwrap_or_else(|| Value::Object(Default::default()));

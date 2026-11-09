@@ -22,6 +22,7 @@ use crate::commands::Screen;
 use crate::files::FileTreeView;
 use crate::memory::{MemoryEvent, MemoryView};
 use crate::notices::{self, Notices};
+use crate::onboarding::{OnboardingEvent, OnboardingView, Probe};
 use crate::palette::{
     Category, PaletteAction, PaletteEvent, PaletteInput, PaletteView, WorkspaceRow,
 };
@@ -115,6 +116,7 @@ enum Overlay {
     Memory(Entity<MemoryView>),
     Settings(Entity<SettingsView>),
     Profiles(Entity<ProfilesView>),
+    Onboarding(Entity<OnboardingView>),
 }
 
 struct Pane {
@@ -344,6 +346,20 @@ impl Workspace {
         this.focus_active(window, cx);
         this.start_shown(window, cx);
         this.schedule_save(cx);
+        // First run, or something required missing: onboarding opens by
+        // itself once the checks (blocking; PATH probes) come back.
+        cx.spawn_in(window, async move |this, cx| {
+            let probe = cx.background_executor().spawn(async { Probe::run() }).await;
+            if !probe.needs_onboarding() {
+                return;
+            }
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.overlay.is_none() {
+                    this.open_onboarding(Some(probe), window, cx);
+                }
+            });
+        })
+        .detach();
         this
     }
 
@@ -1562,15 +1578,23 @@ impl Workspace {
     }
 
     fn on_close_overlay(&mut self, _: &CloseOverlay, window: &mut Window, cx: &mut Context<Self>) {
-        if self.overlay.is_some() {
-            self.close_overlay(window, cx);
-        } else {
-            cx.propagate();
+        match &self.overlay {
+            // An install is running: the screen stays until it ends.
+            Some((Overlay::Onboarding(view), _)) if view.read(cx).busy() => {}
+            Some(_) => self.close_overlay(window, cx),
+            None => cx.propagate(),
         }
     }
 
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let retry = matches!(
+            &self.overlay,
+            Some((Overlay::Onboarding(view), _)) if view.read(cx).usable()
+        );
         self.overlay = None;
+        if retry {
+            self.retry_failed_sessions(window, cx);
+        }
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -1661,6 +1685,7 @@ impl Workspace {
             PaletteAction::Usage => self.open_usage(window, cx),
             PaletteAction::Memory => self.open_memory(window, cx),
             PaletteAction::Settings => self.open_settings(window, cx),
+            PaletteAction::Setup => self.open_onboarding(None, window, cx),
             PaletteAction::NewTab => self.on_new_tab(&NewTab, window, cx),
             PaletteAction::NewTerminalTab => self.on_new_terminal_tab(&NewTerminalTab, window, cx),
             PaletteAction::SplitRight => self.split(SplitAxis::Horizontal, None, window, cx),
@@ -1907,6 +1932,7 @@ impl Workspace {
                         tab.update(cx, |session, cx| session.restart_for_update(window, cx));
                     }
                 }
+                SettingsEvent::OpenSetup => this.open_onboarding(None, window, cx),
                 SettingsEvent::ShellCommand(text) => {
                     let view = view.downgrade();
                     let report = move |result: Result<(), String>, cx: &mut App| {
@@ -1975,6 +2001,85 @@ impl Workspace {
         );
         self.overlay = Some((Overlay::Providers(view), subscription));
         cx.notify();
+    }
+
+    /// The onboarding screen; `probe` is a look at the machine already taken.
+    fn open_onboarding(
+        &mut self,
+        probe: Option<Probe>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.new(|cx| OnboardingView::new(probe, cx));
+        let subscription = cx.subscribe_in(
+            &view,
+            window,
+            |this, view, event: &OnboardingEvent, window, cx| match event {
+                OnboardingEvent::Close => this.close_overlay(window, cx),
+                OnboardingEvent::Installed => {
+                    if view.read(cx).usable() {
+                        this.retry_failed_sessions(window, cx);
+                    }
+                }
+                OnboardingEvent::SignIn => {
+                    this.close_overlay(window, cx);
+                    this.open_providers(window, cx);
+                }
+                OnboardingEvent::Terminal(command) => {
+                    this.close_overlay(window, cx);
+                    this.open_setup_terminal(command.clone(), window, cx);
+                }
+            },
+        );
+        self.overlay = Some((Overlay::Onboarding(view), subscription));
+        cx.notify();
+    }
+
+    /// A terminal tab with `command` typed at the prompt for the user to run
+    /// (it may ask for a password); the clipboard holds it when the terminal
+    /// can't take it.
+    fn open_setup_terminal(
+        &mut self,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let home = dirs::home_dir().unwrap_or_else(|| self.active_cwd(cx));
+        let Some(pane) = self.new_pane(PaneKind::Terminal, home, None, None, window, cx) else {
+            cx.write_to_clipboard(ClipboardItem::new_string(command));
+            window.push_notification(
+                Notification::info("The setup command is on your clipboard: run it in a terminal."),
+                cx,
+            );
+            return;
+        };
+        self.push_pane_tab(pane, window, cx);
+        let terminal = self.panes.get(&pane).and_then(|p| {
+            p.item
+                .view
+                .clone()
+                .downcast::<crate::terminal::TerminalView>()
+                .ok()
+        });
+        let note = match terminal {
+            Some(terminal) => {
+                terminal.update(cx, |terminal, cx| terminal.type_when_ready(command, cx));
+                "The command is typed in this terminal: press Enter to run it. Reopen Setup & requirements from the command palette when it's done."
+            }
+            None => {
+                cx.write_to_clipboard(ClipboardItem::new_string(command));
+                "The setup command is on your clipboard: paste it here and press Enter. Reopen Setup & requirements from the command palette when it's done."
+            }
+        };
+        window.push_notification(Notification::info(note), cx);
+    }
+
+    /// Start again every agent tab whose backend could not start (onboarding
+    /// just made gentle-shell available).
+    fn retry_failed_sessions(&self, window: &mut Window, cx: &mut Context<Self>) {
+        for tab in self.sessions() {
+            tab.update(cx, |session, cx| session.retry_start(window, cx));
+        }
     }
 
     // ── Rendering ───────────────────────────────────────────────────────────
@@ -2939,6 +3044,7 @@ impl Render for Workspace {
                 Overlay::Memory(view) => view.clone().into_any_element(),
                 Overlay::Settings(view) => view.clone().into_any_element(),
                 Overlay::Profiles(view) => view.clone().into_any_element(),
+                Overlay::Onboarding(view) => view.clone().into_any_element(),
             }))
             .when_some(self.surge, |root, (run, _)| {
                 root.child(crate::surge::overlay(run))

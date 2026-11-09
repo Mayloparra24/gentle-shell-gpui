@@ -438,6 +438,20 @@ impl SessionView {
         }
     }
 
+    /// Start again a tab whose backend never came up (gentle-shell missing
+    /// or broken, then fixed by onboarding). Running and unstarted tabs are
+    /// left alone; a backend that exited before any conversation counts.
+    pub fn retry_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let never_ran = match &self.backend {
+            Backend::Failed(_) => true,
+            Backend::Exited(_) => self.transcript.items.is_empty(),
+            Backend::Starting | Backend::Ready(_) => false,
+        };
+        if self.started && never_ran {
+            self.start(window, cx);
+        }
+    }
+
     /// Restart the backend in another folder; the conversation starts fresh.
     pub fn change_cwd(&mut self, cwd: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.cwd = cwd;

@@ -302,6 +302,37 @@ impl TerminalView {
         }
     }
 
+    /// Type `text` at the shell's prompt without pressing Enter, once the
+    /// login shell has drawn it (the cursor left the origin, then settled), so
+    /// the line editor receives it as typed input rather than early typeahead.
+    /// Gives up waiting after a few seconds and types anyway.
+    pub fn type_when_ready(&self, text: String, cx: &mut Context<Self>) {
+        let term = self.term.clone();
+        cx.spawn(async move |this, cx| {
+            let started = std::time::Instant::now();
+            let mut last = None;
+            let mut steady = 0;
+            while started.elapsed() < std::time::Duration::from_secs(6) {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(100))
+                    .await;
+                let point = term.lock().grid().cursor.point;
+                let moved = point.line.0 > 0 || point.column.0 > 0;
+                steady = if moved && last == Some(point) {
+                    steady + 1
+                } else {
+                    0
+                };
+                last = Some(point);
+                if steady >= 3 {
+                    break;
+                }
+            }
+            let _ = this.update(cx, |this, cx| this.input(text.into_bytes(), cx));
+        })
+        .detach();
+    }
+
     /// User input: jump back to the live screen, drop the selection, send.
     fn input(&mut self, bytes: Vec<u8>, cx: &mut Context<Self>) {
         if self.exited {

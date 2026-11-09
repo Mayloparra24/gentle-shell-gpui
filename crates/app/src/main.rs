@@ -12,6 +12,7 @@ mod instance;
 mod integration;
 mod memory;
 mod notices;
+mod onboarding;
 mod palette;
 mod pane;
 mod profiles;
@@ -19,6 +20,7 @@ mod providers;
 mod session;
 mod sessions;
 mod settings;
+mod setup;
 mod surge;
 mod terminal;
 mod themes;
@@ -136,6 +138,8 @@ fn main() {
         instance::Role::Forwarded => return,
         instance::Role::Primary(requests) => requests,
     };
+    // Toolchains onboarding installed into the app's own folders.
+    setup::apply_toolchain_path();
     gpui_kit::application()
         .with_assets(assets::AppAssets)
         .run(move |cx| {

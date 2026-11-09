@@ -25,6 +25,8 @@ pub enum PaletteAction {
     Usage,
     Memory,
     Settings,
+    /// The onboarding screen: dependency checks and installs.
+    Setup,
     Agents,
     NewSession,
     /// A new tab with an agent pane.
@@ -412,6 +414,12 @@ fn screen_rows() -> Vec<Row> {
             "Settings",
             "Gentle Shell configuration",
             PaletteAction::Settings,
+        ),
+        row(
+            IconName::CircleCheck,
+            "Setup & requirements",
+            "Check Node, Gentle Shell, providers and extras; install what's missing",
+            PaletteAction::Setup,
         ),
         row(
             IconName::Plus,

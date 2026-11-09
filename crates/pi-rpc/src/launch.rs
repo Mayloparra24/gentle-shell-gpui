@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, Mutex};
+use std::sync::Mutex;
 
 use crate::file_cache::Stamp;
 
@@ -62,9 +62,29 @@ pub fn resolve_node(cwd: &Path) -> Result<PathBuf> {
         .map_err(|_| anyhow::anyhow!("node was not found on your PATH"))
 }
 
+/// `name` on the merged search PATH (with the app's extra dirs first).
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    let cwd = std::env::temp_dir();
+    which::which_in(name, Some(search_path()), cwd).ok()
+}
+
 /// The merged search PATH handed to every child.
 pub fn child_path() -> OsString {
     search_path()
+}
+
+/// Directories searched before everything else (toolchains the app installed
+/// into folders it owns). Replaces the previous list.
+pub fn set_extra_path(dirs: Vec<PathBuf>) {
+    *EXTRA_PATH.lock().unwrap_or_else(|e| e.into_inner()) = dirs;
+}
+
+/// Forget everything resolved from the environment: cached `--version`
+/// output and the login shell's PATH (both recomputed on next use), after
+/// something was installed.
+pub fn forget_cached() {
+    forget_versions();
+    *BASE_PATH.lock().unwrap_or_else(|e| e.into_inner()) = None;
 }
 
 /// The launcher's own version line (`gentle-shell 4.6.0` → `4.6.0`).
@@ -146,24 +166,44 @@ fn run_version(spec: &LaunchSpec) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// The login shell's PATH merged ahead of the inherited one, computed once.
-static SEARCH_PATH: LazyLock<OsString> = LazyLock::new(|| {
+static EXTRA_PATH: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// The login shell's PATH merged ahead of the inherited one, computed on
+/// first use and again after `forget_cached`.
+static BASE_PATH: Mutex<Option<OsString>> = Mutex::new(None);
+
+fn base_path() -> OsString {
     let mut dirs: Vec<PathBuf> = Vec::new();
     if let Some(login) = login_shell_path() {
         dirs.extend(std::env::split_paths(&login));
     }
-    if let Some(current) = std::env::var_os("PATH") {
-        for dir in std::env::split_paths(&current) {
-            if !dirs.contains(&dir) {
-                dirs.push(dir);
-            }
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    merge_paths(dirs, &current).unwrap_or(current)
+}
+
+/// `first`, then every dir of `rest` not already in it.
+fn merge_paths(first: Vec<PathBuf>, rest: &OsString) -> Option<OsString> {
+    let mut dirs = first;
+    for dir in std::env::split_paths(rest) {
+        if !dirs.contains(&dir) {
+            dirs.push(dir);
         }
     }
-    std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
-});
+    std::env::join_paths(dirs).ok()
+}
 
 fn search_path() -> OsString {
-    SEARCH_PATH.clone()
+    // Held while the login shell runs, so concurrent callers share one run.
+    let base = BASE_PATH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(base_path)
+        .clone();
+    let extra = EXTRA_PATH.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if extra.is_empty() {
+        return base;
+    }
+    merge_paths(extra, &base).unwrap_or(base)
 }
 
 #[cfg(unix)]
@@ -222,6 +262,16 @@ mod tests {
         let file = File::options().write(true).open(path).unwrap();
         file.set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(secs))
             .unwrap();
+    }
+
+    #[test]
+    fn extra_dirs_come_first_without_duplicates() {
+        let base = OsString::from("/usr/bin:/opt/x/bin:/bin");
+        let merged = merge_paths(vec!["/opt/x/bin".into(), "/tc/node/bin".into()], &base).unwrap();
+        assert_eq!(
+            merged,
+            OsString::from("/opt/x/bin:/tc/node/bin:/usr/bin:/bin")
+        );
     }
 
     #[test]
