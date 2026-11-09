@@ -498,12 +498,13 @@ pub fn spring(t: f32) -> f32 {
     1. + c3 * (t - 1.).powi(3) + c1 * (t - 1.).powi(2)
 }
 
-/// Fade and rise into place once, when first rendered.
+/// Fade and rise into place once, when first rendered. It slides with
+/// `relative().top()`, like [`pop_in`], so the rows around it don't move.
 pub fn appear(id: impl Into<ElementId>, element: Div) -> AnimationElement<Div> {
     element.with_animation(
         id,
         Animation::new(Duration::from_millis(220)).with_easing(ease_out_quint()),
-        |el, t| el.opacity(t).mt(px((1.0 - t) * 6.0)),
+        |el, t| el.opacity(t).relative().top(px((1.0 - t) * 6.0)),
     )
 }
 
