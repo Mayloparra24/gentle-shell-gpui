@@ -2292,9 +2292,27 @@ impl SessionView {
     }
 
     fn render_mode_picker(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        // The chip is this session's live mode; the menu picks the default
+        // new sessions start in (Gentle Shell can't switch a live session
+        // over RPC). When they differ the chip shows both.
         let current = self.mode;
+        let default = self.default_mode.or(current);
+        let pending = default.filter(|d| current.is_some_and(|c| c != *d));
         let (icon, color) = mode_style(current);
         let weak = cx.entity().downgrade();
+        let label = match (current, pending) {
+            (Some(live), Some(next)) => format!("{} → {}", live.label(), next.label()),
+            (Some(live), None) => live.label().to_string(),
+            (None, _) => "Permissions".to_string(),
+        };
+        let tooltip = match (current, pending) {
+            (Some(live), Some(next)) => format!(
+                "This session runs in {}; new sessions start in {} (⌘N)",
+                live.label(),
+                next.label()
+            ),
+            _ => "Permission mode for new sessions".to_string(),
+        };
         let trigger = Button::new("mode-picker")
             .ghost()
             .xsmall()
@@ -2304,8 +2322,8 @@ impl SessionView {
             .border_1()
             .border_color(color.opacity(0.25))
             .icon(Icon::new(icon))
-            .label(current.map_or("Permissions", |m| m.label()))
-            .tooltip("Permission mode for new sessions");
+            .label(label)
+            .tooltip(tooltip);
         Popover::new("mode-popover")
             .anchor(Anchor::BottomRight)
             .trigger(trigger)
@@ -2318,7 +2336,7 @@ impl SessionView {
                     .map(|(i, mode)| {
                         let (icon, color) = mode_style(Some(mode));
                         let weak = weak.clone();
-                        let is_current = current == Some(mode);
+                        let is_current = default == Some(mode);
                         h_flex()
                             .id(("mode", i))
                             .relative()
@@ -2391,7 +2409,14 @@ impl SessionView {
                             .pb_1()
                             .text_size(px(11.))
                             .text_color(ui::faint())
-                            .child("Applies from the next session"),
+                            .child(match (current, pending) {
+                                (Some(live), Some(next)) => format!(
+                                    "This conversation stays in {}; ⌘N starts one in {}.",
+                                    live.label(),
+                                    next.label()
+                                ),
+                                _ => "Applies from the next session".to_string(),
+                            }),
                     );
                 ui::island(cx)
                     .w_full()

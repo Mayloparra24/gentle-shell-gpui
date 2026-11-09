@@ -78,6 +78,15 @@ pub fn save_default_mode(config: &Path, mode: PermissionMode) -> std::io::Result
     std::fs::rename(&temp, &target)
 }
 
+/// The default fresh sessions start in, from `<config>/permission-mode.json`
+/// (`None` when there's no valid file: Gentle Shell then starts in Normal).
+pub fn read_default_mode(config: &Path) -> Option<PermissionMode> {
+    let text = std::fs::read_to_string(config.join("permission-mode.json")).ok()?;
+    let value: Value = serde_json::from_str(&text).ok()?;
+    let id = value["mode"].as_str()?;
+    PermissionMode::ALL.into_iter().find(|mode| mode.id() == id)
+}
+
 // ── Background jobs ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -332,7 +341,14 @@ mod tests {
             "the policy rejects extra keys"
         );
         assert_eq!(raw["mode"], "yolo");
-        std::fs::remove_dir_all(dir).unwrap();
+        // What the picker's check mark reads back.
+        assert_eq!(read_default_mode(&dir), Some(PermissionMode::Yolo));
+        save_default_mode(&dir, PermissionMode::SuperYolo).unwrap();
+        assert_eq!(read_default_mode(&dir), Some(PermissionMode::SuperYolo));
+        std::fs::write(dir.join("permission-mode.json"), "{\"mode\":\"bogus\"}").unwrap();
+        assert_eq!(read_default_mode(&dir), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(read_default_mode(&dir), None);
     }
 
     #[test]

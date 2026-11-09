@@ -134,7 +134,10 @@ pub struct SessionView {
     /// `bash_background`/`monitor` commands by tool call, to label their jobs.
     job_commands: HashMap<String, String>,
     phase: Option<&'static str>,
+    /// This session's live permission mode (Gentle Shell's `gentle:mode`
+    /// status), and the default new sessions start in (`permission-mode.json`).
     mode: Option<crate::gentle_state::PermissionMode>,
+    default_mode: Option<crate::gentle_state::PermissionMode>,
     _agents_ticker: Task<()>,
     todo: Vec<TodoTask>,
     /// The task island is unfolded (see [`view`] for the morph).
@@ -301,6 +304,7 @@ impl SessionView {
             job_commands: HashMap::new(),
             phase: None,
             mode: None,
+            default_mode: crate::gentle_state::read_default_mode(&pi_rpc::resolve_homes().config),
             _agents_ticker: Task::ready(()),
             todo: Vec::new(),
             todo_open: false,
@@ -1711,18 +1715,26 @@ impl SessionView {
             cx.notify();
             return;
         }
-        if self.transcript.items.is_empty() {
+        self.default_mode = Some(mode);
+        let live = self
+            .mode
+            .unwrap_or(crate::gentle_state::PermissionMode::Normal);
+        let note = if self.transcript.items.is_empty() {
+            // Nothing to lose: start over in the new mode now.
             self.new_session(window, cx);
+            format!("New session in {}.", mode.label())
+        } else if live == mode {
+            format!("New sessions start in {} too.", mode.label())
         } else {
-            self.transcript.notice(
-                NoticeLevel::Info,
-                format!(
-                    "{} saved as the default. It applies from the next session (⌘N).",
-                    mode.label()
-                ),
-            );
-            cx.notify();
-        }
+            format!(
+                "New sessions start in {}. This conversation stays in {}; ⌘N starts one in {}.",
+                mode.label(),
+                live.label(),
+                mode.label()
+            )
+        };
+        window.push_notification(Notification::info(note), cx);
+        cx.notify();
     }
 
     /// Gentle Shell has no host-side stop for helpers; ask the agent to cancel it.
