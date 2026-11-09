@@ -213,6 +213,9 @@ pub fn pi_package(spec: &LaunchSpec) -> Option<PathBuf> {
     // Unix: the npm bin is a symlink into <gentle-pi>/bin/.
     if let Some(root) = launcher.parent().and_then(Path::parent) {
         roots.push(root.to_path_buf());
+        // Self-contained install (4.7): `<prefix>/bin/gentle-shell[.cmd]` is a
+        // generated script; the active version lives in `<prefix>/current`.
+        roots.push(root.join("current").join("node_modules").join("gentle-pi"));
     }
     // Windows: `<prefix>/gentle-shell.cmd` beside `<prefix>/node_modules/gentle-pi`.
     if let Some(dir) = spec.program.parent() {
@@ -322,5 +325,31 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
         assert_eq!(memo_by_stamp(&slot, &path, read), None);
+    }
+
+    #[test]
+    fn pi_package_is_found_in_a_self_contained_install() {
+        let prefix = std::env::temp_dir().join(format!("pi-rpc-bundled-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&prefix);
+        let launcher = prefix.join("bin").join("gentle-shell");
+        let pi = prefix
+            .join("current")
+            .join("node_modules")
+            .join("@earendil-works")
+            .join("pi-coding-agent");
+        std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(pi.join("dist")).unwrap();
+        std::fs::create_dir_all(prefix.join("current/node_modules/gentle-pi/bin")).unwrap();
+        std::fs::write(&launcher, "#!/bin/sh\n").unwrap();
+        std::fs::write(pi.join("dist").join("index.js"), "").unwrap();
+        let spec = LaunchSpec {
+            program: launcher,
+            args: Vec::new(),
+            cwd: prefix.clone(),
+            env: Vec::new(),
+        };
+        let found = pi_package(&spec).map(|p| dunce::canonicalize(p).unwrap());
+        assert_eq!(found, Some(dunce::canonicalize(&pi).unwrap()));
+        std::fs::remove_dir_all(&prefix).unwrap();
     }
 }
