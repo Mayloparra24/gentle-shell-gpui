@@ -314,11 +314,7 @@ pub fn check_setup(launcher: &Result<Launcher, String>) -> (Status, Fix) {
             )
         };
     }
-    let config_path = std::env::var_os("GENTLE_SHELL_CONFIG")
-        .filter(|p| !p.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| user_home().join(".gentle-shell").join("config.json"));
-    let config = read_json(&config_path).unwrap_or(Value::Null);
+    let config = read_json(&pi_rpc::launcher_config_path()).unwrap_or(Value::Null);
     let root = crate::features::profiles::gentle_pi_root(&launcher.spec.program);
     let pin = gentle_ai_pin(root.as_deref());
     match marker_state(
