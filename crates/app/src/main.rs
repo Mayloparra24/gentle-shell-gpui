@@ -1,8 +1,11 @@
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod activity;
 mod alerts;
 mod app_update;
 mod assets;
 mod banner;
+mod browser;
 mod commands;
 mod files;
 mod gentle_state;
@@ -11,6 +14,7 @@ mod instance;
 mod integration;
 mod memory;
 mod notices;
+mod onboarding;
 mod palette;
 mod pane;
 mod profiles;
@@ -18,6 +22,7 @@ mod providers;
 mod session;
 mod sessions;
 mod settings;
+mod setup;
 mod surge;
 mod terminal;
 mod themes;
@@ -67,7 +72,7 @@ pub fn default_cwd() -> PathBuf {
     parse_cli()
         .folder
         .filter(|p| p.is_dir())
-        .and_then(|p| p.canonicalize().ok())
+        .and_then(|p| dunce::canonicalize(p).ok())
         .or_else(|| {
             std::env::current_dir()
                 .ok()
@@ -124,7 +129,7 @@ fn main() {
     let folder = cli
         .folder
         .filter(|p| p.is_dir())
-        .and_then(|p| p.canonicalize().ok());
+        .and_then(|p| dunce::canonicalize(p).ok());
     let prompt = cli.prompt;
     // Only one app per user: a second launch hands its request over and exits.
     let request = instance::OpenRequest {
@@ -135,6 +140,8 @@ fn main() {
         instance::Role::Forwarded => return,
         instance::Role::Primary(requests) => requests,
     };
+    // Toolchains onboarding installed into the app's own folders.
+    setup::apply_toolchain_path();
     gpui_kit::application()
         .with_assets(assets::AppAssets)
         .run(move |cx| {

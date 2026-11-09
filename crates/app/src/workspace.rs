@@ -22,6 +22,7 @@ use crate::commands::Screen;
 use crate::files::FileTreeView;
 use crate::memory::{MemoryEvent, MemoryView};
 use crate::notices::{self, Notices};
+use crate::onboarding::{OnboardingEvent, OnboardingView, Probe};
 use crate::palette::{
     Category, PaletteAction, PaletteEvent, PaletteInput, PaletteView, WorkspaceRow,
 };
@@ -115,6 +116,7 @@ enum Overlay {
     Memory(Entity<MemoryView>),
     Settings(Entity<SettingsView>),
     Profiles(Entity<ProfilesView>),
+    Onboarding(Entity<OnboardingView>),
 }
 
 struct Pane {
@@ -263,6 +265,8 @@ pub struct Workspace {
     surge: Option<(u64, std::time::Instant)>,
     surge_runs: u64,
     _surge_end: Option<Task<()>>,
+    /// The in-app browser showing Gentle Design's canvas, if open.
+    browser: Option<(Entity<crate::browser::BrowserPanel>, Subscription)>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -312,6 +316,7 @@ impl Workspace {
             renaming: None,
             surge: None,
             surge_runs: 0,
+            browser: None,
             _surge_end: None,
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {
@@ -341,6 +346,20 @@ impl Workspace {
         this.focus_active(window, cx);
         this.start_shown(window, cx);
         this.schedule_save(cx);
+        // First run, or something required missing: onboarding opens by
+        // itself once the checks (blocking; PATH probes) come back.
+        cx.spawn_in(window, async move |this, cx| {
+            let probe = cx.background_executor().spawn(async { Probe::run() }).await;
+            if !probe.needs_onboarding() {
+                return;
+            }
+            let _ = this.update_in(cx, |this, window, cx| {
+                if this.overlay.is_none() {
+                    this.open_onboarding(Some(probe), window, cx);
+                }
+            });
+        })
+        .detach();
         this
     }
 
@@ -913,6 +932,7 @@ impl Workspace {
                     this.open_screen(*screen, Some(session.clone()), window, cx)
                 }
                 SessionEvent::MaxEffort => this.play_surge(cx),
+                SessionEvent::DesignCanvas(canvas) => this.show_design_canvas(canvas.clone(), cx),
                 SessionEvent::Notice { level, message } => {
                     let source = this.pane_title(id);
                     let (level, message) = (*level, message.clone());
@@ -1558,15 +1578,23 @@ impl Workspace {
     }
 
     fn on_close_overlay(&mut self, _: &CloseOverlay, window: &mut Window, cx: &mut Context<Self>) {
-        if self.overlay.is_some() {
-            self.close_overlay(window, cx);
-        } else {
-            cx.propagate();
+        match &self.overlay {
+            // An install is running: the screen stays until it ends.
+            Some((Overlay::Onboarding(view), _)) if view.read(cx).busy() => {}
+            Some(_) => self.close_overlay(window, cx),
+            None => cx.propagate(),
         }
     }
 
     fn close_overlay(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let retry = matches!(
+            &self.overlay,
+            Some((Overlay::Onboarding(view), _)) if view.read(cx).usable()
+        );
         self.overlay = None;
+        if retry {
+            self.retry_failed_sessions(window, cx);
+        }
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -1657,6 +1685,7 @@ impl Workspace {
             PaletteAction::Usage => self.open_usage(window, cx),
             PaletteAction::Memory => self.open_memory(window, cx),
             PaletteAction::Settings => self.open_settings(window, cx),
+            PaletteAction::Setup => self.open_onboarding(None, window, cx),
             PaletteAction::NewTab => self.on_new_tab(&NewTab, window, cx),
             PaletteAction::NewTerminalTab => self.on_new_terminal_tab(&NewTerminalTab, window, cx),
             PaletteAction::SplitRight => self.split(SplitAxis::Horizontal, None, window, cx),
@@ -1702,6 +1731,29 @@ impl Workspace {
             PaletteAction::OpenFile(path) => self.open_file(path, window, cx),
             PaletteAction::SwitchBranch(branch) => self.confirm_switch_branch(branch, window, cx),
         }
+    }
+
+    /// Show Gentle Design's canvas in the in-app browser, reload it when the
+    /// canvas refreshes, and close it when the canvas stops.
+    fn show_design_canvas(&mut self, canvas: crate::browser::CanvasNotice, cx: &mut Context<Self>) {
+        use crate::browser::{BrowserEvent, BrowserPanel, CanvasNotice};
+        match canvas {
+            CanvasNotice::Stopped => self.browser = None,
+            CanvasNotice::Open { url, .. } => match &self.browser {
+                Some((browser, _)) => browser.update(cx, |browser, cx| browser.navigate(url, cx)),
+                None => {
+                    let browser = cx.new(|cx| BrowserPanel::new(url, cx));
+                    let subscription = cx.subscribe(&browser, |this, _, event, cx| match event {
+                        BrowserEvent::Close => {
+                            this.browser = None;
+                            cx.notify();
+                        }
+                    });
+                    self.browser = Some((browser, subscription));
+                }
+            },
+        }
+        cx.notify();
     }
 
     /// Play the max-effort surge over the window; choosing max again
@@ -1880,6 +1932,10 @@ impl Workspace {
                         tab.update(cx, |session, cx| session.restart_for_update(window, cx));
                     }
                 }
+                SettingsEvent::Setup(event) => {
+                    let usable = view.read(cx).setup_usable(cx);
+                    this.on_setup_event(event, usable, window, cx);
+                }
                 SettingsEvent::ShellCommand(text) => {
                     let view = view.downgrade();
                     let report = move |result: Result<(), String>, cx: &mut App| {
@@ -1950,6 +2006,101 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The onboarding screen; `probe` is a look at the machine already taken.
+    fn open_onboarding(
+        &mut self,
+        probe: Option<Probe>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let view = cx.new(|cx| OnboardingView::new(probe, cx));
+        let subscription = cx.subscribe_in(
+            &view,
+            window,
+            |this, view, event: &OnboardingEvent, window, cx| {
+                let usable = view.read(cx).usable();
+                this.on_setup_event(event, usable, window, cx);
+            },
+        );
+        self.overlay = Some((Overlay::Onboarding(view), subscription));
+        cx.notify();
+    }
+
+    /// An action from the setup checklist, on the onboarding screen or in
+    /// Configuration (which is closed first, like the screen, when the action
+    /// moves elsewhere). `usable`: gentle-shell can start as of its last look.
+    fn on_setup_event(
+        &mut self,
+        event: &OnboardingEvent,
+        usable: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            OnboardingEvent::Close => self.close_overlay(window, cx),
+            OnboardingEvent::Installed => {
+                if usable {
+                    self.retry_failed_sessions(window, cx);
+                }
+            }
+            OnboardingEvent::SignIn => {
+                self.close_overlay(window, cx);
+                self.open_providers(window, cx);
+            }
+            OnboardingEvent::Terminal(command) => {
+                self.close_overlay(window, cx);
+                self.open_setup_terminal(command.clone(), window, cx);
+            }
+        }
+    }
+
+    /// A terminal tab with `command` typed at the prompt for the user to run
+    /// (it may ask for a password); the clipboard holds it when the terminal
+    /// can't take it.
+    fn open_setup_terminal(
+        &mut self,
+        command: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let home = dirs::home_dir().unwrap_or_else(|| self.active_cwd(cx));
+        let Some(pane) = self.new_pane(PaneKind::Terminal, home, None, None, window, cx) else {
+            cx.write_to_clipboard(ClipboardItem::new_string(command));
+            window.push_notification(
+                Notification::info("The setup command is on your clipboard: run it in a terminal."),
+                cx,
+            );
+            return;
+        };
+        self.push_pane_tab(pane, window, cx);
+        let terminal = self.panes.get(&pane).and_then(|p| {
+            p.item
+                .view
+                .clone()
+                .downcast::<crate::terminal::TerminalView>()
+                .ok()
+        });
+        let note = match terminal {
+            Some(terminal) => {
+                terminal.update(cx, |terminal, cx| terminal.type_when_ready(command, cx));
+                "The command is typed in this terminal: press Enter to run it. Reopen Setup & requirements from the command palette when it's done."
+            }
+            None => {
+                cx.write_to_clipboard(ClipboardItem::new_string(command));
+                "The setup command is on your clipboard: paste it here and press Enter. Reopen Setup & requirements from the command palette when it's done."
+            }
+        };
+        window.push_notification(Notification::info(note), cx);
+    }
+
+    /// Start again every agent tab whose backend could not start (onboarding
+    /// just made gentle-shell available).
+    fn retry_failed_sessions(&self, window: &mut Window, cx: &mut Context<Self>) {
+        for tab in self.sessions() {
+            tab.update(cx, |session, cx| session.retry_start(window, cx));
+        }
+    }
+
     // ── Rendering ───────────────────────────────────────────────────────────
 
     // The chrome reads each pane's `title`/`running` snapshot, never the
@@ -1990,7 +2141,10 @@ impl Workspace {
             .cursor_pointer()
             .hover(|s| s.bg(ui::surface_hover().opacity(0.6)))
             .tooltip(|window, cx| Tooltip::new("Switch workspace").build(window, cx))
-            // Keep clicks on the chip from turning into window drags.
+            // Keep clicks on the chip from turning into window drags: `occlude`
+            // hides the title bar's drag area from Windows' hit test, and
+            // stopping the mouse-down keeps TitleBar from starting a move.
+            .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _, window, cx| {
                 this.open_palette(Category::Workspaces, window, cx)
@@ -2064,7 +2218,9 @@ impl Workspace {
                         this.text_color(ui::muted())
                             .hover(|s| s.bg(ui::surface_hover().opacity(0.6)).text_color(ui::fg()))
                     })
-                    // Keep clicks on tabs from turning into window drags.
+                    // Keep clicks on tabs from turning into window drags (see the
+                    // workspace chip).
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     // A double-click on an agent tab renames its session.
                     .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
@@ -2166,6 +2322,7 @@ impl Workspace {
             .child(
                 div()
                     .ml(px(2.))
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(title_button("new-tab", IconName::Plus).dropdown_menu(
                         move |menu, _, _| {
@@ -2554,6 +2711,11 @@ impl Render for Workspace {
         let has_sidebar = self.sidebar.is_some();
         // Below this the screen buttons fold into one overflow menu.
         let narrow = window.viewport_size().width < px(900.);
+        // The browser's native view would cover a screen opened over it.
+        if let Some((browser, _)) = &self.browser {
+            let covered = self.overlay.is_some();
+            browser.update(cx, |browser, cx| browser.set_covered(covered, cx));
+        }
         // While the surge plays, the window shakes before the rose hatches:
         // the root moves in place and asks for the next frame, so the element
         // tree (and every element's state) stays the same.
@@ -2613,6 +2775,9 @@ impl Render for Workspace {
                                 h_flex()
                                     .flex_none()
                                     .gap_1()
+                                    // Without this, Windows answers clicks on these
+                                    // buttons as title-bar drags (HTCAPTION).
+                                    .occlude()
                                     // Tern keeps pane layout in the title bar, so
                                     // panes carry no header; these act on the
                                     // focused pane.
@@ -2898,6 +3063,7 @@ impl Render for Workspace {
                             .child(self.render_body(window, cx)),
                     ),
             )
+            .children(self.browser.as_ref().map(|(browser, _)| browser.clone()))
             .children(self.overlay.as_ref().map(|(overlay, _)| match overlay {
                 Overlay::Providers(view) => view.clone().into_any_element(),
                 Overlay::Sessions(view) => view.clone().into_any_element(),
@@ -2906,6 +3072,7 @@ impl Render for Workspace {
                 Overlay::Memory(view) => view.clone().into_any_element(),
                 Overlay::Settings(view) => view.clone().into_any_element(),
                 Overlay::Profiles(view) => view.clone().into_any_element(),
+                Overlay::Onboarding(view) => view.clone().into_any_element(),
             }))
             .when_some(self.surge, |root, (run, _)| {
                 root.child(crate::surge::overlay(run))

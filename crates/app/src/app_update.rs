@@ -655,7 +655,7 @@ fn stage_beside(new: &Path, target: &Path) -> io::Result<PathBuf> {
     let _ = fs::remove_dir_all(&staged);
     if fs::rename(new, &staged).is_err() {
         // Another volume: copy, keeping symlinks, modes and signatures.
-        let status = Command::new("ditto").arg(new).arg(&staged).status()?;
+        let status = pi_rpc::command("ditto").arg(new).arg(&staged).status()?;
         if !status.success() {
             let _ = fs::remove_dir_all(&staged);
             return Err(io::Error::other(format!("ditto failed ({status})")));
@@ -736,7 +736,7 @@ fn replace(target: &Target, payload: &Path) -> Result<(), Problem> {
             }
             // Downloads made by this app carry no quarantine, but a copied
             // bundle might; failing to strip it is harmless.
-            let _ = Command::new("xattr")
+            let _ = pi_rpc::command("xattr")
                 .args(["-dr", "com.apple.quarantine"])
                 .arg(bundle)
                 .stdout(Stdio::null())
@@ -766,7 +766,7 @@ fn install_blocking(
     progress: &mut dyn FnMut(Phase),
 ) -> Result<PathBuf, Problem> {
     let exe = std::env::current_exe().map_err(fail("Couldn't locate the running app"))?;
-    let exe = exe.canonicalize().unwrap_or(exe);
+    let exe = dunce::canonicalize(&exe).unwrap_or(exe);
     let target = install_target(&exe, std::env::consts::OS)?;
     ensure_writable(target.path().parent().unwrap_or(target.path()))?;
     let asset = platform_asset(release).ok_or_else(|| {
@@ -1283,7 +1283,7 @@ mod tests {
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
         std::os::unix::fs::symlink("MacOS", bundle.join("Contents/Current")).unwrap();
         let archive = dir.join("a.zip");
-        let status = Command::new("ditto")
+        let status = pi_rpc::command("ditto")
             .args(["-c", "-k", "--keepParent"])
             .arg(&bundle)
             .arg(&archive)

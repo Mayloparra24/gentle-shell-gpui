@@ -84,23 +84,37 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
-            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+            libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
+            libwebkit2gtk-4.1-dev libgtk-3-dev
       - name: Package macOS app
         if: runner.os == 'macOS'
         run: packaging/macos/bundle.sh "${{ matrix.target }}" "$VERSION"
       - name: Package Linux tarball
         if: runner.os == 'Linux'
         run: packaging/linux/package.sh "${{ matrix.target }}" "$VERSION"
-      - name: Package Windows zip
+      - name: Package Windows zip and installer
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           cargo build --profile dist --locked -p gentle-shell-gpui --target "${{ matrix.target }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $exe = "target/${{ matrix.target }}/dist/gentle-shell-gpui.exe"
           New-Item -ItemType Directory -Force dist | Out-Null
-          Compress-Archive -Force `
-            -Path "target/${{ matrix.target }}/dist/gentle-shell-gpui.exe" `
+          # The zip is what the in-app updater downloads.
+          Compress-Archive -Force -Path $exe `
             -DestinationPath "dist/gentle-shell-gpui-$env:VERSION-windows-x86_64.zip"
+          # The installer is what people download (per-user, no admin).
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          & $iscc "/DAppVersion=$env:VERSION" `
+            "/DSourceExe=$((Resolve-Path $exe).Path)" `
+            "/DOutputDir=$((Resolve-Path dist).Path)" `
+            "/DIconFile=$((Resolve-Path packaging/icons/icon.ico).Path)" `
+            packaging/windows/installer.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - uses: actions/upload-artifact@v4
         with:
           name: asset-${{ matrix.target }}
@@ -108,6 +122,7 @@ jobs:
             dist/gentle-shell-gpui-${{ env.VERSION }}-*.zip
             dist/gentle-shell-gpui-${{ env.VERSION }}-*.dmg
             dist/gentle-shell-gpui-${{ env.VERSION }}-*.tar.gz
+            dist/gentle-shell-gpui-${{ env.VERSION }}-*-setup.exe
           if-no-files-found: error
 
   release:
@@ -132,6 +147,7 @@ jobs:
             "gentle-shell-gpui-$VERSION-macos-x86_64.zip"
             "gentle-shell-gpui-$VERSION-macos-x86_64.dmg"
             "gentle-shell-gpui-$VERSION-windows-x86_64.zip"
+            "gentle-shell-gpui-$VERSION-windows-x86_64-setup.exe"
             "gentle-shell-gpui-$VERSION-linux-x86_64.tar.gz"
           )
           for asset in "${expected[@]}"; do

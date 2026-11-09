@@ -28,6 +28,9 @@ pub enum SettingsEvent {
     ShellCommand(String),
     /// `gentle-shell upgrade` finished: agent tabs restart on the new version.
     BackendUpdated,
+    /// An action from the Setup & requirements checklist (sign in, a
+    /// terminal command, an install that finished) for the window to carry out.
+    Setup(crate::onboarding::OnboardingEvent),
 }
 
 /// Recommended packages, with why. `pi-claude-bridge` is the provider Gentle
@@ -332,7 +335,7 @@ pub fn forget_claude_auth() {
 fn claude_auth_status() -> Option<String> {
     let stamp = dirs::home_dir().and_then(|home| Stamp::of(&home.join(".claude.json")));
     reuse_or_run(&CLAUDE_AUTH, Instant::now(), CLAUDE_AUTH_TTL, stamp, || {
-        let mut claude = std::process::Command::new("claude");
+        let mut claude = pi_rpc::command("claude");
         claude
             .args(["auth", "status"])
             .stdin(std::process::Stdio::null())
@@ -418,12 +421,17 @@ pub struct SettingsView {
     background_note: Option<(String, bool)>,
     /// `gentle-shell upgrade` running.
     upgrading: bool,
-    /// Its last output lines and whether it failed.
-    upgrade_log: Option<(Vec<String>, bool)>,
+    /// How the last `gentle-shell upgrade` ended, with its last output lines.
+    upgrade: Option<UpgradeResult>,
+    /// "Skip this version" couldn't be saved.
+    skip_error: Option<String>,
     /// Re-render as this app's own update moves along.
     _app_update: Subscription,
     /// A failed notifications.json write.
     notifications_note: Option<String>,
+    /// Setup & requirements: the onboarding checklist, embedded.
+    setup: Entity<crate::onboarding::OnboardingView>,
+    _setup: Subscription,
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -463,6 +471,10 @@ impl SettingsView {
             };
             themes::set_transparency(value / 100., persist, cx);
         });
+        let setup = cx.new(crate::onboarding::OnboardingView::embedded);
+        let setup_sub = cx.subscribe(&setup, |_, _, event, cx| {
+            cx.emit(SettingsEvent::Setup(event.clone()));
+        });
         let mut this = Self {
             cwd,
             snapshot: None,
@@ -477,12 +489,20 @@ impl SettingsView {
             background_pending: false,
             background_note: None,
             upgrading: false,
-            upgrade_log: None,
+            upgrade: None,
+            skip_error: None,
             _app_update: cx.observe_global::<app_update::AppUpdate>(|_, cx| cx.notify()),
             notifications_note: None,
+            setup,
+            _setup: setup_sub,
         };
         this.reload(cx);
         this
+    }
+
+    /// gentle-shell can start, as of the Setup & requirements checklist.
+    pub fn setup_usable(&self, cx: &App) -> bool {
+        self.setup.read(cx).usable()
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
@@ -524,7 +544,7 @@ impl SettingsView {
                 .background_executor()
                 .spawn(async move {
                     let spec = pi_rpc::resolve_backend(&cwd).map_err(|e| format!("{e:#}"))?;
-                    let mut command = std::process::Command::new(&spec.program);
+                    let mut command = pi_rpc::command(&spec.program);
                     // Launcher options (home selectors) precede the subcommand.
                     command
                         .args(spec.args.iter().take_while(|a| *a != "--mode"))
@@ -588,22 +608,26 @@ impl SettingsView {
         self.reload(cx);
     }
 
-    /// Gentle Shell's own `upgrade` (it knows how it was installed: npm, pnpm
-    /// or the bundled installer). No TTY, so its one optional question about
-    /// moving to the bundled installer answers No.
-    fn run_upgrade(&mut self, cx: &mut Context<Self>) {
+    /// Gentle Shell's own `upgrade` toward `target` (it knows how it was
+    /// installed; since 4.7 it moves to its self-contained install), then ask
+    /// the launcher the app resolves now which version it runs: that's the
+    /// result shown.
+    fn run_upgrade(&mut self, target: String, cx: &mut Context<Self>) {
         if self.upgrading {
             return;
         }
         self.upgrading = true;
-        self.upgrade_log = None;
+        self.upgrade = None;
         let cwd = self.cwd.clone();
         self._job = cx.spawn(async move |this, cx| {
-            let result = cx
+            let (succeeded, text, running, launcher) = cx
                 .background_executor()
                 .spawn(async move {
-                    let spec = pi_rpc::resolve_backend(&cwd).map_err(|e| format!("{e:#}"))?;
-                    let mut command = std::process::Command::new(&spec.program);
+                    let spec = match pi_rpc::resolve_backend(&cwd) {
+                        Ok(spec) => spec,
+                        Err(error) => return (false, format!("{error:#}"), None, None),
+                    };
+                    let mut command = pi_rpc::command(&spec.program);
                     command
                         .args(spec.args.iter().take_while(|a| *a != "--mode"))
                         .arg("upgrade")
@@ -612,37 +636,43 @@ impl SettingsView {
                     for (k, v) in &spec.env {
                         command.env(k, v);
                     }
-                    let out = command.output().map_err(|e| e.to_string())?;
-                    let text = format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&out.stdout),
-                        String::from_utf8_lossy(&out.stderr)
-                    );
-                    if out.status.success() {
-                        Ok(text)
-                    } else {
-                        Err(text)
-                    }
+                    let (succeeded, text) = match command.output() {
+                        Ok(out) => (
+                            out.status.success(),
+                            format!(
+                                "{}{}",
+                                String::from_utf8_lossy(&out.stdout),
+                                String::from_utf8_lossy(&out.stderr)
+                            ),
+                        ),
+                        Err(error) => (false, error.to_string()),
+                    };
+                    // The upgrade may have installed Gentle Shell somewhere
+                    // new (its self-contained install): resolve it afresh.
+                    pi_rpc::forget_cached();
+                    let now = pi_rpc::resolve_backend(&cwd).ok();
+                    let running = now.as_ref().and_then(pi_rpc::backend_version);
+                    (succeeded, text, running, now.map(|spec| spec.program))
                 })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.upgrading = false;
-                pi_rpc::forget_versions();
                 forget_claude_auth();
-                let (failed, text) = match result {
-                    Ok(text) => (false, text),
-                    Err(text) => (true, text),
-                };
                 let lines: Vec<String> = text
                     .lines()
                     .filter(|l| !l.trim().is_empty())
                     .map(str::to_string)
                     .collect();
-                let tail = lines[lines.len().saturating_sub(8)..].to_vec();
-                this.upgrade_log = Some((tail, failed));
-                if !failed {
+                let outcome =
+                    upgrade_outcome(succeeded, &target, running.as_deref(), launcher.as_deref());
+                if matches!(outcome, UpgradeOutcome::Installed(_)) {
                     cx.emit(SettingsEvent::BackendUpdated);
                 }
+                this.upgrade = Some(UpgradeResult {
+                    target,
+                    outcome,
+                    lines: lines[lines.len().saturating_sub(8)..].to_vec(),
+                });
                 this.reload(cx);
                 cx.notify();
             });
@@ -652,7 +682,7 @@ impl SettingsView {
 
     fn skip_update(&mut self, version: String, cx: &mut Context<Self>) {
         if let Err(error) = crate::updates::skip(&version) {
-            self.upgrade_log = Some((vec![format!("Could not remember the skip: {error}")], true));
+            self.skip_error = Some(format!("Could not remember the skip: {error}"));
         }
         self.reload(cx);
     }
@@ -666,6 +696,7 @@ impl SettingsView {
     ) -> impl IntoElement + use<> {
         let notes = offer.notes_url.clone();
         let skipped = offer.latest.clone();
+        let target = offer.latest.clone();
         v_flex()
             .mt_2()
             .p_3()
@@ -703,7 +734,9 @@ impl SettingsView {
                             .label(if self.upgrading { "Updating…" } else { "Update now" })
                             .loading(self.upgrading)
                             .disabled(self.upgrading)
-                            .on_click(cx.listener(|this, _, _, cx| this.run_upgrade(cx))),
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.run_upgrade(target.clone(), cx)
+                            })),
                     )
                     .child(
                         Button::new("update-notes")
@@ -725,9 +758,9 @@ impl SettingsView {
                     ),
             )
             .children(
-                self.upgrade_log
+                self.skip_error
                     .clone()
-                    .map(|(lines, failed)| upgrade_output(lines, failed)),
+                    .map(|error| upgrade_output(vec![error], true)),
             )
     }
 
@@ -1315,6 +1348,105 @@ fn app_section(cx: &App) -> Div {
         )
 }
 
+/// How `gentle-shell upgrade` ended, as the app sees it afterwards.
+#[derive(Clone, Debug, PartialEq)]
+enum UpgradeOutcome {
+    /// The launcher the app resolves now runs this version.
+    Installed(String),
+    /// The upgrade ran, but the launcher the app resolves still runs
+    /// `running` (another install comes first).
+    Stale {
+        running: String,
+        launcher: String,
+    },
+    Failed,
+}
+
+#[derive(Clone)]
+struct UpgradeResult {
+    target: String,
+    outcome: UpgradeOutcome,
+    /// Gentle Shell's last output lines.
+    lines: Vec<String>,
+}
+
+/// Decide the outcome from the upgrade's exit and what the launcher the app
+/// now resolves (`launcher`) reports as its version (`running`).
+fn upgrade_outcome(
+    succeeded: bool,
+    target: &str,
+    running: Option<&str>,
+    launcher: Option<&Path>,
+) -> UpgradeOutcome {
+    match (succeeded, running) {
+        (false, _) | (true, None) => UpgradeOutcome::Failed,
+        (true, Some(running)) if running == target => {
+            UpgradeOutcome::Installed(running.to_string())
+        }
+        (true, Some(running)) => UpgradeOutcome::Stale {
+            running: running.to_string(),
+            launcher: launcher.map_or_else(
+                || "gentle-shell".to_string(),
+                |path| path.display().to_string(),
+            ),
+        },
+    }
+}
+
+/// The upgrade's result: what happened and what's left to do, then
+/// Gentle Shell's own last lines.
+fn upgrade_result(result: &UpgradeResult) -> Div {
+    let (icon, color, title, line) = match &result.outcome {
+        UpgradeOutcome::Installed(version) => (
+            IconName::CircleCheck,
+            ui::success(),
+            format!("Gentle Shell {version} is installed"),
+            "Open agent tabs restarted on it and kept their conversations. Nothing else to do."
+                .to_string(),
+        ),
+        UpgradeOutcome::Stale { running, launcher } => (
+            IconName::TriangleAlert,
+            ui::warning(),
+            format!(
+                "Gentle Shell {} installed, but the app still runs {running}",
+                result.target
+            ),
+            format!(
+                "{launcher} comes first. Remove the old package with `npm uninstall -g gentle-pi`, then open Configuration again."
+            ),
+        ),
+        UpgradeOutcome::Failed => (
+            IconName::CircleX,
+            ui::danger(),
+            "The update didn't finish".to_string(),
+            "Gentle Shell's output is below; the version you had keeps running.".to_string(),
+        ),
+    };
+    let failed = result.outcome == UpgradeOutcome::Failed;
+    v_flex()
+        .mt_2()
+        .p_3()
+        .gap_1()
+        .rounded_lg()
+        .bg(color.opacity(0.10))
+        .child(
+            h_flex()
+                .gap_2()
+                .child(Icon::new(icon).small().text_color(color))
+                .child(
+                    div()
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(ui::fg())
+                        .child(title),
+                ),
+        )
+        .child(div().text_xs().text_color(ui::muted()).child(line))
+        .when(!result.lines.is_empty(), |d| {
+            d.child(upgrade_output(result.lines.clone(), failed))
+        })
+}
+
 /// The last lines `gentle-shell upgrade` printed, tinted by outcome.
 fn upgrade_output(lines: Vec<String>, failed: bool) -> Div {
     v_flex()
@@ -1380,11 +1512,7 @@ impl Render for SettingsView {
                                 .when_some(s.update.clone(), |d, offer| {
                                     d.child(self.render_update(offer, cx))
                                 })
-                                .when(s.update.is_none(), |d| {
-                                    d.children(self.upgrade_log.clone().map(|(lines, failed)| {
-                                        upgrade_output(lines, failed)
-                                    }))
-                                })
+                                .children(self.upgrade.as_ref().map(upgrade_result))
                                 .child(
                                     h_flex()
                                         .pt_2()
@@ -1419,6 +1547,10 @@ impl Render for SettingsView {
                                                 })
                                         }),
                                 ),
+                        )
+                        .child(
+                            section(IconName::CircleCheck, "Setup & requirements")
+                                .child(self.setup.clone()),
                         )
                         .child(theme_section(&self.transparency, cx))
                         .child(
@@ -1814,9 +1946,37 @@ impl Render for SettingsView {
 #[cfg(test)]
 mod tests {
     use super::{
-        BACKGROUND_SUBAGENTS_FILE, PolicySource, npm_name, read_snapshot,
-        resolve_background_policy, save_bridge_plan,
+        BACKGROUND_SUBAGENTS_FILE, PolicySource, UpgradeOutcome, npm_name, read_snapshot,
+        resolve_background_policy, save_bridge_plan, upgrade_outcome,
     };
+
+    #[test]
+    fn upgrade_result_follows_what_the_app_runs_afterwards() {
+        use std::path::Path;
+        let old = Path::new("/fnm/bin/gentle-shell");
+        // The app now runs the new version.
+        assert_eq!(
+            upgrade_outcome(true, "4.7.0", Some("4.7.0"), Some(old)),
+            UpgradeOutcome::Installed("4.7.0".into())
+        );
+        // It installed, but an older launcher still comes first.
+        assert_eq!(
+            upgrade_outcome(true, "4.7.0", Some("4.6.0"), Some(old)),
+            UpgradeOutcome::Stale {
+                running: "4.6.0".into(),
+                launcher: "/fnm/bin/gentle-shell".into()
+            }
+        );
+        // A failed run, or no launcher answering afterwards, is a failure.
+        assert_eq!(
+            upgrade_outcome(false, "4.7.0", Some("4.7.0"), Some(old)),
+            UpgradeOutcome::Failed
+        );
+        assert_eq!(
+            upgrade_outcome(true, "4.7.0", None, None),
+            UpgradeOutcome::Failed
+        );
+    }
 
     #[test]
     fn probes_are_reused_until_expiry_or_stamp_change() {

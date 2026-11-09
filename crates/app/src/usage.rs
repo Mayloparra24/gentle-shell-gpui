@@ -641,13 +641,13 @@ fn resolve_config_value(config: &str, env: &HashMap<String, String>) -> Option<S
     let Some(command) = config.strip_prefix('!') else {
         return resolve_template(config, env).filter(|v| !v.is_empty());
     };
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
     #[cfg(windows)]
-    let mut cmd = Command::new("cmd");
+    let mut cmd = pi_rpc::command("cmd");
     #[cfg(windows)]
     cmd.args(["/C", command]);
     #[cfg(not(windows))]
-    let mut cmd = Command::new("sh");
+    let mut cmd = pi_rpc::command("sh");
     #[cfg(not(windows))]
     cmd.args(["-c", command]);
     let mut child = cmd
@@ -912,7 +912,7 @@ pub fn parse_iso_ms(text: &str) -> Option<i64> {
 fn local_offset_secs() -> i64 {
     #[cfg(not(windows))]
     {
-        let output = std::process::Command::new("date").arg("+%z").output();
+        let output = pi_rpc::command("date").arg("+%z").output();
         if let Ok(output) = output {
             let text = String::from_utf8_lossy(&output.stdout);
             let t = text.trim().as_bytes();

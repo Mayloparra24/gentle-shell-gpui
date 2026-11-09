@@ -49,6 +49,9 @@ pub enum SessionEvent {
     OpenScreen(crate::commands::Screen),
     /// The thinking level was set to `max`: the window plays its surge.
     MaxEffort,
+    /// Gentle Design's canvas opened, refreshed or stopped: the window shows
+    /// it in its in-app browser.
+    DesignCanvas(crate::browser::CanvasNotice),
 }
 
 /// What the window reads from a tab, to emit [`SessionEvent::ChromeChanged`]
@@ -131,7 +134,10 @@ pub struct SessionView {
     /// `bash_background`/`monitor` commands by tool call, to label their jobs.
     job_commands: HashMap<String, String>,
     phase: Option<&'static str>,
+    /// This session's live permission mode (Gentle Shell's `gentle:mode`
+    /// status), and the default new sessions start in (`permission-mode.json`).
     mode: Option<crate::gentle_state::PermissionMode>,
+    default_mode: Option<crate::gentle_state::PermissionMode>,
     _agents_ticker: Task<()>,
     todo: Vec<TodoTask>,
     /// The task island is unfolded (see [`view`] for the morph).
@@ -265,11 +271,13 @@ impl SessionView {
                     this.model_query_changed(cx);
                 }
             }),
-            // The model picker's ↑/↓/Enter must beat its focused search field.
+            // The model picker's and the `/` menu's ↑/↓/Enter must beat the
+            // focused search field and composer.
             cx.intercept_keystrokes(move |event, window, cx| {
                 let consumed = weak
                     .update(cx, |this, cx| {
                         this.model_picker_key(&event.keystroke, window, cx)
+                            || this.slash_menu_key(&event.keystroke, window, cx)
                     })
                     .unwrap_or(false);
                 if consumed {
@@ -296,6 +304,7 @@ impl SessionView {
             job_commands: HashMap::new(),
             phase: None,
             mode: None,
+            default_mode: crate::gentle_state::read_default_mode(&pi_rpc::resolve_homes().config),
             _agents_ticker: Task::ready(()),
             todo: Vec::new(),
             todo_open: false,
@@ -430,6 +439,20 @@ impl SessionView {
                 window,
                 cx,
             );
+        }
+    }
+
+    /// Start again a tab whose backend never came up (gentle-shell missing
+    /// or broken, then fixed by onboarding). Running and unstarted tabs are
+    /// left alone; a backend that exited before any conversation counts.
+    pub fn retry_start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let never_ran = match &self.backend {
+            Backend::Failed(_) => true,
+            Backend::Exited(_) => self.transcript.items.is_empty(),
+            Backend::Starting | Backend::Ready(_) => false,
+        };
+        if self.started && never_ran {
+            self.start(window, cx);
         }
     }
 
@@ -841,6 +864,21 @@ impl SessionView {
                         .remove(&transcript::str_field(event, "toolCallId"));
                     crate::gentle_state::upsert_job(&mut self.jobs, job, label.as_deref());
                 }
+                if event["toolName"] == "gentle_design" {
+                    let canvas = if details["stopped"] == true {
+                        Some(crate::browser::CanvasNotice::Stopped)
+                    } else {
+                        details["url"]
+                            .as_str()
+                            .map(|url| crate::browser::CanvasNotice::Open {
+                                url: url.to_string(),
+                                refreshed: details["refreshed"] == true,
+                            })
+                    };
+                    if let Some(canvas) = canvas {
+                        cx.emit(SessionEvent::DesignCanvas(canvas));
+                    }
+                }
             }
             Some("message_end") if event["message"]["role"] == "custom" => {
                 if let Some(job) =
@@ -909,6 +947,9 @@ impl SessionView {
                     Some("warning") => NoticeLevel::Warning,
                     _ => NoticeLevel::Info,
                 };
+                if let Some(canvas) = crate::browser::canvas_notice(&message) {
+                    cx.emit(SessionEvent::DesignCanvas(canvas));
+                }
                 let error = level == NoticeLevel::Error;
                 // Usage warnings repeat every turn: keep them as a composer chip.
                 if !error && let Some((percent, window_key)) = view::parse_rate_limit(&message) {
@@ -1674,18 +1715,26 @@ impl SessionView {
             cx.notify();
             return;
         }
-        if self.transcript.items.is_empty() {
+        self.default_mode = Some(mode);
+        let live = self
+            .mode
+            .unwrap_or(crate::gentle_state::PermissionMode::Normal);
+        let note = if self.transcript.items.is_empty() {
+            // Nothing to lose: start over in the new mode now.
             self.new_session(window, cx);
+            format!("New session in {}.", mode.label())
+        } else if live == mode {
+            format!("New sessions start in {} too.", mode.label())
         } else {
-            self.transcript.notice(
-                NoticeLevel::Info,
-                format!(
-                    "{} saved as the default. It applies from the next session (⌘N).",
-                    mode.label()
-                ),
-            );
-            cx.notify();
-        }
+            format!(
+                "New sessions start in {}. This conversation stays in {}; ⌘N starts one in {}.",
+                mode.label(),
+                live.label(),
+                mode.label()
+            )
+        };
+        window.push_notification(Notification::info(note), cx);
+        cx.notify();
     }
 
     /// Gentle Shell has no host-side stop for helpers; ask the agent to cancel it.

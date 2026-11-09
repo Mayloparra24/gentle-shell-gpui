@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -543,7 +543,7 @@ pub fn write_atomic(path: &Path, text: &str) -> io::Result<()> {
         return Ok(());
     }
     let target = match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => fs::canonicalize(path)?,
+        Ok(meta) if meta.file_type().is_symlink() => dunce::canonicalize(path)?,
         _ => path.to_path_buf(),
     };
     let dir = target
@@ -674,7 +674,7 @@ impl Env {
 /// `<gentle-pi>` from the launcher: `<gentle-pi>/bin/gentle-shell.mjs`, or the
 /// Windows shim beside `node_modules/gentle-pi`.
 pub(crate) fn gentle_pi_root(program: &Path) -> Option<PathBuf> {
-    let launcher = fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+    let launcher = dunce::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
     let mut roots = Vec::new();
     if let Some(root) = launcher.parent().and_then(Path::parent) {
         roots.push(root.to_path_buf());
@@ -778,7 +778,7 @@ fn non_builtin_roots(env: &Env) -> Vec<(PathBuf, AgentSource)> {
     ];
     let mut unique: Vec<(PathBuf, (PathBuf, AgentSource, bool))> = Vec::new();
     for (dir, source, managed) in roots {
-        let canonical = fs::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
+        let canonical = dunce::canonicalize(&dir).unwrap_or_else(|_| dir.clone());
         if let Some(index) = unique.iter().position(|(c, _)| *c == canonical) {
             let (_, existing) = unique.remove(index);
             let managed_dir = if existing.2 {
@@ -1071,7 +1071,7 @@ fn clear_pin(path: &Path) -> io::Result<()> {
 /// `resolveSessionWorktreeWithGit`: worktree root and Git common directory.
 fn worktree_identity(cwd: &Path) -> Option<(PathBuf, PathBuf)> {
     let git = |arg: &str| -> Option<PathBuf> {
-        let output = Command::new("git")
+        let output = pi_rpc::command("git")
             .args(["--no-optional-locks", "-C"])
             .arg(cwd)
             .args(["rev-parse", "--path-format=absolute", arg])
@@ -1087,7 +1087,7 @@ fn worktree_identity(cwd: &Path) -> Option<(PathBuf, PathBuf)> {
             return None;
         }
         let text = String::from_utf8(output.stdout).ok()?;
-        fs::canonicalize(text.trim_end_matches(['\n', '\r'])).ok()
+        dunce::canonicalize(text.trim_end_matches(['\n', '\r'])).ok()
     };
     Some((git("--show-toplevel")?, git("--git-common-dir")?))
 }

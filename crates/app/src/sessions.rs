@@ -496,7 +496,7 @@ fn now_ms() -> i64 {
 }
 
 fn same_file(a: &Path, b: &Path) -> bool {
-    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
+    a == b || matches!((dunce::canonicalize(a), dunce::canonicalize(b)), (Ok(x), Ok(y)) if x == y)
 }
 
 pub struct SessionsView {

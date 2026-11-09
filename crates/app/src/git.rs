@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use pi_rpc::file_cache::{FileCache, Stamp};
 
@@ -52,17 +52,12 @@ pub fn snapshot(cwd: &Path) -> Option<GitSnapshot> {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let mut command = Command::new("git");
+    let mut command = pi_rpc::command("git");
     command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stderr(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
     let out = command.output().ok()?;
     out.status
         .success()
@@ -311,17 +306,12 @@ pub fn toplevel(cwd: &Path) -> Option<PathBuf> {
 /// Run `git` for its effect. The error is git's own message; credentials
 /// are never prompted for (there is no terminal to answer).
 pub fn run(cwd: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = pi_rpc::command("git");
     command
         .args(args)
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
     let out = command.output().map_err(|e| format!("git: {e}"))?;
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -1055,7 +1045,7 @@ mod tests {
     /// The real git commands against a throwaway repository.
     #[test]
     fn smoke_against_temp_repo() {
-        if Command::new("git").arg("--version").output().is_err() {
+        if pi_rpc::command("git").arg("--version").output().is_err() {
             return;
         }
         let dir = std::env::temp_dir().join(format!(

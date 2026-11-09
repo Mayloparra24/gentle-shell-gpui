@@ -3,7 +3,7 @@
 //! (`login-helper.mjs`) that speaks JSONL, and which writes `auth.json` itself.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context as _, Result, anyhow};
@@ -144,7 +144,7 @@ impl LoginHelper {
         if std::fs::read_to_string(&script).ok().as_deref() != Some(SCRIPT) {
             std::fs::write(&script, SCRIPT)?;
         }
-        let mut command = Command::new(node);
+        let mut command = crate::command(node);
         command
             .arg(&script)
             .arg(&package)
@@ -154,11 +154,6 @@ impl LoginHelper {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            command.creation_flags(0x0800_0000);
-        }
         let mut child = command
             .spawn()
             .context("failed to start the sign-in helper")?;

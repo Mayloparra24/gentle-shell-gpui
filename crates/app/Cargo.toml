@@ -12,6 +12,7 @@ path = "src/main.rs"
 anyhow.workspace = true
 async-channel.workspace = true
 base64 = "0.22"
+dunce = "1"
 serde.workspace = true
 serde_json.workspace = true
 pi-rpc = { path = "../pi-rpc" }
@@ -29,15 +30,38 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
 flate2 = "1"
 tar = "0.4"
 
-# The X11 window icon (GPUI's `WindowOptions::icon`).
+# The X11 window icon (GPUI's `WindowOptions::icon`), and the in-app browser
+# for the Gentle Design canvas: WebKitGTK as a child of the X11 window (GTK's
+# loop is pumped while it is open; Wayland has no child windows).
 [target.'cfg(target_os = "linux")'.dependencies]
 image = { version = "0.25", default-features = false, features = ["png"] }
+wry = { version = "0.57", default-features = false, features = ["os-webview", "x11"] }
+gtk = "0.18"
+raw-window-handle = "0.6"
+
+# The in-app browser on Windows: WebView2 in a popup owned by the window (GPUI
+# composites above child windows), rounded by DWM on Windows 11.
+[target.'cfg(windows)'.dependencies]
+wry = { version = "0.57", default-features = false }
+raw-window-handle = "0.6"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 # The Dock icon when the binary runs outside its `.app` (`cargo run`).
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSData"] }
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSImage", "NSResponder", "NSView", "objc2-quartz-core"] }
+# The in-app browser for the Gentle Design canvas (WKWebView as a child view),
+# and its layer, rounded to the card's corners.
+wry = { version = "0.57", default-features = false }
+raw-window-handle = "0.6"
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "CALayer"] }
 
 # Embeds the exe icon and version info (see build.rs).
 [target.'cfg(windows)'.build-dependencies]

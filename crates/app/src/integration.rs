@@ -19,7 +19,7 @@ pub fn repo_root(path: &std::path::Path) -> PathBuf {
     } else {
         path.parent().unwrap_or(path)
     };
-    std::process::Command::new("git")
+    pi_rpc::command("git")
         .args(["rev-parse", "--show-toplevel"])
         .current_dir(dir)
         .output()

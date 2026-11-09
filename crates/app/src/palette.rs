@@ -25,6 +25,8 @@ pub enum PaletteAction {
     Usage,
     Memory,
     Settings,
+    /// The onboarding screen: dependency checks and installs.
+    Setup,
     Agents,
     NewSession,
     /// A new tab with an agent pane.
@@ -302,18 +304,13 @@ pub fn walk_files(root: &Path, cap: usize) -> Vec<String> {
 }
 
 fn git_command(root: &Path) -> Command {
-    let mut command = Command::new("git");
+    let mut command = pi_rpc::command("git");
     command
         .arg("-C")
         .arg(root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt as _;
-        command.creation_flags(0x0800_0000);
-    }
     command
 }
 
@@ -412,6 +409,12 @@ fn screen_rows() -> Vec<Row> {
             "Settings",
             "Gentle Shell configuration",
             PaletteAction::Settings,
+        ),
+        row(
+            IconName::CircleCheck,
+            "Setup & requirements",
+            "Check Node, Gentle Shell, providers and extras; install what's missing",
+            PaletteAction::Setup,
         ),
         row(
             IconName::Plus,

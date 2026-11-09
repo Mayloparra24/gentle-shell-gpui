@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -1352,7 +1352,7 @@ fn atomic_write(
     write: impl FnOnce(&mut dyn Write) -> io::Result<()>,
 ) -> io::Result<()> {
     static NEXT: AtomicU32 = AtomicU32::new(0);
-    let target = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let target = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let permissions = match fs::metadata(&target) {
         Ok(meta) if meta.permissions().readonly() => {
             return Err(io::Error::new(
@@ -1532,7 +1532,7 @@ fn status_tint(label: &str) -> Hsla {
 }
 
 fn git(cwd: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git")
+    let out = pi_rpc::command("git")
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())

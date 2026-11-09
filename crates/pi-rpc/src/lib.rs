@@ -15,8 +15,8 @@ pub use home::{Homes, pi_package, resolve_homes};
 pub use login::{AuthEvent, AuthPrompt, LoginHelper, LoginMessage, PromptOption, ProviderInfo};
 
 pub use launch::{
-    LaunchSpec, backend_version, child_path, forget_versions, resolve_backend, resolve_node,
-    version_output,
+    LaunchSpec, backend_version, child_path, command, find_program, forget_cached, forget_versions,
+    resolve_backend, resolve_node, set_extra_path, version_output,
 };
 pub use record::{Record, Response, UiMethod, UiRequest, parse_record};
 
@@ -24,7 +24,7 @@ use anyhow::{Context as _, Result, anyhow};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -56,7 +56,7 @@ impl PiProcess {
     /// Spawn the backend and start the reader threads. `incoming` receives
     /// every event, UI request, stderr line and finally `Exited`.
     pub fn spawn(spec: &LaunchSpec) -> Result<(Arc<Self>, async_channel::Receiver<Incoming>)> {
-        let mut command = Command::new(&spec.program);
+        let mut command = crate::command(&spec.program);
         command
             .args(&spec.args)
             .current_dir(&spec.cwd)
@@ -65,12 +65,6 @@ impl PiProcess {
             .stderr(Stdio::piped());
         for (key, value) in &spec.env {
             command.env(key, value);
-        }
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt as _;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
         }
         let mut child = command
             .spawn()
