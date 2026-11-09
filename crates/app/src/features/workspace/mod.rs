@@ -329,26 +329,26 @@ impl Workspace {
         this.focus_active(window, cx);
         this.start_shown(window, cx);
         this.schedule_save(cx);
-        // First run: the welcome screen with its install sequence.
-        // Later, something required missing: the onboarding screen. Both
-        // open by themselves once the checks (blocking; PATH probes) return.
-        cx.spawn_in(window, async move |this, cx| {
-            let probe = cx.background_executor().spawn(async { Probe::run() }).await;
-            if !probe.needs_onboarding() {
-                return;
-            }
-            let _ = this.update_in(cx, |this, window, cx| {
-                if this.overlay.is_some() {
+        // First run: the welcome screen, from the very first frame (it looks
+        // at the machine itself while its banner writes in), so the chat
+        // never flashes underneath. Later, something required missing: the
+        // onboarding screen, once the checks (blocking; PATH probes) return.
+        if crate::features::setup::first_run() {
+            this.open_welcome(None, window, cx);
+        } else {
+            cx.spawn_in(window, async move |this, cx| {
+                let probe = cx.background_executor().spawn(async { Probe::run() }).await;
+                if !probe.needs_onboarding() {
                     return;
                 }
-                if probe.first_run {
-                    this.open_welcome(Some(probe), window, cx);
-                } else {
-                    this.open_onboarding(Some(probe), window, cx);
-                }
-            });
-        })
-        .detach();
+                let _ = this.update_in(cx, |this, window, cx| {
+                    if this.overlay.is_none() {
+                        this.open_onboarding(Some(probe), window, cx);
+                    }
+                });
+            })
+            .detach();
+        }
         this
     }
 
