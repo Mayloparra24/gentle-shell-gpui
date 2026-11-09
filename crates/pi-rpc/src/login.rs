@@ -136,7 +136,11 @@ impl LoginHelper {
     ) -> Result<(Self, async_channel::Receiver<LoginMessage>)> {
         let package =
             pi_package(spec).context("could not locate the Pi package next to gentle-shell")?;
-        let node = resolve_node(&spec.cwd)?;
+        // A self-contained install runs its own Node; the PATH may have none.
+        let node = match crate::launch::bundled_install(&spec.program) {
+            Some(bundled) => bundled.node,
+            None => resolve_node(&spec.cwd)?,
+        };
         let script = std::env::temp_dir().join(format!(
             "gentle-shell-gpui-login-{}.mjs",
             env!("CARGO_PKG_VERSION")

@@ -210,6 +210,10 @@ fn read_config_mode() -> Option<ConfigMode> {
 pub fn pi_package(spec: &LaunchSpec) -> Option<PathBuf> {
     let launcher = dunce::canonicalize(&spec.program).unwrap_or_else(|_| spec.program.clone());
     let mut roots: Vec<PathBuf> = Vec::new();
+    // Self-contained install (4.7): the launcher is a generated script.
+    if let Some(bundled) = crate::launch::bundled_install(&spec.program) {
+        roots.push(bundled.package);
+    }
     // Unix: the npm bin is a symlink into <gentle-pi>/bin/.
     if let Some(root) = launcher.parent().and_then(Path::parent) {
         roots.push(root.to_path_buf());
@@ -322,5 +326,84 @@ mod tests {
 
         std::fs::remove_file(&path).unwrap();
         assert_eq!(memo_by_stamp(&slot, &path, read), None);
+    }
+
+    /// A self-contained install as Gentle Shell's installer lays it out
+    /// (`scripts/bundled-install.mjs` and its tests), POSIX or Windows.
+    fn bundled_prefix(windows: bool) -> (PathBuf, LaunchSpec) {
+        let kind = if windows { "win" } else { "posix" };
+        let prefix =
+            std::env::temp_dir().join(format!("pi-rpc-bundled-{kind}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&prefix);
+        let (launcher, script, node, version) = if windows {
+            (
+                "bin/gentle-shell.cmd",
+                "@echo off\r\nrem gentle-shell bundled launcher (generated; do not edit)\r\n\
+                 \"%~dp0..\\runtime\\node-24.21.0\\node.exe\" \"%~dp0..\\versions\\%GENTLE_SHELL_CURRENT%\\node_modules\\gentle-pi\\bin\\gentle-shell.mjs\" %*\r\n",
+                "runtime/node-24.21.0/node.exe",
+                "versions/4.7.0-1.5.0",
+            )
+        } else {
+            (
+                "bin/gentle-shell",
+                "#!/bin/sh\n# gentle-shell bundled launcher (generated; do not edit)\n\
+                 exec '/p/runtime/node-24.21.0/bin/node' '/p/current/node_modules/gentle-pi/bin/gentle-shell.mjs' \"$@\"\n",
+                "runtime/node-24.21.0/bin/node",
+                "current",
+            )
+        };
+        let write = |path: &str, text: &str| {
+            let path = prefix.join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        };
+        write(launcher, script);
+        write(node, "");
+        write(
+            &format!("{version}/node_modules/gentle-pi/package.json"),
+            "{}",
+        );
+        write(
+            &format!("{version}/node_modules/@earendil-works/pi-coding-agent/dist/index.js"),
+            "",
+        );
+        if windows {
+            // Windows: `current` is a file naming the active version.
+            write("current", "4.7.0-1.5.0\r\n");
+        }
+        let spec = LaunchSpec {
+            program: prefix.join(launcher),
+            args: Vec::new(),
+            cwd: prefix.clone(),
+            env: Vec::new(),
+        };
+        (prefix, spec)
+    }
+
+    #[test]
+    fn self_contained_installs_run_their_own_node_and_pi() {
+        for (windows, node, version) in [
+            (false, "runtime/node-24.21.0/bin/node", "current"),
+            (
+                true,
+                "runtime/node-24.21.0/node.exe",
+                "versions/4.7.0-1.5.0",
+            ),
+        ] {
+            let (prefix, spec) = bundled_prefix(windows);
+            let bundled = crate::launch::bundled_install(&spec.program).expect("bundled install");
+            assert_eq!(bundled.node, prefix.join(node));
+            let pi = prefix
+                .join(version)
+                .join("node_modules/@earendil-works/pi-coding-agent");
+            let found = pi_package(&spec).map(|p| dunce::canonicalize(p).unwrap());
+            assert_eq!(found, Some(dunce::canonicalize(&pi).unwrap()));
+            std::fs::remove_dir_all(&prefix).unwrap();
+        }
+        // An npm launcher (no generated mark) is not a self-contained install.
+        let npm = std::env::temp_dir().join(format!("pi-rpc-npm-{}", std::process::id()));
+        std::fs::write(&npm, "#!/usr/bin/env node\n").unwrap();
+        assert!(crate::launch::bundled_install(&npm).is_none());
+        std::fs::remove_file(&npm).unwrap();
     }
 }

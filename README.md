@@ -85,7 +85,7 @@ Gentle Shell's own variables (`GENTLE_PI_CONFIG_HOME`, `GENTLE_SHELL_NO_AUTO_SET
 
 ## Packages and releases
 
-The app icon (the Gentle Shell pixel rose) lives in `packaging/icons/`. `generate.py` builds it from the `ROSE` art in `crates/app/src/banner.rs`; run `packaging/icons/generate.sh` on macOS after editing and commit the outputs (`AppIcon.icns`, `icon.ico`, PNGs). A bare `cargo run` shows a generic icon in the Dock; the bundled app shows the rose.
+The app icon (the Gentle Shell pixel rose) lives in `packaging/icons/`. `generate.py` builds it from the `ROSE` art in `crates/app/src/shared/banner.rs`; run `packaging/icons/generate.sh` on macOS after editing and commit the outputs (`AppIcon.icns`, `icon.ico`, PNGs). A bare `cargo run` shows a generic icon in the Dock; the bundled app shows the rose.
 
 Build packages locally:
 
@@ -144,11 +144,12 @@ La aplicación sigue un monolito modular por funcionalidades. Las fronteras, reg
 
 | Crate / module | Role |
 | --- | --- |
+| `crates/core` | Pure logic with no GPUI or IO: transcript and subagent activity models, tool summaries, permission mode / jobs / ODD phase, slash-command routing, notifications.json policy. |
 | `crates/pi-rpc` | Launcher and home resolution (matching Gentle Shell's launcher), the JSONL client, typed extension UI requests, and the sign-in helper. |
 | `app/session` | One tab: RPC state, transcript, composer and its status chips, agents panel. |
 | `app/workspace.rs` | The window, tabs, and window-level screens. |
 | `app/{providers,profiles,sessions,usage,palette}.rs` | The native screens. |
-| `app/{transcript,activity,gentle_state,tools,git,banner}.rs` | Pure state rebuilt from events and files. |
+| `app/{git,banner}.rs` | Pure state rebuilt from events and files. |
 | `app/themes.rs` | Theme catalog, default choice (saved choice, then Pi's `theme` setting, then Gentleman-Cute) and persistence; `ui.rs` resolves it into the palette. |
 
 ```bash

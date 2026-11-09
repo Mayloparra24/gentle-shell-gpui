@@ -15,7 +15,9 @@ Gentle Shell GPUI es una aplicación de escritorio nativa escrita en Rust. Su ar
 ```mermaid
 flowchart TD
     Main["app: arranque y composición"] --> Features["Funcionalidades GPUI"]
-    Features --> State["Estado y lógica pura"]
+    Features --> State["Estado de las funcionalidades"]
+    Features --> Core["core: lógica pura"]
+    State --> Core
     Features --> Rpc["pi-rpc: proceso y protocolo JSONL"]
     Features --> Platform["Plataforma: Git, terminal, archivos, navegador y actualizaciones"]
     Features --> Shared["UI compartida, temas y recursos"]
@@ -25,32 +27,53 @@ flowchart TD
 
 | Componente | Responsabilidad |
 | --- | --- |
-| `crates/app` | Binario, composición, estado de las funcionalidades y vistas GPUI. |
+| `crates/app` | Binario, composición, estado de las funcionalidades, vistas GPUI y los efectos (archivos, procesos, sonido) de la lógica que vive en `core`. |
+| `crates/core` (`gentle-core`) | Lógica pura sin GPUI ni IO: modelos del transcript y de la actividad de subagentes, resúmenes de herramientas, modo de permisos, jobs y fase ODD, enrutado de comandos `/`, política de `notifications.json`, modelos de uso y estadísticas, y el modelo de perfiles y enrutado de modelos. |
 | `crates/pi-rpc` | Resolución y lanzamiento del backend, transporte JSONL, autenticación y tipos del protocolo. |
 | `packaging` | Empaquetado e integración de distribución por sistema operativo. |
 
 `crates/pi-rpc` es una frontera estable: no conoce GPUI, ventanas, pestañas ni componentes visuales. `crates/app` depende de él, nunca al contrario.
 
-## Organización objetivo
+`crates/core` no depende de nada del proyecto (ni de `app` ni de `pi-rpc`) ni de GPUI; sus únicas dependencias son `serde`, `serde_json` y `regex`. Compila igual en macOS, Windows y Linux: no contiene código específico de plataforma salvo la sintaxis de rutas `file:` de la política, elegida con `cfg!(windows)` en compilación. Cuando un módulo mezclaba lógica pura y efectos, la parte pura vive en `core` y la parte con efectos queda en `app` y la llama:
 
-La migración es incremental. La estructura objetivo no obliga a mover código que todavía cambia junto o cuya separación añadiría ceremonia.
+| `core` | Queda en `app` |
+| --- | --- |
+| `transcript`, `activity`, `tools`, `commands` | `session/agents.rs`: `now_ms` (reloj del sistema). |
+| `gentle_state`: `PermissionMode`, jobs, inferencia de fase | `shared/gentle_state.rs`: leer y guardar `permission-mode.json`. |
+| `notifications`: `Alert`, validación y cambios de la política; `alert_timing`: `Gate` y `ContextLatch` | `alerts/`: caché y escritura del archivo, reproducción, tonos incluidos, aviso a la ventana. |
+| `text::first_line` | `shared/ui.rs`: el resto de utilidades de presentación. |
+| `usage`: modelos y parsers de ventanas de suscripción (Codex, NaN), agrupación, claim de cuenta; registros de sesión, agregación de estadísticas, fechas ISO y días civiles | `usage/`: leer `auth.json`, resolver claves (`$VAR`, `!comando`), peticiones HTTP, recorrer y cachear archivos de sesión, reloj y desplazamiento horario local. |
+| `profiles`: modelo de enrutado, formato de `profiles.json`, pins, frontmatter de agentes, notas | `profiles/`: homes y descubrimiento de agentes, escrituras atómicas, enrutado guardado y materializado, settings de Pi, archivos de pin y worktree, Make default. |
+| `fuzzy`: puntuación difusa y ranking de archivos | `palette/`: recorrer archivos, leer ramas con git. |
+| `sessions`: resumen de sesión, nombre de carpeta por cwd, orden, fechas ISO y tiempo relativo | `sessions/`: buscar y leer archivos `.jsonl` (el escaneo por líneas va unido a la lectura), caché. |
+| `git`: parsers de status (v1 y v2), numstat, refs, stash, worktrees, submódulos, ahead/behind; recorte de diffs | `git/`: ejecutar `git`, contar líneas de archivos no rastreados, operaciones de stage, commit, push y ramas. |
+| `version`: versiones estables, comparación y oferta de actualización de Gentle Shell | `updates/`: caché del launcher, consulta a npm, reloj. |
+| `engram`: modelo de observaciones y codificación de consultas | `memory/`: peticiones HTTP a Engram. |
+| `workspaces`: nombres únicos de workspace | `workspaces/`: modelo guardado (usa `PaneTree`), lectura y escritura de `workspaces.json`. |
+
+## Organización
 
 ```text
 crates/
 ├── app/
 │   └── src/
-│       ├── main.rs              # composition root
-│       ├── session/             # conversación y backend de una pestaña
-│       ├── files/               # árbol, cambios, referencias y visor
-│       ├── setup/               # comprobaciones e instalación
-│       ├── terminal/            # PTY y presentación de terminal
-│       ├── platform/            # integración específica del SO, cuando compense
-│       └── shared/              # UI reutilizable sin estado de negocio, cuando compense
-├── core/                        # lógica pura compartida, sólo cuando exista una frontera real
+│       ├── main.rs              # arranque: CLI, instancia única, PATH de toolchains, adopción de config
+│       ├── app/                 # composition root (mod.rs): GPUI, temas, atajos, menús, ventana; integration.rs registra paneles y sidebar
+│       ├── cli.rs               # argumentos (`[FOLDER] [-p TEXT]`) y carpeta inicial
+│       ├── features/            # una carpeta por funcionalidad; su entrada es mod.rs
+│       │   ├── session/  workspace/  workspaces/  sessions/  palette/  profiles/  settings/  usage/  setup/
+│       │   ├── browser/  files/  terminal/  git/  providers/  memory/  onboarding/  notices/  alerts/
+│       │   └── app_update/  updates/
+│       ├── platform/            # integración con el SO: instancia única, íconos del Dock y de la ventana
+│       └── shared/              # piezas usadas por varias funcionalidades sin lógica propia:
+│                                # ui, themes, assets, banner, surge, pane, gentle_state
+├── core/                        # lógica pura compartida (gentle-core)
 └── pi-rpc/
 ```
 
-No es necesario crear `core` antes de disponer de lógica pura que sea reutilizable y esté libre de tipos GPUI e IO. Hasta entonces, esa lógica puede permanecer en módulos puros dentro de `app`.
+Las rutas siguen la carpeta: `crate::features::session`, `crate::shared::ui`, `crate::platform::instance`. Cada funcionalidad es una carpeta `features/<nombre>/`: `mod.rs` conserva sus tipos públicos y su API, y los hijos agregan bloques `impl` y marcan `pub(super)` lo que comparten. Una funcionalidad nueva va en `features/` como carpeta aunque empiece con un solo archivo; algo pasa a `shared/` sólo cuando lo usa más de una funcionalidad y no tiene lógica de producto.
+
+`core` crece por comportamiento completo y sólo con lógica pura; lo que necesite IO, procesos, reloj o GPUI se queda en `app` y llama a `core`. No se introducen traits ni adaptadores para poder mover algo a `core`.
 
 ## Anatomía de una funcionalidad
 
@@ -67,9 +90,29 @@ feature/
 
 Esta forma es una guía, no una plantilla obligatoria. Una funcionalidad pequeña debe seguir siendo un solo módulo.
 
+### Frontera actual de la sesión
+
+`SessionView` es una pestaña: un backend `gentle-shell --mode rpc` y su conversación. Su lógica se divide por responsabilidad en bloques `impl SessionView` de módulos hermanos; `session/mod.rs` conserva la estructura, el constructor, la API pública que usa la ventana (`workspace/mod.rs`), los avisos a la ventana (`SessionEvent`, `sync_chrome`), las acciones y el cableado de módulos:
+
+```text
+session/
+├── mod.rs          # SessionView, constructor, API pública, acciones y utilidades de ventana
+├── state.rs        # grupos de campos que cambian juntos y sus transiciones puras
+├── events.rs       # eventos RPC, peticiones de UI de extensiones, stderr/salida y refrescos de Git
+├── rpc.rs          # petición/respuesta, estado leído del backend y comandos (modelo, compactar, exportar, sesiones, prompts)
+├── lifecycle.rs    # arranque, reinicio (ahora o al terminar el turno), reanudación y reinicio de la conversación
+├── submit.rs       # envío del compositor: `!` shell, built-ins, pantallas nativas y adjuntos
+├── agents.rs       # panel de agentes
+├── builtins.rs     # clasificación de comandos y captura de salidas de extensiones (puro)
+├── attachments.rs  # validación, tokens y carga útil de imágenes (puro)
+└── view.rs, view/  # render (ver más abajo)
+```
+
+`state.rs` agrupa el backend y su ciclo de vida (`Backend`: estado del proceso, versión, stderr, prompt y sesión pendientes, reinicio pendiente), los modelos y el nivel de pensamiento (`Models`), uso y compactación (`Usage`), la UI de extensiones (`ExtensionUi`: diálogos, estados, widgets, límites de uso y toasts recientes), la actividad del turno (`TurnActivity`: fase, cola, jobs y ayudantes), la isla de tareas (`TodoIsland`) y el estado de Git (`GitStatus`). Las interpretaciones de eventos que no necesitan GPUI (fase y jobs de una llamada a herramienta, recuento de la cola, lienzo de Gentle Design, nivel de un `notify`) son funciones o métodos puros con pruebas en `events.rs`; los efectos (peticiones, temporizadores, notificaciones) quedan en los métodos de `SessionView`.
+
 ### Frontera actual de la vista de sesión
 
-`session/view.rs` conserva la composición (`Render`), el render de los elementos de la conversación (tarjetas de herramientas, pensamiento, mensajes, avisos) y las piezas compartidas por varias vistas. Cada responsabilidad visual del compositor y de la conversación vive en un módulo hijo que sólo expone a la vista la API que ésta necesita:
+`session/view.rs` conserva la composición (`Render`), la sincronización de lo derivado de la conversación (`sync_view`, Markdown renderizado), el render de los elementos de la conversación (tarjetas de herramientas, pensamiento, mensajes, avisos) y las piezas compartidas por varias vistas. Cada responsabilidad visual del compositor y de la conversación vive en un módulo hijo que sólo expone a la vista la API que ésta necesita:
 
 ```text
 session/
@@ -90,7 +133,92 @@ session/
 
 `transcript_list.rs` es dueño de la forma de las filas, el cálculo de actualizaciones parciales, la caché de datos preparados y el estado de la lista GPUI. `view.rs` decide qué contenido renderizar para cada fila, pero no modifica directamente la estructura interna de la lista.
 
-Los módulos hijos añaden bloques `impl SessionView` propios; lo que otro módulo consume se marca `pub(super)` y lo que usa `session/mod.rs` se marca `pub(in crate::session)` o se reexporta desde `view.rs`. Las constantes de anchura (`NARROW`, `TINY`), los plegados y las piezas compartidas (`clock`, `image_tile`, `number_badge`) permanecen en `view.rs`.
+Los módulos hijos añaden bloques `impl SessionView` propios; lo que otro módulo consume se marca `pub(super)` y lo que usa `session/mod.rs` se marca `pub(in crate::features::session)` o se reexporta desde `view.rs`. Las constantes de anchura (`NARROW`, `TINY`), los plegados y las piezas compartidas (`clock`, `image_tile`, `number_badge`) permanecen en `view.rs`.
+
+### Otras funcionalidades divididas
+
+Cada una conserva su tipo público y su API en el archivo padre; los hijos agregan bloques `impl` propios y marcan `pub(super)` lo que comparten.
+
+```text
+workspace/mod.rs     # Workspace, tipos (Pane, Tab, Space, Overlay) y API pública
+workspace/
+├── layout.rs       # cálculos de división de paneles
+├── panes.rs        # crear, dividir, enfocar y cerrar paneles
+├── spaces.rs       # workspaces con nombre
+├── tabs.rs         # pestañas y renombrado
+├── persistence.rs  # snapshot y guardado
+├── actions.rs      # manejadores de atajos
+├── overlays.rs     # pantallas superpuestas, paleta, navegador y animación max
+├── view.rs         # barra de título, pestañas y paneles
+└── render.rs       # impl Render
+
+profiles/mod.rs      # ProfilesView, ProfilesEvent, estado y consultas
+profiles/
+├── env.rs          # homes, paquete gentle-pi y descubrimiento de agentes
+├── files.rs        # escrituras atómicas, profiles.json, models.json, settings.json, carga
+├── pins.rs         # pins del repositorio (archivos y worktree Git)
+├── apply.rs        # materialización de rutas, orquestador y Make default
+├── draft.rs        # ediciones del borrador (modelo, esfuerzo, tier)
+├── actions.rs      # acciones del store y flujos de salida, nombre y borrado
+├── tests.rs        # pruebas de efectos de archivo
+└── view.rs, view/  # Render; cells, table, profile_list, confirm, footer
+
+usage/mod.rs         # UsageView, estado, refrescos y API pública
+usage/
+├── credentials.rs  # auth.json → tarjetas y peticiones; resolución de claves
+├── fetch.rs        # peticiones HTTP de uso
+├── stats.rs        # archivos de sesión: recorrido, lectura, caché
+└── view.rs, view/  # Render; subscription, stats
+
+settings/mod.rs      # SettingsView, SettingsEvent, carga y composición de la pantalla
+settings/
+├── layout.rs       # row, section, or_dash
+├── snapshot.rs     # lectura de la configuración y sondas del lanzador
+├── claude.rs       # sesión de Claude Code y plan del bridge
+├── background.rs   # política de background subagents y sección Gentle AI
+├── upgrade.rs      # gentle-shell upgrade, su resultado y la tarjeta
+├── packages.rs     # instalar y quitar paquetes
+└── notifications.rs, theme.rs, app.rs, models.rs  # una sección cada uno
+
+palette/mod.rs       # PaletteView, acciones, eventos, categorías
+palette/
+├── commands.rs     # pantallas, comandos de panel y comandos `/` del backend
+├── sources.rs      # archivos bajo la raíz y ramas locales
+├── rows.rs         # filas y grupos para la consulta y la categoría
+├── keyboard.rs     # selección, ejecutar fila, categorías, renombrar workspace
+└── view.rs         # Render
+
+sessions/mod.rs      # SessionsView, SessionsEvent, Scope
+sessions/
+├── discovery.rs    # sessionDir y archivos .jsonl por carpeta o todos
+├── summary.rs      # escaneo ligero del JSONL y caché por archivo
+├── view.rs         # estado y acciones
+├── render.rs       # filas, lista y Render
+└── tests.rs        # pruebas con archivos de sesión temporales
+
+git/mod.rs           # ejecutar git, toplevel; reexporta los tipos que usan los llamadores
+git/
+├── snapshot.rs     # cambios para el panel y el árbol
+├── changes.rs      # pestaña Changes: stage, discard, stash, commit, push
+└── refs.rs         # pestaña Branches: ramas, stash, checkout remoto
+
+app_update/mod.rs    # AppUpdate (Global), Status, Problem; check, install, skip, restart
+app_update/
+├── release.rs      # versiones, asset por SO, parseo de releases y SHA256SUMS, decisión
+├── cache.rs        # app-update.json: caché de 6 h y versión saltada
+├── network.rs      # pedir la release, descargar con sha256 y progreso
+├── archive.rs      # extracción segura de zip y tar.gz; payload por SO
+├── install.rs      # reemplazo del bundle (macOS), del archivo (Linux) y del exe en uso (Windows)
+└── relaunch.rs     # proceso que reabre la app al salir
+
+providers/          # mod.rs: tipos y constructor; login.rs (helper de login y flujo), list.rs, flow_view.rs, render.rs
+onboarding/         # mod.rs: estado y API; checks.rs (plan de instalación, tonos), install.rs, view.rs
+notices/            # mod.rs: Notice, Notices; store.rs (push, leídos, límite), bell.rs, panel.rs
+memory/             # mod.rs: MemoryView; client.rs (HTTP a Engram), view.rs
+alerts/             # mod.rs: fire, context_threshold; policy.rs, sound.rs, tones.rs
+updates/            # mod.rs: check y skip; cache.rs (config del launcher), registry.rs (npm)
+workspaces/         # mod.rs: modelo guardado; store.rs (workspaces.json), tests.rs
+```
 
 ## Flujo de datos
 
@@ -110,8 +238,8 @@ Los efectos no deben esconder cambios de estado. Los resultados vuelven a la fun
 ## Reglas de dependencias
 
 1. `pi-rpc` **no depende** de `app` ni de GPUI.
-2. `app` puede depender de `pi-rpc`; la dirección inversa está prohibida.
-3. La lógica candidata a `core` no depende de GPUI, `pi-rpc`, filesystem, procesos ni APIs del sistema.
+2. `app` puede depender de `pi-rpc` y de `core`; la dirección inversa está prohibida.
+3. `core` **no depende** de nada del proyecto (`app`, `pi-rpc`) ni de GPUI, filesystem, procesos, reloj ni APIs del sistema.
 4. Una funcionalidad consume otra mediante su API pública; no accede a sus módulos privados.
 5. El código compartido de UI no contiene reglas de negocio ni conoce funcionalidades concretas.
 6. La integración con sistema operativo, procesos y archivos permanece en los bordes.

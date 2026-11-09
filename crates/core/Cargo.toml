@@ -1,0 +1,13 @@
+[package]
+name = "gentle-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gentle_core"
+
+[dependencies]
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
