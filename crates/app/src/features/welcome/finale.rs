@@ -239,7 +239,6 @@ fn word() -> impl IntoElement {
 
 /// The whole entrance.
 pub(super) fn render(config: BannerConfig) -> impl IntoElement {
-    let total = FINALE.as_secs_f32();
     v_flex()
         .size_full()
         .items_center()
@@ -257,16 +256,4 @@ pub(super) fn render(config: BannerConfig) -> impl IntoElement {
                 .child(kisses()),
         )
         .child(h_flex().items_center().gap_3().child(word()).child(stamp()))
-        .child(
-            div()
-                .text_base()
-                .text_color(ui::muted())
-                .child("Welcome to Gentle Shell.")
-                .with_animation("finale-line", Animation::new(FINALE), move |el, t| {
-                    let local = ((t * total - (WORD_AT + 1.0)) / 0.5).clamp(0., 1.);
-                    el.opacity(local)
-                        .relative()
-                        .top(px((1. - ease_out(local)) * 10.))
-                }),
-        )
 }
