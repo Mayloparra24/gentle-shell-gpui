@@ -77,6 +77,9 @@ const MIN_NODE: Version = (22, 19, 0);
 const MIN_GO: Version = (1, 25, 10);
 /// The launcher refuses an older Pi.
 const MIN_PI: Version = (1, 2, 0);
+/// gentle-engram accepts a stable Engram core from 3.0.0; with an older
+/// server it can't verify the server's identity and memory stays offline.
+const MIN_ENGRAM: Version = (3, 0, 0);
 
 // ── Toolchain folders and PATH ─────────────────────────────────────────────
 

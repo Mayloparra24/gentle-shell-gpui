@@ -8,7 +8,9 @@ use super::gentle::{bridge_version, install_prefix};
 use super::probe::{
     go_version, os_release_value, output_of, parse_version, run_logged, show_version,
 };
-use super::{Fix, Log, MIN_GO, MIN_NODE, Status, fetch, managed_dirs, prefix_bin, refresh_paths};
+use super::{
+    Fix, Log, MIN_ENGRAM, MIN_GO, MIN_NODE, Status, fetch, managed_dirs, prefix_bin, refresh_paths,
+};
 
 // ── Node.js ────────────────────────────────────────────────────────────────
 
@@ -247,17 +249,25 @@ fn engram() -> Option<PathBuf> {
 
 pub fn check_engram() -> (Status, Fix) {
     match engram().and_then(|e| output_of(&e, &["version"])) {
-        Some(text) => (
-            Status::Ok(
-                text.lines()
-                    .next()
-                    .unwrap_or("installed")
-                    .trim()
-                    .to_string(),
-            ),
-            Fix::None,
-        ),
+        Some(text) => engram_status(&text),
         None => (Status::Missing("Not installed".into()), Fix::Auto),
+    }
+}
+
+/// From `engram version` (`engram 1.18.0`, then an update notice). A version
+/// it can't read stays OK, as before.
+fn engram_status(text: &str) -> (Status, Fix) {
+    let line = text.lines().next().unwrap_or("installed").trim();
+    match line.split_whitespace().last().and_then(parse_version) {
+        Some(version) if version < MIN_ENGRAM => (
+            Status::Outdated(format!(
+                "Engram {} — needs {} or newer",
+                show_version(version),
+                show_version(MIN_ENGRAM)
+            )),
+            Fix::Auto,
+        ),
+        _ => (Status::Ok(line.to_string()), Fix::None),
     }
 }
 
@@ -293,6 +303,10 @@ pub fn install_engram(log: &Log) -> Result<(), String> {
     refresh_paths();
     match check_engram() {
         (Status::Ok(_), _) => Ok(()),
+        // An `ENGRAM_BIN` or an older install earlier on the PATH still wins.
+        (Status::Outdated(why), _) => {
+            Err(format!("Engram was installed, but another one runs: {why}"))
+        }
         _ => Err("Engram was installed, but it doesn't run.".into()),
     }
 }
@@ -456,5 +470,18 @@ mod tests {
             linux_install_command("git", "", none),
             "sudo apt install git"
         );
+    }
+
+    #[test]
+    fn engram_older_than_three_is_outdated() {
+        let status = |text: &str| engram_status(text).0;
+        assert_eq!(
+            status("engram 1.18.0\nUpdate available: 1.18.0 -> 3.7.0\n"),
+            Status::Outdated("Engram 1.18.0 — needs 3.0.0 or newer".into())
+        );
+        assert!(matches!(status("engram 2.9.9"), Status::Outdated(_)));
+        assert_eq!(status("engram 3.0.0"), Status::Ok("engram 3.0.0".into()));
+        assert_eq!(status("engram v3.7.0"), Status::Ok("engram v3.7.0".into()));
+        assert_eq!(status("engram dev"), Status::Ok("engram dev".into()));
     }
 }
