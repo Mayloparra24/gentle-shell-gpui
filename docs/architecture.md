@@ -28,7 +28,7 @@ flowchart TD
 | Componente | Responsabilidad |
 | --- | --- |
 | `crates/app` | Binario, composición, estado de las funcionalidades, vistas GPUI y los efectos (archivos, procesos, sonido) de la lógica que vive en `core`. |
-| `crates/core` (`gentle-core`) | Lógica pura sin GPUI ni IO: modelos del transcript y de la actividad de subagentes, resúmenes de herramientas, modo de permisos, jobs y fase ODD, enrutado de comandos `/`, política de `notifications.json`. |
+| `crates/core` (`gentle-core`) | Lógica pura sin GPUI ni IO: modelos del transcript y de la actividad de subagentes, resúmenes de herramientas, modo de permisos, jobs y fase ODD, enrutado de comandos `/`, política de `notifications.json`, modelos de uso y estadísticas, y el modelo de perfiles y enrutado de modelos. |
 | `crates/pi-rpc` | Resolución y lanzamiento del backend, transporte JSONL, autenticación y tipos del protocolo. |
 | `packaging` | Empaquetado e integración de distribución por sistema operativo. |
 
@@ -42,6 +42,8 @@ flowchart TD
 | `gentle_state`: `PermissionMode`, jobs, inferencia de fase | `gentle_state.rs`: leer y guardar `permission-mode.json`. |
 | `notifications`: `Alert`, validación y cambios de la política | `alerts.rs`: caché y escritura del archivo, reproducción, aviso a la ventana, `Gate` y `ContextLatch`. |
 | `text::first_line` | `ui.rs`: el resto de utilidades de presentación. |
+| `usage`: modelos y parsers de ventanas de suscripción (Codex, NaN), agrupación, claim de cuenta; registros de sesión, agregación de estadísticas, fechas ISO y días civiles | `usage/`: leer `auth.json`, resolver claves (`$VAR`, `!comando`), peticiones HTTP, recorrer y cachear archivos de sesión, reloj y desplazamiento horario local. |
+| `profiles`: modelo de enrutado, formato de `profiles.json`, pins, frontmatter de agentes, notas | `profiles/`: homes y descubrimiento de agentes, escrituras atómicas, enrutado guardado y materializado, settings de Pi, archivos de pin y worktree, Make default. |
 
 ## Organización objetivo
 
@@ -123,6 +125,52 @@ session/
 `transcript_list.rs` es dueño de la forma de las filas, el cálculo de actualizaciones parciales, la caché de datos preparados y el estado de la lista GPUI. `view.rs` decide qué contenido renderizar para cada fila, pero no modifica directamente la estructura interna de la lista.
 
 Los módulos hijos añaden bloques `impl SessionView` propios; lo que otro módulo consume se marca `pub(super)` y lo que usa `session/mod.rs` se marca `pub(in crate::session)` o se reexporta desde `view.rs`. Las constantes de anchura (`NARROW`, `TINY`), los plegados y las piezas compartidas (`clock`, `image_tile`, `number_badge`) permanecen en `view.rs`.
+
+### Otras funcionalidades divididas
+
+Cada una conserva su tipo público y su API en el archivo padre; los hijos agregan bloques `impl` propios y marcan `pub(super)` lo que comparten.
+
+```text
+workspace.rs        # Workspace, tipos (Pane, Tab, Space, Overlay) y API pública
+workspace/
+├── layout.rs       # cálculos de división de paneles
+├── panes.rs        # crear, dividir, enfocar y cerrar paneles
+├── spaces.rs       # workspaces con nombre
+├── tabs.rs         # pestañas y renombrado
+├── persistence.rs  # snapshot y guardado
+├── actions.rs      # manejadores de atajos
+├── overlays.rs     # pantallas superpuestas, paleta, navegador y animación max
+├── view.rs         # barra de título, pestañas y paneles
+└── render.rs       # impl Render
+
+profiles.rs         # ProfilesView, ProfilesEvent, estado y consultas
+profiles/
+├── env.rs          # homes, paquete gentle-pi y descubrimiento de agentes
+├── files.rs        # escrituras atómicas, profiles.json, models.json, settings.json, carga
+├── pins.rs         # pins del repositorio (archivos y worktree Git)
+├── apply.rs        # materialización de rutas, orquestador y Make default
+├── draft.rs        # ediciones del borrador (modelo, esfuerzo, tier)
+├── actions.rs      # acciones del store y flujos de salida, nombre y borrado
+├── tests.rs        # pruebas de efectos de archivo
+└── view.rs, view/  # Render; cells, table, profile_list, confirm, footer
+
+usage.rs            # UsageView, estado, refrescos y API pública
+usage/
+├── credentials.rs  # auth.json → tarjetas y peticiones; resolución de claves
+├── fetch.rs        # peticiones HTTP de uso
+├── stats.rs        # archivos de sesión: recorrido, lectura, caché
+└── view.rs, view/  # Render; subscription, stats
+
+settings.rs         # SettingsView, SettingsEvent, carga y composición de la pantalla
+settings/
+├── layout.rs       # row, section, or_dash
+├── snapshot.rs     # lectura de la configuración y sondas del lanzador
+├── claude.rs       # sesión de Claude Code y plan del bridge
+├── background.rs   # política de background subagents y sección Gentle AI
+├── upgrade.rs      # gentle-shell upgrade, su resultado y la tarjeta
+├── packages.rs     # instalar y quitar paquetes
+└── notifications.rs, theme.rs, app.rs, models.rs  # una sección cada uno
+```
 
 ## Flujo de datos
 

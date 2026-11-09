@@ -1,0 +1,390 @@
+//! `Render` for the workspace window.
+
+use super::*;
+
+impl Render for Workspace {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Follow keyboard focus into panes (a terminal focused by its own click).
+        if let Some(tab) = self.tab()
+            && let Some(inside) = tab.tree.leaves().into_iter().find(|id| {
+                self.panes
+                    .get(id)
+                    .is_some_and(|p| p.item.focus.contains_focused(window, cx))
+            })
+            && inside != tab.focused
+            && let Some(tab) = self.tab_mut()
+        {
+            tab.focused = inside;
+        }
+        let sidebar = self.sidebar.clone().filter(|_| self.sidebar_visible);
+        let has_sidebar = self.sidebar.is_some();
+        // Below this the screen buttons fold into one overflow menu.
+        let narrow = window.viewport_size().width < px(900.);
+        // The browser's native view would cover a screen opened over it.
+        if let Some((browser, _)) = &self.browser {
+            let covered = self.overlay.is_some();
+            browser.update(cx, |browser, cx| browser.set_covered(covered, cx));
+        }
+        // While the surge plays, the window shakes before the rose hatches:
+        // the root moves in place and asks for the next frame, so the element
+        // tree (and every element's state) stays the same.
+        let (shake_x, shake_y) = match self.surge {
+            Some((_, started)) => {
+                window.request_animation_frame();
+                crate::surge::shake_at(started.elapsed())
+            }
+            None => (0., 0.),
+        };
+        v_flex()
+            .size_full()
+            .text_color(ui::fg())
+            .on_action(cx.listener(Self::on_new_tab))
+            .on_action(cx.listener(Self::on_new_terminal_tab))
+            .on_action(cx.listener(Self::on_close_tab))
+            .on_action(cx.listener(Self::on_next_tab))
+            .on_action(cx.listener(Self::on_prev_tab))
+            .on_action(cx.listener(Self::on_split_right))
+            .on_action(cx.listener(Self::on_split_down))
+            .on_action(cx.listener(Self::on_new_agent_pane))
+            .on_action(cx.listener(Self::on_new_terminal_pane))
+            .on_action(cx.listener(Self::on_close_pane))
+            .on_action(cx.listener(Self::on_focus_next_pane))
+            .on_action(cx.listener(Self::on_focus_prev_pane))
+            .on_action(cx.listener(Self::on_toggle_sidebar))
+            .on_action(cx.listener(Self::on_open_providers))
+            .on_action(cx.listener(Self::on_open_sessions))
+            .on_action(cx.listener(Self::on_open_palette))
+            .on_action(cx.listener(Self::on_open_workspaces))
+            .on_action(cx.listener(Self::on_close_overlay))
+            .key_context("GentleWorkspace")
+            .relative()
+            .left(px(shake_x))
+            .top(px(shake_y))
+            .child(
+                TitleBar::new()
+                    .h(px(36.))
+                    .bg(gpui_kit::transparent_black())
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .pr_2()
+                            .gap_3()
+                            .justify_between()
+                            .child(
+                                h_flex()
+                                    .gap_2()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .overflow_hidden()
+                                    .child(self.render_workspace_chip(cx))
+                                    .child(div().flex_none().w(px(1.)).h(px(14.)).bg(ui::border()))
+                                    .child(self.render_tabs(cx)),
+                            )
+                            .child(
+                                h_flex()
+                                    .flex_none()
+                                    .gap_1()
+                                    // Without this, Windows answers clicks on these
+                                    // buttons as title-bar drags (HTCAPTION).
+                                    .occlude()
+                                    // Tern keeps pane layout in the title bar, so
+                                    // panes carry no header; these act on the
+                                    // focused pane.
+                                    .when(self.tab().is_some(), |d| {
+                                        let mac = cfg!(target_os = "macos");
+                                        d.child(
+                                            Button::new("title-split-right")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(IconName::Columns2))
+                                                .tooltip(format!(
+                                                    "Split right ({})",
+                                                    if mac { "⌘D" } else { "Ctrl+Shift+D" }
+                                                ))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.on_split_right(&SplitRight, window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("title-split-down")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(IconName::Rows2))
+                                                .tooltip(format!(
+                                                    "Split down ({})",
+                                                    if mac { "⌘⇧D" } else { "Ctrl+Shift+E" }
+                                                ))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.on_split_down(&SplitDown, window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("title-close-pane")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(IconName::X))
+                                                .tooltip(format!(
+                                                    "Close pane ({})",
+                                                    if mac { "⌘W" } else { "Ctrl+W" }
+                                                ))
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.on_close_pane(&ClosePane, window, cx)
+                                                })),
+                                        )
+                                        .child(div().w(px(1.)).h(px(14.)).mx_1().bg(ui::border()))
+                                    })
+                                    .when_some(crate::app_update::badge(cx), |d, (label, tip)| {
+                                        d.child(
+                                            div()
+                                                .id("app-update-pill")
+                                                .cursor_pointer()
+                                                .hover(|s| s.opacity(0.8))
+                                                .tooltip(move |window, cx| {
+                                                    Tooltip::new(tip.clone()).build(window, cx)
+                                                })
+                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_settings(window, cx)
+                                                }))
+                                                .child(ui::chip(label, ui::accent())),
+                                        )
+                                    })
+                                    .child({
+                                        let weak = cx.entity().downgrade();
+                                        div()
+                                            .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                cx.stop_propagation()
+                                            })
+                                            .child(notices::bell(
+                                                &self.notices,
+                                                Rc::new(move |pane, window, cx| {
+                                                    let _ = weak.update(cx, |this, cx| {
+                                                        this.reveal_pane(pane, window, cx)
+                                                    });
+                                                }),
+                                                cx,
+                                            ))
+                                    })
+                                    .child(
+                                        Button::new("open-palette")
+                                            .ghost()
+                                            .xsmall()
+                                            .icon(Icon::new(IconName::Command))
+                                            .tooltip("Commands (⌘K)")
+                                            .on_click(cx.listener(|this, _, window, cx| {
+                                                this.on_open_palette(&OpenPalette, window, cx)
+                                            })),
+                                    )
+                                    .when(narrow, |d| {
+                                        let weak = cx.entity().downgrade();
+                                        d.child(
+                                            div()
+                                                .on_mouse_down(MouseButton::Left, |_, _, cx| {
+                                                    cx.stop_propagation()
+                                                })
+                                                .child(
+                                                    Button::new("title-overflow")
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .icon(Icon::new(IconName::Ellipsis))
+                                                        .dropdown_menu(move |menu, _, _| {
+                                                            type Open = fn(
+                                                                &mut Workspace,
+                                                                &mut Window,
+                                                                &mut Context<Workspace>,
+                                                            );
+                                                            let entry = |icon: IconName,
+                                                                         label: &'static str,
+                                                                         detail: &'static str,
+                                                                         open: Open| {
+                                                                let weak = weak.clone();
+                                                                PopupMenuItem::element(
+                                                                    move |_, _| {
+                                                                        menu_row(
+                                                                            icon, label, detail,
+                                                                            "",
+                                                                        )
+                                                                    },
+                                                                )
+                                                                .on_click(move |_, window, cx| {
+                                                                    let _ = weak.update(
+                                                                        cx,
+                                                                        |this, cx| {
+                                                                            open(this, window, cx)
+                                                                        },
+                                                                    );
+                                                                })
+                                                            };
+                                                            menu.min_w(px(260.))
+                                                                .item(entry(
+                                                                    IconName::Settings,
+                                                                    "Configuration",
+                                                                    "Settings for this folder",
+                                                                    |this, window, cx| {
+                                                                        this.open_settings(
+                                                                            window, cx,
+                                                                        )
+                                                                    },
+                                                                ))
+                                                                .item(entry(
+                                                                    IconName::Layers,
+                                                                    "Profiles",
+                                                                    "Model and effort per agent",
+                                                                    |this, window, cx| {
+                                                                        this.open_profiles(
+                                                                            window, cx,
+                                                                        )
+                                                                    },
+                                                                ))
+                                                                .item(entry(
+                                                                    IconName::Brain,
+                                                                    "Memory",
+                                                                    "Engram observations",
+                                                                    |this, window, cx| {
+                                                                        this.open_memory(window, cx)
+                                                                    },
+                                                                ))
+                                                                .item(entry(
+                                                                    IconName::RotateCcwClock,
+                                                                    "Sessions",
+                                                                    "Resume a past session",
+                                                                    |this, window, cx| {
+                                                                        this.open_sessions(
+                                                                            window, cx,
+                                                                        )
+                                                                    },
+                                                                ))
+                                                                .item(entry(
+                                                                    IconName::KeyRound,
+                                                                    "Providers",
+                                                                    "Sign-in and API keys",
+                                                                    |this, window, cx| {
+                                                                        this.open_providers(
+                                                                            window, cx,
+                                                                        )
+                                                                    },
+                                                                ))
+                                                        }),
+                                                ),
+                                        )
+                                    })
+                                    .when(!narrow, |d| {
+                                        d.child(
+                                            Button::new("open-settings")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(IconName::Settings))
+                                                .tooltip("Configuration")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_settings(window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("open-profiles")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(IconName::Layers))
+                                                .tooltip("Profiles: model and effort per agent")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_profiles(window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("open-memory")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(IconName::Brain))
+                                                .tooltip("Memory (Engram)")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_memory(window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("open-sessions")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(IconName::RotateCcwClock))
+                                                .tooltip("Sessions")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_sessions(window, cx)
+                                                })),
+                                        )
+                                        .child(
+                                            Button::new("open-providers")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(IconName::KeyRound))
+                                                .tooltip("Providers and sign-in")
+                                                .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.open_providers(window, cx)
+                                                })),
+                                        )
+                                    })
+                                    .when(has_sidebar, |d| {
+                                        d.child(
+                                            Button::new("toggle-sidebar")
+                                                .ghost()
+                                                .xsmall()
+                                                .icon(Icon::new(if self.sidebar_visible {
+                                                    IconName::PanelLeftClose
+                                                } else {
+                                                    IconName::PanelLeftOpen
+                                                }))
+                                                .tooltip("Toggle sidebar (⌘B)")
+                                                .on_click(cx.listener(|this, _, _, cx| {
+                                                    this.toggle_sidebar(cx)
+                                                })),
+                                        )
+                                    }),
+                            ),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .px_1p5()
+                    .pb_1p5()
+                    .gap_1p5()
+                    .children(sidebar.map(|view| {
+                        ui::appear(
+                            "sidebar-in",
+                            div()
+                                .w(px(SIDEBAR_WIDTH))
+                                .flex_none()
+                                .h_full()
+                                .rounded_xl()
+                                .bg(ui::panel())
+                                .border_1()
+                                .border_color(gpui_kit::transparent_black())
+                                .overflow_hidden()
+                                .child(view.cached(StyleRefinement::default().size_full())),
+                        )
+                    }))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(self.render_body(window, cx)),
+                    ),
+            )
+            .children(self.browser.as_ref().map(|(browser, _)| browser.clone()))
+            .children(self.overlay.as_ref().map(|(overlay, _)| match overlay {
+                Overlay::Providers(view) => view.clone().into_any_element(),
+                Overlay::Sessions(view) => view.clone().into_any_element(),
+                Overlay::Palette(view) => view.clone().into_any_element(),
+                Overlay::Usage(view) => view.clone().into_any_element(),
+                Overlay::Memory(view) => view.clone().into_any_element(),
+                Overlay::Settings(view) => view.clone().into_any_element(),
+                Overlay::Profiles(view) => view.clone().into_any_element(),
+                Overlay::Onboarding(view) => view.clone().into_any_element(),
+            }))
+            .when_some(self.surge, |root, (run, _)| {
+                root.child(crate::surge::overlay(run))
+            })
+    }
+}

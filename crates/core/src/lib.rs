@@ -6,6 +6,8 @@ pub mod activity;
 pub mod commands;
 pub mod gentle_state;
 pub mod notifications;
+pub mod profiles;
 pub mod text;
 pub mod tools;
 pub mod transcript;
+pub mod usage;
