@@ -183,6 +183,27 @@ pub fn rose() -> (&'static [(u16, u16)], (u16, u16)) {
     (&ART.rose, ART.rose_size)
 }
 
+/// Gentle Shell's pixel rose, `height` px tall, in `color`.
+pub fn pixel_rose(height: f32, color: Hsla) -> impl IntoElement {
+    let (dots, (width, rows)) = rose();
+    let dot = height / rows.max(1) as f32;
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let side = px((dot * 0.55).max(1.0));
+            for &(x, y) in dots {
+                let origin = point(
+                    bounds.origin.x + px(x as f32 * dot),
+                    bounds.origin.y + px(y as f32 * dot),
+                );
+                window.paint_quad(fill(Bounds::new(origin, size(side, side)), color));
+            }
+        },
+    )
+    .w(px(width as f32 * dot))
+    .h(px(height))
+}
+
 /// The banner at `scale` px per wordmark pixel. `reveal` in 0..=1 writes the
 /// wordmark left to right and fades the rose in, like the terminal intro.
 pub fn banner(config: BannerConfig, scale: f32, reveal: f32) -> impl IntoElement {

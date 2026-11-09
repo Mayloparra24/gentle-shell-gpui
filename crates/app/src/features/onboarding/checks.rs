@@ -12,12 +12,16 @@ pub(super) fn is_ok(check: &Check) -> bool {
     matches!(check.status, Status::Ok(_))
 }
 
-/// Every Required check passes.
+/// A Required check that holds up Continue. Signing in to a provider is
+/// required to chat but can wait: Providers and the chat's own "Sign in"
+/// take care of it later.
+pub(super) fn blocks(check: &Check) -> bool {
+    check.need == Need::Required && check.fix != Fix::SignIn
+}
+
+/// Every Required check that holds up Continue passes.
 pub(super) fn required_ok(checks: &[Check]) -> bool {
-    checks
-        .iter()
-        .filter(|c| c.need == Need::Required)
-        .all(is_ok)
+    checks.iter().filter(|c| blocks(c)).all(is_ok)
 }
 
 /// Everything but the optional extras passes.
@@ -55,12 +59,12 @@ pub(super) enum Tone {
 }
 
 /// Green when done; red for a missing requirement or a failure; amber for
-/// anything outdated or missing that isn't required.
+/// anything outdated or missing that can wait.
 pub(super) fn tone(check: &Check) -> Tone {
     match &check.status {
         Status::Ok(_) => Tone::Good,
         Status::Failed(_) => Tone::Bad,
-        Status::Missing(_) if check.need == Need::Required => Tone::Bad,
+        Status::Missing(_) if blocks(check) => Tone::Bad,
         Status::Missing(_) | Status::Outdated(_) => Tone::Warn,
     }
 }
@@ -179,15 +183,32 @@ mod tests {
             Status::Missing("none".into()),
             Fix::SignIn,
         ));
-        assert!(!required_ok(&checks));
-        // No sign-in yet, but gentle-shell itself can start.
+        // Signing in can wait: Continue doesn't, and gentle-shell can start.
+        assert!(required_ok(&checks));
         assert!(usable(&checks));
+        checks.push(check(
+            CheckId::GentleShell,
+            Need::Required,
+            Status::Missing("none".into()),
+            Fix::Auto,
+        ));
+        assert!(!required_ok(&checks));
     }
 
     #[test]
     fn tones_follow_need_and_status() {
         let missing = |need| check(CheckId::Git, need, Status::Missing("x".into()), Fix::None);
         assert_eq!(tone(&missing(Need::Required)), Tone::Bad);
+        // Signing in is required to chat but can wait.
+        assert_eq!(
+            tone(&check(
+                CheckId::Provider,
+                Need::Required,
+                Status::Missing("x".into()),
+                Fix::SignIn
+            )),
+            Tone::Warn
+        );
         assert_eq!(tone(&missing(Need::Recommended)), Tone::Warn);
         assert_eq!(tone(&missing(Need::Optional)), Tone::Warn);
         assert_eq!(

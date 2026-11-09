@@ -79,6 +79,7 @@ impl Workspace {
             PaletteAction::Memory => self.open_memory(window, cx),
             PaletteAction::Settings => self.open_settings(window, cx),
             PaletteAction::Setup => self.open_onboarding(None, window, cx),
+            PaletteAction::Welcome => self.open_welcome(None, window, cx),
             PaletteAction::NewTab => self.on_new_tab(&NewTab, window, cx),
             PaletteAction::NewTerminalTab => self.on_new_terminal_tab(&NewTerminalTab, window, cx),
             PaletteAction::SplitRight => self.split(SplitAxis::Horizontal, None, window, cx),
@@ -393,7 +394,13 @@ impl Workspace {
             &view,
             window,
             |this, _, event: &ProvidersEvent, window, cx| match event {
-                ProvidersEvent::Close => this.close_overlay(window, cx),
+                ProvidersEvent::Close => {
+                    this.close_overlay(window, cx);
+                    // Signed in from the welcome screen: back to its sequence.
+                    if let Some(view) = this.resume_welcome.take() {
+                        this.attach_welcome(view, window, cx);
+                    }
+                }
                 ProvidersEvent::Changed => {
                     for tab in this.sessions() {
                         tab.update(cx, |session, cx| session.reload_models(window, cx));
@@ -422,6 +429,48 @@ impl Workspace {
             },
         );
         self.overlay = Some((Overlay::Onboarding(view), subscription));
+        cx.notify();
+    }
+
+    /// The first-run welcome screen; `probe` is a look at the machine already
+    /// taken. ⌘K → "Welcome screen" shows it again.
+    pub(super) fn open_welcome(
+        &mut self,
+        probe: Option<Probe>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.resume_welcome = None;
+        let view = cx.new(|cx| WelcomeView::new(probe, cx));
+        self.attach_welcome(view, window, cx);
+    }
+
+    /// Show `view` (new, or back from Providers) and route its events.
+    pub(super) fn attach_welcome(
+        &mut self,
+        view: Entity<WelcomeView>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let subscription = cx.subscribe_in(
+            &view,
+            window,
+            |this, view, event: &WelcomeEvent, window, cx| match event {
+                WelcomeEvent::Close => this.close_overlay(window, cx),
+                // Providers takes the window; closing it returns to the welcome.
+                WelcomeEvent::Setup(OnboardingEvent::SignIn) => {
+                    this.resume_welcome = Some(view.clone());
+                    this.close_overlay(window, cx);
+                    this.open_providers(window, cx);
+                }
+                WelcomeEvent::Setup(event) => {
+                    let usable = view.read(cx).usable(cx);
+                    this.on_setup_event(event, usable, window, cx);
+                }
+            },
+        );
+        view.read(cx).focus_handle().clone().focus(window, cx);
+        self.overlay = Some((Overlay::Welcome(view), subscription));
         cx.notify();
     }
 

@@ -9,8 +9,9 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use super::checks::{Tone, all_set, install_plan, is_ok, required_ok, status_text, tone};
-use super::{OnboardingEvent, OnboardingView};
+use super::{Mode, OnboardingEvent, OnboardingView};
 use crate::features::setup::{Check, Fix, Need, Status};
+use crate::shared::banner::pixel_rose;
 use crate::shared::ui;
 
 /// Install output lines a running row shows.
@@ -44,7 +45,7 @@ impl OnboardingView {
             ),
         };
         let rose_size = if done { 88. } else { 56. };
-        let mark = div().flex().justify_center().child(rose(
+        let mark = div().flex().justify_center().child(pixel_rose(
             rose_size,
             if done { ui::success() } else { ui::petal() },
         ));
@@ -97,7 +98,6 @@ impl OnboardingView {
     }
 
     fn render_row(&self, check: &Check, index: usize, cx: &mut Context<Self>) -> AnyElement {
-        let busy = self.installing.is_some();
         let mine = self.installing == Some(check.id);
         let tone = tone(check);
         let color = match tone {
@@ -117,93 +117,9 @@ impl OnboardingView {
             .text_color(color)
             .into_any_element()
         };
-        let label = match (&check.status, mine) {
-            (_, true) => "Installing",
-            (Status::Ok(_), _) => "Ready",
-            (Status::Missing(_), _) => "Missing",
-            (Status::Outdated(_), _) => "Outdated",
-            (Status::Failed(_), _) => "Failed",
-        };
-        let id = check.id;
-        let action = (!is_ok(check))
-            .then(|| match &check.fix {
-                Fix::Auto => {
-                    let button = Button::new(("onboarding-install", index))
-                        .small()
-                        .icon(Icon::new(match check.status {
-                            Status::Failed(_) => IconName::RefreshCw,
-                            _ => IconName::ArrowDown,
-                        }))
-                        .label(match check.status {
-                            Status::Failed(_) => "Retry",
-                            Status::Outdated(_) => "Update",
-                            _ => "Install",
-                        })
-                        .loading(mine)
-                        .disabled(busy)
-                        .on_click(cx.listener(move |this, _, _, cx| this.install(id, cx)));
-                    Some(if check.need == Need::Required {
-                        button.primary()
-                    } else {
-                        button.ghost()
-                    })
-                }
-                Fix::Terminal(command) => {
-                    let command = command.clone();
-                    Some(
-                        Button::new(("onboarding-terminal", index))
-                            .small()
-                            .ghost()
-                            .icon(Icon::new(IconName::SquareTerminal))
-                            .label("Open terminal")
-                            .tooltip(command.clone())
-                            .disabled(busy)
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.emit(OnboardingEvent::Terminal(command.clone()))
-                            })),
-                    )
-                }
-                Fix::SignIn => Some(
-                    Button::new(("onboarding-sign-in", index))
-                        .small()
-                        .primary()
-                        .icon(Icon::new(IconName::KeyRound))
-                        .label("Sign in")
-                        .disabled(busy)
-                        .on_click(cx.listener(|_, _, _, cx| cx.emit(OnboardingEvent::SignIn))),
-                ),
-                Fix::None => None,
-            })
-            .flatten();
-        let failure = self
-            .failure
-            .as_ref()
-            .filter(|(failed, _)| *failed == check.id)
-            .map(|(_, message)| message.clone());
-        let show_log = self.log_for == Some(check.id) && (mine || failure.is_some());
-        let log = show_log.then(|| {
-            let start = self.log.len().saturating_sub(LOG_LINES);
-            v_flex()
-                .ml(px(32.))
-                .px_3()
-                .py_2()
-                .gap_0p5()
-                .rounded_lg()
-                .bg(ui::well())
-                .font_family(ui::MONO)
-                .text_xs()
-                .when(self.log.is_empty() && mine, |d| {
-                    d.child(div().text_color(ui::faint()).child("Starting…"))
-                })
-                .children(
-                    self.log[start..]
-                        .iter()
-                        .map(|line| div().text_color(ui::muted()).truncate().child(line.clone())),
-                )
-                .when_some(failure, |d, message| {
-                    d.child(div().text_color(ui::danger()).child(message))
-                })
-        });
+        let label = status_label(&check.status, mine);
+        let action = self.render_action(check, index, cx);
+        let log = self.render_log(check, LOG_LINES).map(|log| log.ml(px(32.)));
         let row = v_flex()
             .gap_2()
             .px_3()
@@ -262,10 +178,107 @@ impl OnboardingView {
         .into_any_element()
     }
 
+    /// The tail of `check`'s install output (`lines` at most) and its
+    /// failure, while it installs or after it failed; `None` otherwise.
+    pub(super) fn render_log(&self, check: &Check, lines: usize) -> Option<Div> {
+        let mine = self.installing == Some(check.id);
+        let failure = self
+            .failure
+            .as_ref()
+            .filter(|(failed, _)| *failed == check.id)
+            .map(|(_, message)| message.clone());
+        let show_log = self.log_for == Some(check.id) && (mine || failure.is_some());
+        show_log.then(|| {
+            let start = self.log.len().saturating_sub(lines);
+            v_flex()
+                .px_3()
+                .py_2()
+                .gap_0p5()
+                .rounded_lg()
+                .bg(ui::well())
+                .font_family(ui::MONO)
+                .text_xs()
+                .when(self.log.is_empty() && mine, |d| {
+                    d.child(div().text_color(ui::faint()).child("Starting…"))
+                })
+                .children(
+                    self.log[start..]
+                        .iter()
+                        .map(|line| div().text_color(ui::muted()).truncate().child(line.clone())),
+                )
+                .when_some(failure, |d, message| {
+                    d.child(div().text_color(ui::danger()).child(message))
+                })
+        })
+    }
+
+    /// What fixes `check`: Install/Update/Retry, Open terminal, or Sign in.
+    /// `None` when it's done or nothing here can fix it.
+    pub(super) fn render_action(
+        &self,
+        check: &Check,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<Button> {
+        let busy = self.installing.is_some();
+        let mine = self.installing == Some(check.id);
+        let id = check.id;
+        (!is_ok(check))
+            .then(|| match &check.fix {
+                Fix::Auto => {
+                    let button = Button::new(("onboarding-install", index))
+                        .small()
+                        .icon(Icon::new(match check.status {
+                            Status::Failed(_) => IconName::RefreshCw,
+                            _ => IconName::ArrowDown,
+                        }))
+                        .label(match check.status {
+                            Status::Failed(_) => "Retry",
+                            Status::Outdated(_) => "Update",
+                            _ => "Install",
+                        })
+                        .loading(mine)
+                        .disabled(busy)
+                        .on_click(cx.listener(move |this, _, _, cx| this.install(id, cx)));
+                    Some(if check.need == Need::Required {
+                        button.primary()
+                    } else {
+                        button.ghost()
+                    })
+                }
+                Fix::Terminal(command) => {
+                    let command = command.clone();
+                    Some(
+                        Button::new(("onboarding-terminal", index))
+                            .small()
+                            .ghost()
+                            .icon(Icon::new(IconName::SquareTerminal))
+                            .label("Open terminal")
+                            .tooltip(command.clone())
+                            .disabled(busy)
+                            .on_click(cx.listener(move |_, _, _, cx| {
+                                cx.emit(OnboardingEvent::Terminal(command.clone()))
+                            })),
+                    )
+                }
+                Fix::SignIn => Some(
+                    Button::new(("onboarding-sign-in", index))
+                        .small()
+                        .primary()
+                        .icon(Icon::new(IconName::KeyRound))
+                        .label("Sign in")
+                        .disabled(busy)
+                        .on_click(cx.listener(|_, _, _, cx| cx.emit(OnboardingEvent::SignIn))),
+                ),
+                Fix::None => None,
+            })
+            .flatten()
+    }
+
     fn render_checks(&self, checks: &[Check], cx: &mut Context<Self>) -> Div {
         let mut column = v_flex()
             .gap_5()
-            .when(!self.embedded, |column| column.px_6().pb_2());
+            .when(self.mode == Mode::Screen, |column| column.px_6().pb_2());
         let mut index = 0;
         for (need, label) in [
             (Need::Required, "Required"),
@@ -400,29 +413,11 @@ impl OnboardingView {
     }
 }
 
-/// Gentle Shell's pixel rose, `height` px tall, in `color`.
-fn rose(height: f32, color: Hsla) -> impl IntoElement {
-    let (dots, (width, rows)) = crate::shared::banner::rose();
-    let dot = height / rows.max(1) as f32;
-    canvas(
-        |_, _, _| {},
-        move |bounds, _, window, _| {
-            let side = px((dot * 0.55).max(1.0));
-            for &(x, y) in dots {
-                let origin = point(
-                    bounds.origin.x + px(x as f32 * dot),
-                    bounds.origin.y + px(y as f32 * dot),
-                );
-                window.paint_quad(fill(Bounds::new(origin, size(side, side)), color));
-            }
-        },
-    )
-    .w(px(width as f32 * dot))
-    .h(px(height))
-}
-
 impl Render for OnboardingView {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.mode == Mode::Sequence {
+            return self.render_sequence(cx).into_any_element();
+        }
         let body: AnyElement = match &self.checks {
             None => h_flex()
                 .py_8()
@@ -436,7 +431,7 @@ impl Render for OnboardingView {
             Some(checks) => self.render_checks(checks, cx).into_any_element(),
         };
         let busy = self.busy();
-        if self.embedded {
+        if self.mode == Mode::Embedded {
             return v_flex()
                 .w_full()
                 .child(self.render_embedded_bar(cx))
@@ -482,5 +477,16 @@ impl Render for OnboardingView {
                     ),
             ))
             .into_any_element()
+    }
+}
+
+/// The chip a check wears: Installing while it runs, else its status.
+pub(super) fn status_label(status: &Status, installing: bool) -> &'static str {
+    match (status, installing) {
+        (_, true) => "Installing",
+        (Status::Ok(_), _) => "Ready",
+        (Status::Missing(_), _) => "Missing",
+        (Status::Outdated(_), _) => "Outdated",
+        (Status::Failed(_), _) => "Failed",
     }
 }

@@ -385,6 +385,7 @@ impl Render for Workspace {
                 Overlay::Settings(view) => view.clone().into_any_element(),
                 Overlay::Profiles(view) => view.clone().into_any_element(),
                 Overlay::Onboarding(view) => view.clone().into_any_element(),
+                Overlay::Welcome(view) => view.clone().into_any_element(),
             }))
             .when_some(self.surge, |root, (run, _)| {
                 root.child(crate::shared::surge::overlay(run))
