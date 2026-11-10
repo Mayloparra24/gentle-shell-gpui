@@ -399,6 +399,26 @@ impl Workspace {
         self.schedule_save(cx);
     }
 
+    /// A new pane tiled like Hyprland's dwindle: the focused pane splits
+    /// along its longer side (the other one if only that fits), so panes
+    /// spiral in instead of lining up in one row. No room: a new tab.
+    pub(super) fn tile(
+        &mut self,
+        what: Option<(PaneKind, PathBuf)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let focused = self.focused_pane();
+        let axis = self
+            .pane_sizes(window)
+            .into_iter()
+            .find(|(id, ..)| Some(*id) == focused)
+            .and_then(|(_, w, h)| tile_axis(w, h))
+            // No size yet, or no room either way: `split` opens a tab.
+            .unwrap_or(SplitAxis::Horizontal);
+        self.split(axis, what, window, cx);
+    }
+
     pub(super) fn split_with_kind(
         &mut self,
         kind: PaneKind,
@@ -406,7 +426,39 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         let cwd = self.active_cwd(cx);
-        self.split(SplitAxis::Horizontal, Some((kind, cwd)), window, cx);
+        self.tile(Some((kind, cwd)), window, cx);
+    }
+
+    /// Drop `moving` on `target` at `zone`: beside it on that side, or swap
+    /// the two in the middle. A side whose halves wouldn't fit swaps instead.
+    pub(super) fn move_pane(
+        &mut self,
+        moving: PaneId,
+        target: PaneId,
+        zone: DropZone,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let placement = zone.placement().filter(|(axis, _)| {
+            self.pane_sizes(window)
+                .into_iter()
+                .find(|(id, ..)| *id == target)
+                .is_none_or(|(_, w, h)| fits_split(*axis, w, h))
+        });
+        let Some((axis, before)) = placement else {
+            self.swap_panes(moving, target, cx);
+            return;
+        };
+        if moving == target {
+            return;
+        }
+        if let Some(tab) = self.tab_mut() {
+            let tree = std::mem::replace(&mut tab.tree, PaneTree::Leaf(moving));
+            tab.tree = tree.moved(&moving, &target, axis, before);
+            tab.focused = moving;
+        }
+        self.schedule_save(cx);
+        cx.notify();
     }
 
     /// Close `pane`, asking first when it holds unsaved edits.

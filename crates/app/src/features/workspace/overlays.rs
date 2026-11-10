@@ -82,6 +82,7 @@ impl Workspace {
             PaletteAction::Welcome => self.open_welcome(None, window, cx),
             PaletteAction::NewTab => self.on_new_tab(&NewTab, window, cx),
             PaletteAction::NewTerminalTab => self.on_new_terminal_tab(&NewTerminalTab, window, cx),
+            PaletteAction::TilePane => self.tile(None, window, cx),
             PaletteAction::SplitRight => self.split(SplitAxis::Horizontal, None, window, cx),
             PaletteAction::SplitDown => self.split(SplitAxis::Vertical, None, window, cx),
             PaletteAction::NewAgentPane => self.split_with_kind(PaneKind::Agent, window, cx),

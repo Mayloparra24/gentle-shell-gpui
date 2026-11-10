@@ -39,6 +39,8 @@ pub enum PaletteAction {
     /// A new tab with an agent pane.
     NewTab,
     NewTerminalTab,
+    /// A new pane of the focused kind, tiled Hyprland-style.
+    TilePane,
     SplitRight,
     SplitDown,
     /// Split the focused pane with an agent / terminal beside it.

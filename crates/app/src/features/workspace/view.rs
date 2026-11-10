@@ -444,10 +444,40 @@ impl Workspace {
                     cx.notify();
                 }
             }))
-            .drag_over::<PaneDrag>(|style, _, _, _| style.border_color(ui::accent()))
-            .on_drop(
-                cx.listener(move |this, drag: &PaneDrag, _, cx| this.swap_panes(drag.pane, id, cx)),
+            // Dragging a pane over this one: track which zone the pointer is
+            // in (only while it's over this pane, and never over itself).
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<PaneDrag>, _, cx| {
+                    let bounds = event.bounds;
+                    let position = event.event.position;
+                    let hint =
+                        (bounds.contains(&position) && event.drag(cx).pane != id).then(|| {
+                            let x = (position.x - bounds.left()) / bounds.size.width;
+                            let y = (position.y - bounds.top()) / bounds.size.height;
+                            (id, DropZone::at(x, y))
+                        });
+                    match hint {
+                        Some(hint) if this.drop_hint != Some(hint) => {
+                            this.drop_hint = Some(hint);
+                            cx.notify();
+                        }
+                        // Only this pane's own hint is its to clear.
+                        None if this.drop_hint.is_some_and(|(pane, _)| pane == id) => {
+                            this.drop_hint = None;
+                            cx.notify();
+                        }
+                        _ => {}
+                    }
+                }),
             )
+            .on_drop(cx.listener(move |this, drag: &PaneDrag, window, cx| {
+                let zone = this
+                    .drop_hint
+                    .take()
+                    .filter(|(pane, _)| *pane == id)
+                    .map_or(DropZone::Center, |(_, zone)| zone);
+                this.move_pane(drag.pane, id, zone, window, cx);
+            }))
             // The pink border alone marks focus: a straight accent line on top
             // can't follow the rounded corners now that panes have no header.
             // Cached: a notify elsewhere (another pane, the chrome) reuses this
@@ -459,9 +489,15 @@ impl Workspace {
                         .clone()
                         .cached(StyleRefinement::default().size_full()),
                 ),
+            )
+            .children(
+                self.drop_hint
+                    .filter(|(pane, _)| *pane == id && cx.has_active_drag())
+                    .map(|(_, zone)| drop_overlay(zone)),
             );
         // The grip: a pill straddling the pane's top edge (outside the
-        // clipped body); drag onto another pane to swap the two.
+        // clipped body); drag it onto another pane's edge to move the pane
+        // there, or onto its middle to swap the two.
         let grip = h_flex()
             .absolute()
             // Inside the ~4 px gap under the title bar, not over the tabs.
@@ -593,4 +629,24 @@ pub(super) fn menu_row(
                 .child(div().text_xs().text_color(ui::muted()).child(detail)),
         )
         .child(ui::kbd(keys))
+}
+
+/// Where a dragged pane would land on the pane under the pointer: that half
+/// for an edge, the whole pane (a swap) in the middle.
+fn drop_overlay(zone: DropZone) -> impl IntoElement {
+    let area = div()
+        .absolute()
+        .m(px(6.))
+        .rounded_xl()
+        .bg(ui::petal().opacity(0.12))
+        .border_2()
+        .border_color(ui::petal().opacity(0.6));
+    let area = match zone {
+        DropZone::Left => area.left_0().top_0().bottom_0().w(relative(0.5)),
+        DropZone::Right => area.right_0().top_0().bottom_0().w(relative(0.5)),
+        DropZone::Top => area.top_0().left_0().right_0().h(relative(0.5)),
+        DropZone::Bottom => area.bottom_0().left_0().right_0().h(relative(0.5)),
+        DropZone::Center => area.inset_0(),
+    };
+    ui::popover_in(("pane-drop", zone as usize), area)
 }

@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use crate::features::workspace::{
     ClosePane, CloseTab, FocusNextPane, FocusPrevPane, NewTab, NewTerminalTab, NextTab, PrevTab,
-    Quit, SplitDown, SplitRight, ToggleSidebar, Workspace,
+    Quit, SplitDown, SplitRight, TilePane, ToggleSidebar, Workspace,
 };
 use crate::{
     features::app_update, features::files, features::session, features::workspace,
@@ -95,8 +95,8 @@ fn bind_keys(cx: &mut App) {
             }
         };
     }
-    // Split right is ctrl-shift-d off macOS: ctrl-d belongs to terminals.
-    let (split_right, split_down, workspaces) = if cfg!(target_os = "macos") {
+    // A new tiled pane is ctrl-shift-d off macOS: ctrl-d belongs to terminals.
+    let (tile, split_down, workspaces) = if cfg!(target_os = "macos") {
         ("cmd-d", "cmd-shift-d", "ctrl-cmd-k")
     } else {
         ("ctrl-shift-d", "ctrl-shift-e", "ctrl-alt-k")
@@ -108,7 +108,7 @@ fn bind_keys(cx: &mut App) {
         KeyBinding::new(key!("shift-w"), CloseTab, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
-        KeyBinding::new(split_right, SplitRight, None),
+        KeyBinding::new(tile, TilePane, None),
         KeyBinding::new(split_down, SplitDown, None),
         KeyBinding::new(key!("]"), FocusNextPane, None),
         KeyBinding::new(key!("["), FocusPrevPane, None),
@@ -136,6 +136,7 @@ fn set_menus(cx: &mut App) {
         items: vec![
             MenuItem::action("New Tab", NewTab),
             MenuItem::action("New Terminal Tab", NewTerminalTab),
+            MenuItem::action("New Pane (Tiled)", TilePane),
             MenuItem::action("Split Right", SplitRight),
             MenuItem::action("Split Down", SplitDown),
             MenuItem::action("Close Pane", ClosePane),
