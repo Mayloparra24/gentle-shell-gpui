@@ -124,10 +124,6 @@ impl Render for UsageView {
                                 )),
                         )
                         .child(
-                            ui::key_button("usage-esc", "esc")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(UsageEvent::Close))),
-                        )
-                        .child(
                             Button::new("usage-close")
                                 .ghost()
                                 .xsmall()

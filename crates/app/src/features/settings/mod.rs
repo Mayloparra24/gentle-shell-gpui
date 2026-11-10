@@ -297,10 +297,6 @@ impl Render for SettingsView {
                                 .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                         )
                         .child(
-                            ui::key_button("settings-esc", "esc")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SettingsEvent::Close))),
-                        )
-                        .child(
                             Button::new("settings-close")
                                 .ghost()
                                 .xsmall()

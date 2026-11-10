@@ -198,7 +198,10 @@ impl SessionView {
                     .child(tasks.len().to_string()),
             )
             .child(
-                ui::key_button("agents-esc", "esc")
+                Button::new("agents-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(IconName::X))
                     .on_click(cx.listener(|this, _, _, cx| this.close_agents(cx))),
             );
 

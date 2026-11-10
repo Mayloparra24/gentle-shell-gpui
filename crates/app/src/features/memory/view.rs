@@ -225,10 +225,6 @@ impl Render for MemoryView {
                             d.child(Spinner::new().small().color(ui::accent()))
                         })
                         .child(
-                            ui::key_button("memory-esc", "esc")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(MemoryEvent::Close))),
-                        )
-                        .child(
                             Button::new("memory-close")
                                 .ghost()
                                 .xsmall()

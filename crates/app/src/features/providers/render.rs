@@ -116,11 +116,6 @@ impl Render for ProvidersView {
                                 .child("Credentials go to Gentle Shell's auth.json, like /login."),
                         )
                         .child(
-                            ui::key_button("providers-esc", "esc").on_click(
-                                cx.listener(|_, _, _, cx| cx.emit(ProvidersEvent::Close)),
-                            ),
-                        )
-                        .child(
                             Button::new("providers-close")
                                 .ghost()
                                 .xsmall()

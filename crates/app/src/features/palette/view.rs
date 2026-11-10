@@ -300,9 +300,15 @@ impl Render for PaletteView {
                             .text_size(px(16.))
                             .child(Input::new(&self.query).appearance(false)),
                     )
-                    .child(ui::key_button("palette-esc", "esc").on_click(
-                        cx.listener(|this, _, window, cx| this.press_escape(window, cx)),
-                    )),
+                    .child(
+                        Button::new("palette-close")
+                            .ghost()
+                            .xsmall()
+                            .icon(Icon::new(IconName::X))
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.press_escape(window, cx)),
+                            ),
+                    ),
             )
             .child(self.render_categories(cx))
             .child(list)

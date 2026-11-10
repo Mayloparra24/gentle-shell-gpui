@@ -146,9 +146,6 @@ impl Render for ProfilesView {
                                 .disabled(self.busy)
                                 .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                         )
-                        .child(ui::key_button("profiles-esc", "esc").on_click(
-                            cx.listener(|this, _, window, cx| this.leave(Leave::Close, window, cx)),
-                        ))
                         .child(
                             Button::new("profiles-close")
                                 .ghost()

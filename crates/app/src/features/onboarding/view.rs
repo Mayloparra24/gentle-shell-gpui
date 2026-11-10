@@ -458,26 +458,16 @@ impl Render for OnboardingView {
                     )
                     .child(self.render_footer(cx))
                     .child(
-                        h_flex()
-                            .absolute()
-                            .top_3()
-                            .right_3()
-                            .gap_2()
-                            .child(ui::key_button("onboarding-esc", "esc").when(!busy, |d| {
-                                d.on_click(
+                        h_flex().absolute().top_3().right_3().gap_2().child(
+                            Button::new("onboarding-close")
+                                .ghost()
+                                .xsmall()
+                                .icon(Icon::new(IconName::X))
+                                .disabled(busy)
+                                .on_click(
                                     cx.listener(|_, _, _, cx| cx.emit(OnboardingEvent::Close)),
-                                )
-                            }))
-                            .child(
-                                Button::new("onboarding-close")
-                                    .ghost()
-                                    .xsmall()
-                                    .icon(Icon::new(IconName::X))
-                                    .disabled(busy)
-                                    .on_click(
-                                        cx.listener(|_, _, _, cx| cx.emit(OnboardingEvent::Close)),
-                                    ),
-                            ),
+                                ),
+                        ),
                     ),
             ))
             .into_any_element()

@@ -330,10 +330,6 @@ impl Render for SessionsView {
                             d.child(ui::chip(format!("{count}"), ui::muted()).flex_shrink_0())
                         })
                         .child(
-                            ui::key_button("sessions-esc", "esc")
-                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SessionsEvent::Close))),
-                        )
-                        .child(
                             Button::new("sessions-close")
                                 .ghost()
                                 .xsmall()
