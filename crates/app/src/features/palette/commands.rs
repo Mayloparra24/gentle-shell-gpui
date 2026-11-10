@@ -97,9 +97,15 @@ pub(super) fn screen_rows() -> Vec<Row> {
             PaletteAction::NewTerminalTab,
         ),
         row(
+            IconName::LayoutDashboard,
+            "New pane (tiled)",
+            &format!("Same kind of pane, tiled beside the focused one ({cmd}D)"),
+            PaletteAction::TilePane,
+        ),
+        row(
             IconName::Columns2,
             "Split right",
-            &format!("Same kind of pane beside this one ({cmd}D)"),
+            "Same kind of pane to the right of this one",
             PaletteAction::SplitRight,
         ),
         row(

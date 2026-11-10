@@ -87,6 +87,24 @@ impl PaletteView {
         cx.notify();
     }
 
+    /// What Enter does: commit the rename in progress, else run the selected row.
+    pub(super) fn press_enter(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming.is_some() {
+            self.finish_rename(true, window, cx);
+        } else {
+            self.run_selected(cx);
+        }
+    }
+
+    /// What Escape does: cancel the rename in progress, else close.
+    pub(super) fn press_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.renaming.is_some() {
+            self.finish_rename(false, window, cx);
+        } else {
+            cx.emit(PaletteEvent::Close);
+        }
+    }
+
     pub(super) fn on_key_down(
         &mut self,
         event: &KeyDownEvent,
@@ -97,10 +115,8 @@ impl PaletteView {
         let modifiers = keystroke.modifiers;
         let renaming = self.renaming.is_some();
         match keystroke.key.as_str() {
-            "escape" if renaming => self.finish_rename(false, window, cx),
-            "escape" => cx.emit(PaletteEvent::Close),
-            "enter" if renaming => self.finish_rename(true, window, cx),
-            "enter" => self.run_selected(cx),
+            "escape" => self.press_escape(window, cx),
+            "enter" => self.press_enter(window, cx),
             "up" if !renaming => self.move_selection(-1, cx),
             "down" if !renaming => self.move_selection(1, cx),
             "p" if modifiers.control && !renaming => self.move_selection(-1, cx),

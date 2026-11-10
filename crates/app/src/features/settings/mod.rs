@@ -296,7 +296,6 @@ impl Render for SettingsView {
                                 .tooltip("Reload")
                                 .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
                         )
-                        .child(ui::kbd("esc"))
                         .child(
                             Button::new("settings-close")
                                 .ghost()

@@ -115,7 +115,6 @@ impl Render for ProvidersView {
                                 .text_color(ui::muted())
                                 .child("Credentials go to Gentle Shell's auth.json, like /login."),
                         )
-                        .child(ui::kbd("esc"))
                         .child(
                             Button::new("providers-close")
                                 .ghost()

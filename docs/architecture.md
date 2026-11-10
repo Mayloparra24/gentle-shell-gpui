@@ -142,7 +142,7 @@ Each one keeps its public type and API in the parent file; child modules add the
 ```text
 workspace/mod.rs     # Workspace, types (Pane, Tab, Space, Overlay) and public API
 workspace/
-├── layout.rs       # pane split calculations
+├── layout.rs       # pane split calculations, tiling direction, drop zones
 ├── panes.rs        # create, split, focus and close panes
 ├── spaces.rs       # named workspaces
 ├── tabs.rs         # tabs and renaming

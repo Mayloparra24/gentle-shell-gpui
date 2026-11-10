@@ -197,7 +197,13 @@ impl SessionView {
                     .text_color(ui::faint())
                     .child(tasks.len().to_string()),
             )
-            .child(ui::kbd("esc"));
+            .child(
+                Button::new("agents-close")
+                    .ghost()
+                    .xsmall()
+                    .icon(Icon::new(IconName::X))
+                    .on_click(cx.listener(|this, _, _, cx| this.close_agents(cx))),
+            );
 
         let tab_button = |id: &'static str, label: &'static str, tab: AgentsTab| {
             let active = self.agents_panel.tab == tab;

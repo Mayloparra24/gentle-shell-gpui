@@ -59,6 +59,7 @@ actions!(
         NextTab,
         PrevTab,
         SplitRight,
+        TilePane,
         SplitDown,
         NewAgentPane,
         NewTerminalPane,
@@ -177,7 +178,8 @@ struct DividerDrag {
     path: Vec<bool>,
 }
 
-/// Dragged by a pane's grip pill: dropping on another pane swaps them.
+/// Dragged by a pane's grip pill: dropped near another pane's edge it moves
+/// to that side, in the middle the two swap.
 #[derive(Clone)]
 struct PaneDrag {
     pane: PaneId,
@@ -249,6 +251,9 @@ pub struct Workspace {
     /// The welcome screen, kept while its "Sign in" shows Providers so closing
     /// Providers returns to it.
     resume_welcome: Option<Entity<WelcomeView>>,
+    /// While a pane is dragged: the pane under the pointer and where it would
+    /// land there.
+    drop_hint: Option<(PaneId, DropZone)>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -300,6 +305,7 @@ impl Workspace {
             surge_runs: 0,
             browser: None,
             resume_welcome: None,
+            drop_hint: None,
             _surge_end: None,
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {

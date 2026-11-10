@@ -123,7 +123,6 @@ impl Render for UsageView {
                                     Tab::Stats,
                                 )),
                         )
-                        .child(ui::kbd("esc"))
                         .child(
                             Button::new("usage-close")
                                 .ghost()

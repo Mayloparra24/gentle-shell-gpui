@@ -50,6 +50,17 @@ impl Workspace {
         self.split(SplitAxis::Horizontal, None, window, cx);
     }
 
+    /// ⌘D: a new pane tiled Hyprland-style (dwindle), splitting the focused
+    /// pane along its longer side.
+    pub(super) fn on_tile_pane(
+        &mut self,
+        _: &TilePane,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tile(None, window, cx);
+    }
+
     pub(super) fn on_split_down(
         &mut self,
         _: &SplitDown,

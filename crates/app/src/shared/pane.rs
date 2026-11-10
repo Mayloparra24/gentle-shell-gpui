@@ -123,24 +123,53 @@ impl<L: Clone + PartialEq> PaneTree<L> {
     /// Put `new` beside `target` (after it), halving its space. `false` when
     /// `target` is not in the tree.
     pub fn split(&mut self, target: &L, new: L, axis: SplitAxis) -> bool {
+        self.insert(target, new, axis, false)
+    }
+
+    /// Put `new` beside `target`, halving its space: before it (left or
+    /// above) or after it (right or below). `false` when `target` is not in
+    /// the tree.
+    pub fn insert(&mut self, target: &L, new: L, axis: SplitAxis, before: bool) -> bool {
         match self {
             PaneTree::Leaf(l) if l == target => {
+                let (first, second) = if before {
+                    (new, l.clone())
+                } else {
+                    (l.clone(), new)
+                };
                 *self = PaneTree::Split {
                     axis,
                     ratio: 0.5,
-                    first: Box::new(PaneTree::Leaf(l.clone())),
-                    second: Box::new(PaneTree::Leaf(new)),
+                    first: Box::new(PaneTree::Leaf(first)),
+                    second: Box::new(PaneTree::Leaf(second)),
                 };
                 true
             }
             PaneTree::Leaf(_) => false,
             PaneTree::Split { first, second, .. } => {
                 if first.contains(target) {
-                    first.split(target, new, axis)
+                    first.insert(target, new, axis, before)
                 } else {
-                    second.split(target, new, axis)
+                    second.insert(target, new, axis, before)
                 }
             }
+        }
+    }
+
+    /// Move `moving` next to `target` (dragging a pane onto another pane's
+    /// edge): it leaves its place, whose sibling takes the room, and splits
+    /// `target`. Unchanged when either is missing or they are the same.
+    pub fn moved(self, moving: &L, target: &L, axis: SplitAxis, before: bool) -> Self {
+        if moving == target || !self.contains(moving) || !self.contains(target) {
+            return self;
+        }
+        let Some(mut rest) = self.clone().without(moving) else {
+            return self;
+        };
+        if rest.insert(target, moving.clone(), axis, before) {
+            rest
+        } else {
+            self
         }
     }
 
@@ -250,6 +279,55 @@ mod tests {
         PaneTree::Leaf(id)
     }
 
+    #[test]
+    fn insert_goes_before_or_after_the_target() {
+        let mut tree = leaf(1);
+        assert!(tree.insert(&1, 2, SplitAxis::Horizontal, true));
+        assert_eq!(tree.leaves(), vec![2, 1]);
+        assert!(tree.insert(&1, 3, SplitAxis::Vertical, false));
+        assert_eq!(tree.leaves(), vec![2, 1, 3]);
+        assert!(!tree.insert(&9, 4, SplitAxis::Vertical, true));
+    }
+
+    #[test]
+    fn moving_a_pane_collapses_its_old_place_and_splits_the_target() {
+        // [1 | [2 / 3]]: move 1 below 3.
+        let mut tree = leaf(1);
+        tree.split(&1, 2, SplitAxis::Horizontal);
+        tree.split(&2, 3, SplitAxis::Vertical);
+        let moved = tree.clone().moved(&1, &3, SplitAxis::Vertical, false);
+        assert_eq!(moved.leaves(), vec![2, 3, 1]);
+        assert_eq!(moved.len(), 3);
+        // 1 left its column: 2 is now on top, with 3 and 1 stacked under it.
+        match &moved {
+            PaneTree::Split {
+                axis: SplitAxis::Vertical,
+                first,
+                second,
+                ..
+            } => {
+                assert_eq!(**first, leaf(2));
+                assert_eq!(second.leaves(), vec![3, 1]);
+            }
+            other => panic!("unexpected shape: {other:?}"),
+        }
+        // Onto itself, or a pane that isn't there: nothing changes.
+        assert_eq!(
+            tree.clone().moved(&2, &2, SplitAxis::Horizontal, true),
+            tree
+        );
+        assert_eq!(
+            tree.clone().moved(&9, &2, SplitAxis::Horizontal, true),
+            tree
+        );
+        // The last two panes can trade sides.
+        let mut pair = leaf(1);
+        pair.split(&1, 2, SplitAxis::Horizontal);
+        assert_eq!(
+            pair.moved(&1, &2, SplitAxis::Horizontal, false).leaves(),
+            vec![2, 1]
+        );
+    }
     #[test]
     fn split_nests_beside_the_target() {
         let mut tree = leaf(1);

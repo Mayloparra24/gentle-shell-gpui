@@ -158,7 +158,8 @@ Surface order, back to front: window (`window_bg`) → `panel` → `card` (`surf
 | `card()` | `rounded_xl` column, `surface`, `border` border | Tool cards, Settings sections, usage cards. |
 | `well_box()` | `rounded_lg` column, `well`, `MONO`, `text_xs` | Code, command outputs, diffs, stderr. |
 | `chip(text, color)` | 10.5 px pill: `color` text, `color.opacity(0.12)` background, `color.opacity(0.22)` border | Model, state, counts, "current", "N unsaved". |
-| `kbd(text)` | 20 px key in `MONO` | Shortcut hints: `esc`, `↵`, `⌘↵`. |
+| `kbd(text)` | 20 px key in `MONO` | Shortcut hints that are not an action on their own: `↑↓`, `←→`. |
+| `key_button(id, text)` | `kbd` with a pointer; hover lifts the text to `fg` and the border to `petal().opacity(0.6)` | A hint that stands for one action in a footer legend or dialog (`↵` run/submit, `esc` cancel); add `.on_click` doing what the key does. Screen headers don't show `esc`: they have the close X, and Esc still closes. |
 | `section_label(text)` | 10 px `SEMIBOLD` in `faint`, uppercase | Heading of a group. |
 | `field()` | 34 px row, `well`, `border_strong` border | Frame for `Input::new(..).appearance(false)`, with an optional icon on the left. |
 | `segmented(id, labels, selected, on_select)` | Text options inside a `well` | Two- or three-option toggles ("This project / All projects"). |
@@ -244,7 +245,7 @@ Icon color: `muted` in screen headers and neutral cards, `faint` inside fields a
 
 ### Overlay screen
 
-Settings, Providers, Usage, Sessions, Profiles, Memory and Agents follow the same shape (`features/usage/view.rs`, `features/sessions/render.rs`). Onboarding uses `ui::screen` without `screen_header`: its hero acts as the header and `kbd("esc")` + close float at the top right. The palette (`features/palette/view.rs`) repeats the frame by hand (`screen_bg`, `rounded_2xl`, `border_strong`, `shadow_2xl`) with a fixed height of 560 px so it does not jump while filtering.
+Settings, Providers, Usage, Sessions, Profiles, Memory and Agents follow the same shape (`features/usage/view.rs`, `features/sessions/render.rs`). Onboarding uses `ui::screen` without `screen_header`: its hero acts as the header and the close X floats at the top right. The palette (`features/palette/view.rs`) repeats the frame by hand (`screen_bg`, `rounded_2xl`, `border_strong`, `shadow_2xl`) with a fixed height of 560 px so it does not jump while filtering.
 
 ```rust
 let (backdrop, panel) = ui::screen(Some(760.));
@@ -258,7 +259,8 @@ backdrop.occlude().child(ui::pop_in(
                     .text_color(ui::fg()).child("Usage"))
                 .child(div().flex_1().min_w_0().truncate().text_xs()
                     .text_color(ui::muted()).child(subtitle))
-                .child(ui::kbd("esc"))
+                .child(ui::key_button("usage-esc", "esc")
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(UsageEvent::Close))))
                 .child(Button::new("usage-close").ghost().xsmall().icon(Icon::new(IconName::X))
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(UsageEvent::Close)))),
         )
@@ -267,7 +269,7 @@ backdrop.occlude().child(ui::pop_in(
 ))
 ```
 
-- Header, in this order: `small` icon in `muted`, `text_base SEMIBOLD` title, subtitle that takes the remaining space and truncates, optional actions (spinner, count chip, `segmented`, `ghost().xsmall()` buttons with tooltip), `kbd("esc")` and the close button.
+- Header, in this order: `small` icon in `muted`, `text_base SEMIBOLD` title, subtitle that takes the remaining space and truncates, optional actions (spinner, count chip, `segmented`, `ghost().xsmall()` buttons with tooltip) and the close X (`ghost().xsmall()` with `IconName::X`). No `esc` badge in the header: Esc closes every screen anyway.
 - The body is the only part that scrolls (`flex_1().min_h_0().overflow_y_scroll()` with an id).
 - The view does not handle Esc: it emits its `Close` event and the `Workspace` removes it (`on_close_overlay`). The veil uses `.occlude()` so clicks do not pass through to what is behind; only the palette closes on a click on the veil.
 
@@ -306,7 +308,7 @@ Tool cards (`render_card` in `features/session/view.rs`) and extension message c
 | Inline confirm: `outline()`; cancel: `ghost()` with "Cancel". | Rename profile, custom model. |
 | Pill (`rounded(px(999.))`) only for the composer's send/stop and the welcome primary button. | `features/session/view/composer.rs` |
 
-Typical screen footer: `h_flex().px_4().py_3().gap_2().border_t_1().border_color(ui::border())`, with hints (`kbd` + `text_xs muted` text) or a status line on the left.
+Typical screen footer: `h_flex().px_4().py_3().gap_2().border_t_1().border_color(ui::border())`, with hints (`kbd`/`key_button` + `text_xs muted` text) or a status line on the left.
 
 ### Empty, loading and error
 
@@ -330,12 +332,13 @@ Typical screen footer: `h_flex().px_4().py_3().gap_2().border_t_1().border_color
 | Stable animation ids; a counter in the id only to repeat it. | Ids that change on every render (the animation restarts endlessly). |
 | Large effects in a `canvas`, without input and with a `Task` that clears them. | Wrap the window root in an animation. |
 | Test in a light theme (e.g. Catppuccin Latte) and with transparency at maximum. | Assume dark mode or an opaque background. |
+| Make a key hint that stands for one action a `key_button` with the key's handler. | Leave an `esc`/`↵` cap that looks pressable but ignores the mouse. |
 
 ## Checklist for a new screen
 
 1. The view lives in its feature (`features/<name>/`); anything generic used by more than one feature goes to `shared/ui.rs`, not to the view.
 2. `ui::screen(Some(width))` (640–820) or `None`, wrapped in `ui::pop_in("<name>-screen", ..)` and with `.occlude()` on the veil.
-3. Header with `screen_header`: `muted` icon, `text_base SEMIBOLD` title, truncated subtitle, `ghost().xsmall()` actions with tooltip, `kbd("esc")` and close; the view emits `Close` and the `Workspace` handles it.
+3. Header with `screen_header`: `muted` icon, `text_base SEMIBOLD` title, truncated subtitle, `ghost().xsmall()` actions with tooltip, and the close X; the view emits `Close` and the `Workspace` handles it.
 4. Scrollable body with an id; groups in `card()` with `section_label`; fields with `field()` + `Input::appearance(false)`; toggles with `segmented`.
 5. Loading, empty and error states with the shapes above; nothing stays blank while reading.
 6. Footer with secondary `ghost` buttons on the left and a single `primary` on the right; `.loading` and `.disabled` reflect work in progress.

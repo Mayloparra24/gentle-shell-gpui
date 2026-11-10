@@ -44,6 +44,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_next_tab))
             .on_action(cx.listener(Self::on_prev_tab))
             .on_action(cx.listener(Self::on_split_right))
+            .on_action(cx.listener(Self::on_tile_pane))
             .on_action(cx.listener(Self::on_split_down))
             .on_action(cx.listener(Self::on_new_agent_pane))
             .on_action(cx.listener(Self::on_new_terminal_pane))
@@ -93,16 +94,16 @@ impl Render for Workspace {
                                     .when(self.tab().is_some(), |d| {
                                         let mac = cfg!(target_os = "macos");
                                         d.child(
-                                            Button::new("title-split-right")
+                                            Button::new("title-tile-pane")
                                                 .ghost()
                                                 .xsmall()
-                                                .icon(Icon::new(IconName::Columns2))
+                                                .icon(Icon::new(IconName::LayoutDashboard))
                                                 .tooltip(format!(
-                                                    "Split right ({})",
+                                                    "New pane, tiled ({})",
                                                     if mac { "⌘D" } else { "Ctrl+Shift+D" }
                                                 ))
                                                 .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.on_split_right(&SplitRight, window, cx)
+                                                    this.on_tile_pane(&TilePane, window, cx)
                                                 })),
                                         )
                                         .child(
