@@ -284,12 +284,12 @@ impl Render for SessionsView {
                     .on_click(cx.listener(|this, _, _, cx| this.reload(cx))),
             );
         let (prefix, leaf) = ui::split_path(&self.cwd);
-        let hint = |key: &'static str, label: &'static str| {
+        let hint = |key: Stateful<Div>, label: &'static str| {
             h_flex()
                 .gap_1p5()
                 .text_xs()
                 .text_color(ui::muted())
-                .child(ui::kbd(key))
+                .child(key)
                 .child(label)
         };
         let (backdrop, panel) = ui::screen(Some(760.));
@@ -329,7 +329,10 @@ impl Render for SessionsView {
                         .when(count > 0, |d| {
                             d.child(ui::chip(format!("{count}"), ui::muted()).flex_shrink_0())
                         })
-                        .child(ui::kbd("esc"))
+                        .child(
+                            ui::key_button("sessions-esc", "esc")
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SessionsEvent::Close))),
+                        )
                         .child(
                             Button::new("sessions-close")
                                 .ghost()
@@ -356,8 +359,16 @@ impl Render for SessionsView {
                         .gap_4()
                         .border_t_1()
                         .border_color(ui::border())
-                        .child(hint("↵", "open first match"))
-                        .child(hint("esc", "close"))
+                        .child(hint(
+                            ui::key_button("sessions-open-first", "↵")
+                                .on_click(cx.listener(|this, _, _, cx| this.open_first(cx))),
+                            "open first match",
+                        ))
+                        .child(hint(
+                            ui::key_button("sessions-close-hint", "esc")
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(SessionsEvent::Close))),
+                            "close",
+                        ))
                         .child(div().flex_1())
                         .child(
                             Button::new("sessions-new")

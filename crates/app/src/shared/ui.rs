@@ -11,7 +11,7 @@ use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Animation, AnimationElement, AnimationExt as _, App, BoxShadow, Div, ElementId, FontWeight,
-    Hsla, ParentElement as _, SharedString, Styled, div, ease_out_quint, point, px, rgb,
+    Hsla, ParentElement as _, SharedString, Stateful, Styled, div, ease_out_quint, point, px, rgb,
 };
 
 use crate::shared::themes::{self, Theme, mix};
@@ -337,7 +337,8 @@ pub fn chip(text: impl Into<SharedString>, color: Hsla) -> Div {
         .child(text.into())
 }
 
-/// A key cap for shortcut hints (`esc`, `↵`, `⌘`).
+/// A key cap for shortcut hints (`esc`, `↵`, `⌘`). Use [`key_button`] when the
+/// hint stands for one action the user could click.
 pub fn kbd(text: impl Into<SharedString>) -> Div {
     div()
         .min_w(px(20.))
@@ -354,6 +355,16 @@ pub fn kbd(text: impl Into<SharedString>) -> Div {
         .text_size(px(10.5))
         .text_color(muted())
         .child(text.into())
+}
+
+/// A clickable [`kbd`]: same cap, with a pointer and a hover; the caller adds
+/// `.on_click(...)` doing what the key does.
+pub fn key_button(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Stateful<Div> {
+    use gpui_kit::InteractiveElement as _;
+    kbd(text)
+        .id(id)
+        .cursor_pointer()
+        .hover(|d| d.text_color(fg()).border_color(petal().opacity(0.6)))
 }
 
 /// Uppercase micro heading for sections.

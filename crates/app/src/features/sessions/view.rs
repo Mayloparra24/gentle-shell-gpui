@@ -28,10 +28,8 @@ impl SessionsView {
             &filter,
             window,
             |this: &mut Self, _, event: &InputEvent, _, cx| {
-                if let InputEvent::PressEnter { .. } = event
-                    && let Some(first) = this.visible(cx).first().map(|s| (*s).clone())
-                {
-                    this.open(&first, cx);
+                if let InputEvent::PressEnter { .. } = event {
+                    this.open_first(cx);
                 }
                 cx.notify();
             },
@@ -87,6 +85,13 @@ impl SessionsView {
     pub(super) fn visible(&self, cx: &App) -> Vec<&SessionSummary> {
         let query = self.filter.read(cx).value().trim().to_lowercase();
         self.sessions.iter().filter(|s| s.matches(&query)).collect()
+    }
+
+    /// What Enter in the filter does: open the first visible match.
+    pub(super) fn open_first(&mut self, cx: &mut Context<Self>) {
+        if let Some(first) = self.visible(cx).first().map(|s| (*s).clone()) {
+            self.open(&first, cx);
+        }
     }
 
     pub(super) fn open(&mut self, session: &SessionSummary, cx: &mut Context<Self>) {

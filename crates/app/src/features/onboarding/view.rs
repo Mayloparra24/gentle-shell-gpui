@@ -463,7 +463,11 @@ impl Render for OnboardingView {
                             .top_3()
                             .right_3()
                             .gap_2()
-                            .child(ui::kbd("esc"))
+                            .child(ui::key_button("onboarding-esc", "esc").when(!busy, |d| {
+                                d.on_click(
+                                    cx.listener(|_, _, _, cx| cx.emit(OnboardingEvent::Close)),
+                                )
+                            }))
                             .child(
                                 Button::new("onboarding-close")
                                     .ghost()

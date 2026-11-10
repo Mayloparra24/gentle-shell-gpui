@@ -199,7 +199,7 @@ impl Render for MemoryView {
                 .max_w(px(1100.))
                 .child(
                     ui::screen_header()
-                        .child(Icon::new(IconName::Brain).small().text_color(ui::petal()))
+                        .child(Icon::new(IconName::Brain).small().text_color(ui::muted()))
                         .child(
                             div()
                                 .flex_shrink_0()
@@ -224,7 +224,10 @@ impl Render for MemoryView {
                         .when(self.loading, |d| {
                             d.child(Spinner::new().small().color(ui::accent()))
                         })
-                        .child(ui::kbd("esc"))
+                        .child(
+                            ui::key_button("memory-esc", "esc")
+                                .on_click(cx.listener(|_, _, _, cx| cx.emit(MemoryEvent::Close))),
+                        )
                         .child(
                             Button::new("memory-close")
                                 .ghost()

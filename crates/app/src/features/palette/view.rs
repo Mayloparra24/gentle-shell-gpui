@@ -107,13 +107,20 @@ impl PaletteView {
                     .child(Icon::new(row.icon).small()),
             )
             .map(|d| match renaming {
-                Some(state) => d.child(
-                    ui::field()
-                        .h(px(30.))
-                        .w(px(280.))
-                        .child(div().flex_1().child(Input::new(&state).appearance(false)))
-                        .child(ui::kbd("↵")),
-                ),
+                Some(state) => {
+                    d.child(
+                        ui::field()
+                            .h(px(30.))
+                            .w(px(280.))
+                            .child(div().flex_1().child(Input::new(&state).appearance(false)))
+                            .child(ui::key_button("palette-rename-enter", "↵").on_click(
+                                cx.listener(|this, _, window, cx| {
+                                    cx.stop_propagation();
+                                    this.press_enter(window, cx);
+                                }),
+                            )),
+                    )
+                }
                 None => d.child(
                     h_flex()
                         .flex_1()
@@ -220,17 +227,14 @@ impl PaletteView {
     }
 }
 
-fn hint(keys: &[&'static str], label: &'static str) -> Div {
-    h_flex()
-        .gap_1()
-        .children(keys.iter().map(|k| ui::kbd(*k)))
-        .child(
-            div()
-                .pl_0p5()
-                .text_xs()
-                .text_color(ui::muted())
-                .child(label),
-        )
+fn hint(keys: impl IntoIterator<Item = impl IntoElement>, label: &'static str) -> Div {
+    h_flex().gap_1().children(keys).child(
+        div()
+            .pl_0p5()
+            .text_xs()
+            .text_color(ui::muted())
+            .child(label),
+    )
 }
 
 impl Render for PaletteView {
@@ -296,7 +300,9 @@ impl Render for PaletteView {
                             .text_size(px(16.))
                             .child(Input::new(&self.query).appearance(false)),
                     )
-                    .child(ui::kbd("esc")),
+                    .child(ui::key_button("palette-esc", "esc").on_click(
+                        cx.listener(|this, _, window, cx| this.press_escape(window, cx)),
+                    )),
             )
             .child(self.render_categories(cx))
             .child(list)
@@ -308,12 +314,25 @@ impl Render for PaletteView {
                     .gap_4()
                     .border_t_1()
                     .border_color(ui::border())
-                    .child(hint(&["↑", "↓"], "navigate"))
-                    .child(hint(&["↵"], "run"))
-                    .child(hint(&["←", "→"], "category"))
-                    .child(hint(switch_keys, "switch workspaces"))
+                    .child(hint(["↑", "↓"].map(ui::kbd), "navigate"))
+                    .child(hint(
+                        [ui::key_button("palette-run", "↵").on_click(
+                            cx.listener(|this, _, window, cx| this.press_enter(window, cx)),
+                        )],
+                        "run",
+                    ))
+                    .child(hint(["←", "→"].map(ui::kbd), "category"))
+                    .child(hint(
+                        switch_keys.iter().map(|k| ui::kbd(*k)),
+                        "switch workspaces",
+                    ))
                     .child(div().flex_1())
-                    .child(hint(&["esc"], "close")),
+                    .child(hint(
+                        [ui::key_button("palette-close", "esc").on_click(
+                            cx.listener(|this, _, window, cx| this.press_escape(window, cx)),
+                        )],
+                        "close",
+                    )),
             );
 
         div()

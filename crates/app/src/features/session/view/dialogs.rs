@@ -127,10 +127,21 @@ impl SessionView {
                 this.child(ui::chip(format!("current: {current}"), ui::accent()).flex_shrink_0())
             });
 
-        let mut hints: Vec<(&str, &str)> = Vec::new();
+        let mut hints: Vec<(&str, &str, Option<KeyAction>)> = Vec::new();
         let body: AnyElement = match &dialog.method {
             UiMethod::Select { options, .. } => {
-                hints = vec![("↑↓", "navigate"), ("↵", "choose"), ("esc", "cancel")];
+                let choose = options
+                    .get(cursor.min(options.len().saturating_sub(1)))
+                    .map(|o| KeyAction::Answer(UiAnswer::Value(o.clone())));
+                hints = vec![
+                    ("↑↓", "navigate", None),
+                    ("↵", "choose", choose),
+                    (
+                        "esc",
+                        "cancel",
+                        Some(KeyAction::Answer(UiAnswer::Cancelled)),
+                    ),
+                ];
                 let multi = options.iter().any(|o| checkbox_option(o).is_some());
                 let mut rows = v_flex().w_full().gap_0p5();
                 let mut actions = h_flex().gap_2().justify_end();
@@ -197,7 +208,23 @@ impl SessionView {
                     .into_any_element()
             }
             UiMethod::Confirm { message, .. } => {
-                hints = vec![("↵", "yes"), ("n", "no"), ("esc", "cancel")];
+                hints = vec![
+                    (
+                        "↵",
+                        "yes",
+                        Some(KeyAction::Answer(UiAnswer::Confirmed(true))),
+                    ),
+                    (
+                        "n",
+                        "no",
+                        Some(KeyAction::Answer(UiAnswer::Confirmed(false))),
+                    ),
+                    (
+                        "esc",
+                        "cancel",
+                        Some(KeyAction::Answer(UiAnswer::Cancelled)),
+                    ),
+                ];
                 v_flex()
                     .gap_3()
                     .when(!message.is_empty(), |this| {
@@ -237,8 +264,16 @@ impl SessionView {
             UiMethod::Input { .. } | UiMethod::Editor { .. } => {
                 let editor = matches!(dialog.method, UiMethod::Editor { .. });
                 hints = vec![
-                    (if editor { "⌘↵" } else { "↵" }, "submit"),
-                    ("esc", "cancel"),
+                    (
+                        if editor { "⌘↵" } else { "↵" },
+                        "submit",
+                        Some(KeyAction::SubmitInput),
+                    ),
+                    (
+                        "esc",
+                        "cancel",
+                        Some(KeyAction::Answer(UiAnswer::Cancelled)),
+                    ),
                 ];
                 v_flex()
                     .gap_2()
@@ -282,7 +317,18 @@ impl SessionView {
             .children(
                 hints
                     .into_iter()
-                    .map(|(key, what)| h_flex().gap_1().child(ui::kbd(key)).child(what)),
+                    .enumerate()
+                    .map(|(i, (key, what, action))| {
+                        let cap = match action {
+                            Some(action) => ui::key_button(("dialog-key", i), key)
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.run_dialog_key(&action, window, cx)
+                                }))
+                                .into_any_element(),
+                            None => ui::kbd(key).into_any_element(),
+                        };
+                        h_flex().gap_1().child(cap).child(what)
+                    }),
             )
             .child(div().flex_1())
             .when(waiting > 0, |this| {
@@ -318,6 +364,24 @@ impl SessionView {
             .into_any_element(),
         )
     }
+
+    /// A clicked footer key: the same answer its keystroke gives.
+    fn run_dialog_key(&mut self, action: &KeyAction, window: &mut Window, cx: &mut Context<Self>) {
+        let answer = match action {
+            KeyAction::Answer(answer) => answer.clone(),
+            KeyAction::SubmitInput => {
+                UiAnswer::Value(self.dialog_input.read(cx).value().to_string())
+            }
+        };
+        self.answer_dialog(answer, window, cx);
+    }
+}
+
+/// What a clickable footer key of a dialog does.
+enum KeyAction {
+    Answer(UiAnswer),
+    /// Submit the input/editor's text, like its submit button.
+    SubmitInput,
 }
 
 /// The selected-row marker of lists and pickers.
