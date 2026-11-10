@@ -218,7 +218,9 @@ impl Transcript {
             }
             "message_start" => self.message_start(&event["message"]),
             "message_update" => {
-                if let Some(usage) = parse_usage(&event["usage"]) {
+                // Streaming updates often carry an empty usage; keep the
+                // previous numbers until one reports output (or `message_end`).
+                if let Some(usage) = parse_usage(&event["usage"]).filter(|u| u.output > 0) {
                     self.last_usage = Some(usage);
                 }
                 self.message_update(&event["assistantMessageEvent"]);
@@ -697,6 +699,21 @@ mod tests {
             panic!()
         };
         assert_eq!(*status, ToolStatus::Running);
+    }
+
+    #[test]
+    fn empty_streaming_usage_keeps_the_previous_response() {
+        let mut t = Transcript::default();
+        // The previous response.
+        t.apply(&json!({"type":"message_start","message":{"role":"assistant","content":[]}}));
+        t.apply(&json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[],"usage":{"input":5,"output":40}}}));
+
+        t.apply(&json!({"type":"message_start","message":{"role":"assistant","content":[]}}));
+        t.apply(&json!({"type":"message_update","usage":{"input":0,"output":0},"assistantMessageEvent":{"type":"text_start","contentIndex":0}}));
+        assert_eq!(t.last_usage.map(|u| u.output), Some(40));
+
+        t.apply(&json!({"type":"message_end","message":{"role":"assistant","stopReason":"stop","content":[],"usage":{"input":7,"output":12}}}));
+        assert_eq!(t.last_usage.map(|u| (u.input, u.output)), Some((7, 12)));
     }
 
     #[test]
