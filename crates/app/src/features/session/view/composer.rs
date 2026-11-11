@@ -1,5 +1,7 @@
 //! The composer: context line, attachments, text area and its bottom bar.
 
+use std::time::Duration;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Textarea;
@@ -179,6 +181,58 @@ impl SessionView {
         Some(h_flex().w_full().flex_wrap().gap_2().children(tiles))
     }
 
+    /// The text field. While it's empty, focusing it opens it up from one
+    /// line to about two and a half with a soft spring, and blurring closes
+    /// it again; with text, its own auto-grow sets the height. A click in
+    /// the extra room focuses the field too.
+    fn render_text_field(&self, empty: bool, ready: bool, cx: &mut Context<Self>) -> AnyElement {
+        /// One line, and the opened height.
+        const REST: f32 = 20.;
+        const OPEN: f32 = 52.;
+        let weak = cx.entity().downgrade();
+        let field = div()
+            .min_w_0()
+            .text_size(px(14.))
+            .cursor_text()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.composer
+                        .update(cx, |state, cx| state.focus(window, cx));
+                }),
+            )
+            .child(
+                Textarea::new(&self.composer)
+                    .appearance(false)
+                    .disabled(!ready)
+                    .on_paste(move |item, window, cx| {
+                        weak.update(cx, |this, cx| this.paste_clipboard(item, window, cx))
+                            .unwrap_or(false)
+                    }),
+            );
+        let focused = self.composer_focused;
+        // Nothing to animate before the first focus change, or once text
+        // sizes the field.
+        if !empty || self.composer_moves == 0 {
+            return field
+                .when(empty && focused, |d| d.min_h(px(OPEN)))
+                .into_any_element();
+        }
+        let (from, to) = if focused { (REST, OPEN) } else { (OPEN, REST) };
+        let ease = ease_out_quint();
+        field
+            .with_animation(
+                ("composer-open", self.composer_moves as usize),
+                Animation::new(Duration::from_millis(if focused { 320 } else { 220 })),
+                move |el, t| {
+                    // Opening springs past a hair; closing just settles.
+                    let k = if focused { ui::spring(t) } else { ease(t) };
+                    el.min_h(px(from + (to - from) * k))
+                },
+            )
+            .into_any_element()
+    }
+
     pub(super) fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (prefix, leaf) = ui::split_path(&self.cwd);
         let empty = self.composer.read(cx).value().trim().is_empty() && self.attachments.is_empty();
@@ -326,22 +380,15 @@ impl SessionView {
             .pb_2()
             .rounded_2xl()
             .border_1()
-            .border_color(ui::border_strong())
+            .border_color(if self.composer_focused {
+                ui::petal().opacity(0.45)
+            } else {
+                ui::border_strong()
+            })
             .bg(ui::surface())
             .shadow_lg()
             .children(self.render_attachments(cx))
-            .child({
-                let weak = cx.entity().downgrade();
-                div().min_w_0().text_size(px(14.)).child(
-                    Textarea::new(&self.composer)
-                        .appearance(false)
-                        .disabled(!ready)
-                        .on_paste(move |item, window, cx| {
-                            weak.update(cx, |this, cx| this.paste_clipboard(item, window, cx))
-                                .unwrap_or(false)
-                        }),
-                )
-            })
+            .child(self.render_text_field(empty, ready, cx))
             .child(bottom);
 
         v_flex()

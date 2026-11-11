@@ -82,6 +82,11 @@ pub struct SessionView {
     markdown: HashMap<(usize, usize), (Entity<TextViewState>, usize)>,
     expanded: HashSet<usize>,
     composer: Entity<TextareaState>,
+    /// The composer has the keyboard: it opens up a little (see
+    /// `render_composer`).
+    composer_focused: bool,
+    /// Focus changes so far; each one restarts the open/close animation.
+    composer_moves: u64,
     /// Images waiting to go with the next prompt; `[Image #N]` is the N-th.
     attachments: Vec<attachments::Attachment>,
     /// Decoded conversation images, by data hash.
@@ -156,6 +161,11 @@ impl SessionView {
                 |this, _, event: &InputEvent, window, cx| match event {
                     InputEvent::PressEnter { shift: false, .. } => this.submit(window, cx),
                     InputEvent::Change => cx.notify(),
+                    InputEvent::Focus | InputEvent::Blur => {
+                        this.composer_focused = matches!(event, InputEvent::Focus);
+                        this.composer_moves += 1;
+                        cx.notify();
+                    }
                     _ => {}
                 },
             ),
@@ -206,6 +216,8 @@ impl SessionView {
             markdown: HashMap::new(),
             expanded: HashSet::new(),
             composer,
+            composer_focused: false,
+            composer_moves: 0,
             attachments: Vec::new(),
             image_cache: attachments::ImageCache::default(),
             extension: state::ExtensionUi::default(),
