@@ -207,10 +207,18 @@ impl SessionView {
         self.start(window, cx);
     }
 
+    /// Ask the backend to stop, without waiting for it; whether one was
+    /// running. The app quits with this, before any tab is released.
+    pub fn shutdown_backend(&self) -> bool {
+        let BackendStatus::Ready(process) = &self.backend.status else {
+            return false;
+        };
+        process.shutdown(Duration::from_secs(3));
+        true
+    }
+
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let BackendStatus::Ready(process) = &self.backend.status {
-            process.shutdown(Duration::from_secs(3));
-        }
+        self.shutdown_backend();
         self.backend.started = true;
         self.backend.status = BackendStatus::Starting;
         self.models.loaded = false;

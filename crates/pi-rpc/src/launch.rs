@@ -387,6 +387,7 @@ fn login_shell_path() -> Option<OsString> {
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
             _ => {
                 let _ = child.kill();
+                let _ = child.wait();
                 return None;
             }
         }

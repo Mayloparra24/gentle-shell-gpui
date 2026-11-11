@@ -25,9 +25,9 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Everything the child process reports that is not a correlated response.
 #[derive(Debug, Clone)]
@@ -50,6 +50,9 @@ pub struct PiProcess {
     child: Arc<Mutex<Child>>,
     pending: Pending,
     next_id: AtomicU64,
+    /// Set by the first [`Self::shutdown`], so Drop after an explicit
+    /// shutdown doesn't signal and reap twice.
+    stopping: AtomicBool,
 }
 
 impl PiProcess {
@@ -63,6 +66,14 @@ impl PiProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // Its own process group, so the final kill in `shutdown` also reaches
+        // Pi and the tool processes it started. Interrupts are RPC commands
+        // (`abort`), not signals, and the launcher forwards SIGTERM by pid.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt as _;
+            command.process_group(0);
+        }
         for (key, value) in &spec.env {
             command.env(key, value);
         }
@@ -109,13 +120,36 @@ impl PiProcess {
             child,
             pending,
             next_id: AtomicU64::new(1),
+            stopping: AtomicBool::new(false),
         });
         Ok((process, rx))
     }
 
-    /// Send a command and wait for its correlated response. `command` must be
-    /// a JSON object with a `type`; an `id` is assigned here.
-    pub async fn request(&self, mut command: Value) -> Result<Response> {
+    /// Send a command; the future resolves to its correlated response.
+    /// `command` must be a JSON object with a `type`; an `id` is assigned
+    /// here. The command is written now and the future holds only the
+    /// response channel, so a request still waiting (a quiet `bash`, a
+    /// compaction) never keeps the process alive.
+    pub fn request(&self, command: Value) -> impl Future<Output = Result<Response>> + use<> {
+        let sent = self.send(command);
+        async move {
+            let response = sent?
+                .recv()
+                .await
+                .map_err(|_| anyhow!("gentle-shell exited before answering"))?;
+            if response.success {
+                Ok(response)
+            } else {
+                Err(anyhow!(
+                    "{}",
+                    response.error.unwrap_or_else(|| "command failed".into())
+                ))
+            }
+        }
+    }
+
+    /// Write `command` with a fresh `id`; the receiver gets its response.
+    fn send(&self, mut command: Value) -> Result<async_channel::Receiver<Response>> {
         let id = format!("gs-{}", self.next_id.fetch_add(1, Ordering::Relaxed));
         let object = command
             .as_object_mut()
@@ -127,18 +161,7 @@ impl PiProcess {
             self.pending.lock().unwrap().remove(&id);
             return Err(error);
         }
-        let response = rx
-            .recv()
-            .await
-            .map_err(|_| anyhow!("gentle-shell exited before answering"))?;
-        if response.success {
-            Ok(response)
-        } else {
-            Err(anyhow!(
-                "{}",
-                response.error.unwrap_or_else(|| "command failed".into())
-            ))
-        }
+        Ok(rx)
     }
 
     /// Answer an `extension_ui_request` dialog.
@@ -169,21 +192,56 @@ impl PiProcess {
         Ok(())
     }
 
-    /// Request an orderly shutdown (close stdin), killing the child if it has
-    /// not exited after `grace`.
+    /// Request an orderly shutdown and return at once. On Unix it sends
+    /// SIGTERM: the launcher forwards it to Pi, whose handler stops the
+    /// detached processes its agents started. Elsewhere it closes stdin.
+    /// Once the backend exits, or after `grace`, whatever is left of it is
+    /// killed (see [`kill_tree`]) and the child reaped. Only the first call
+    /// acts.
     pub fn shutdown(&self, grace: Duration) {
-        self.stdin.lock().unwrap().take();
+        if self.stopping.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        // Taken now so nothing more is written.
+        let stdin = self.stdin.lock().unwrap().take();
         let child = self.child.clone();
-        std::thread::spawn(move || {
-            let deadline = std::time::Instant::now() + grace;
-            while std::time::Instant::now() < deadline {
-                if matches!(child.lock().unwrap().try_wait(), Ok(Some(_))) {
-                    return;
+        // Under the lock nothing reaps the child, so its pid (and group id)
+        // is still its own when signalled. One that already exited was just
+        // reaped here; its pid may be reused, so nothing is signalled.
+        let mut guard = child.lock().unwrap();
+        if !matches!(guard.try_wait(), Ok(None)) {
+            return;
+        }
+        #[cfg(unix)]
+        let term = signal("-TERM", &guard.id().to_string());
+        // On stdin EOF Pi drops its signal handler and exits without stopping
+        // its detached processes, so stdin stays open while SIGTERM does
+        // that; it closes with the exit, or after `grace`. Without a signal,
+        // EOF is the request.
+        #[cfg(unix)]
+        let stdin = stdin.filter(|_| term.is_some());
+        #[cfg(not(unix))]
+        let stdin: Option<ChildStdin> = {
+            drop(stdin);
+            None
+        };
+        drop(guard);
+        let _ = std::thread::Builder::new()
+            .name("pi-rpc-shutdown".into())
+            .spawn(move || {
+                #[cfg(unix)]
+                if let Some(mut term) = term {
+                    let _ = term.wait();
                 }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            let _ = child.lock().unwrap().kill();
-        });
+                let deadline = Instant::now() + grace;
+                while Instant::now() < deadline
+                    && matches!(child.lock().unwrap().try_wait(), Ok(None))
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                drop(stdin);
+                kill_tree(&mut child.lock().unwrap());
+            });
     }
 }
 
@@ -247,4 +305,42 @@ fn wait_child(child: &Mutex<Child>) -> Option<i32> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Kill what is left of a backend and reap it: on Unix its whole process
+/// group (the launcher, Pi and the tool processes still in it; a leader
+/// that exited moments ago keeps its group id while members remain), on
+/// Windows its process tree while it runs (an exited one's pid is not
+/// looked up). Then the child itself, in case that failed.
+fn kill_tree(child: &mut Child) {
+    let pid = child.id().to_string();
+    #[cfg(unix)]
+    if let Some(mut kill) = signal("-KILL", &format!("-{pid}")) {
+        let _ = kill.wait();
+    }
+    #[cfg(windows)]
+    if matches!(child.try_wait(), Ok(None)) {
+        let _ = crate::command("taskkill")
+            .args(["/PID", &pid, "/T", "/F"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// Start `kill <signal> -- <target>` (a negative target is a process
+/// group); the caller reaps it. Spawned rather than waited so app quit
+/// doesn't wait on it: it delivers the signal even after the app exits.
+#[cfg(unix)]
+fn signal(signal: &str, target: &str) -> Option<Child> {
+    crate::command("kill")
+        .args([signal, "--", target])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()
 }

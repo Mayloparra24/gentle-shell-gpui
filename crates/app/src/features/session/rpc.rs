@@ -33,8 +33,12 @@ impl SessionView {
         let Some(process) = self.process() else {
             return;
         };
+        // The task holds the response, not the process: closing the tab still
+        // stops the backend with a quiet request (`!` command, compaction) in
+        // flight.
+        let response = process.request(command);
         cx.spawn(async move |this, cx| {
-            let result = process.request(command).await.map(|r| r.data);
+            let result = response.await.map(|r| r.data);
             let _ = this.update(cx, |this, cx| {
                 then(this, result, cx);
                 this.sync_view(cx);

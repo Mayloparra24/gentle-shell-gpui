@@ -298,7 +298,20 @@ impl Workspace {
             cx.on_app_quit(|this, cx| {
                 this.music.read(cx).shutdown();
                 this.save_now(cx);
-                async {}
+                // The app exits before any tab is released: ask every backend
+                // to stop now. A moment's wait lets the launchers pass SIGTERM
+                // on to Pi before the exit closes its stdin (GPUI caps it).
+                let mut signalled = false;
+                for session in this.sessions() {
+                    signalled |= session.read(cx).shutdown_backend();
+                }
+                let settle =
+                    signalled.then(|| cx.background_executor().timer(Duration::from_millis(100)));
+                async move {
+                    if let Some(settle) = settle {
+                        settle.await;
+                    }
+                }
             }),
             cx.on_release(|this, cx| this.save_now(cx)),
             // The title-bar update pill follows this app's own update state.
