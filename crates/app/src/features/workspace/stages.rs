@@ -131,7 +131,7 @@ impl Workspace {
             }
             return;
         }
-        let panel = cx.new(|_| BrowserPanel::new(url, None));
+        let panel = cx.new(|cx| BrowserPanel::new(url, None, cx));
         self.add_stage(StageKind::Web(panel), origin, reveal, window, cx);
     }
 
@@ -165,7 +165,7 @@ impl Workspace {
                 match self.stages.iter().find_map(|stage| design(stage, cx)) {
                     Some(entity) => entity.update(cx, |panel, cx| panel.navigate(url, label, cx)),
                     None => {
-                        let panel = cx.new(|_| BrowserPanel::new(url, label));
+                        let panel = cx.new(|cx| BrowserPanel::new(url, label, cx));
                         self.add_stage(StageKind::Web(panel), Some(origin), false, window, cx);
                     }
                 }
