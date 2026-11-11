@@ -303,6 +303,9 @@ impl Workspace {
                         tab.update(cx, |session, cx| session.reload_models(window, cx));
                     }
                 }
+                SettingsEvent::MusicChanged => {
+                    this.music.update(cx, |music, cx| music.refresh(cx));
+                }
                 SettingsEvent::BackendUpdated => {
                     for tab in this.sessions() {
                         tab.update(cx, |session, cx| session.restart_for_update(window, cx));

@@ -7,6 +7,7 @@ pub mod devices;
 pub mod files;
 pub mod git;
 pub mod memory;
+pub mod music;
 pub mod notices;
 pub mod onboarding;
 pub mod palette;

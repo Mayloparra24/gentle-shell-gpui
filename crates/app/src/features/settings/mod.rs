@@ -21,6 +21,7 @@ mod claude;
 mod layout;
 mod maestro;
 mod models;
+mod music;
 mod notifications;
 mod packages;
 mod snapshot;
@@ -42,6 +43,8 @@ pub enum SettingsEvent {
     ShellCommand(String),
     /// `gentle-shell upgrade` finished: agent tabs restart on the new version.
     BackendUpdated,
+    /// gentle-stream was installed or removed: the title bar's ♪ follows.
+    MusicChanged,
     /// An action from the Setup & requirements checklist (sign in, a
     /// terminal command, an install that finished) for the window to carry out.
     Setup(crate::features::onboarding::OnboardingEvent),
@@ -78,6 +81,8 @@ pub struct SettingsView {
     _setup: Subscription,
     /// UI testing (Maestro): what was found, the job running and its log.
     maestro: maestro::Maestro,
+    /// Music (gentle-stream): what was found, the job running and its log.
+    music: music::Music,
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -142,9 +147,11 @@ impl SettingsView {
             setup,
             _setup: setup_sub,
             maestro: maestro::Maestro::default(),
+            music: music::Music::default(),
         };
         this.reload(cx);
         this.refresh_maestro(cx);
+        this.refresh_music(cx);
         this
     }
 
@@ -255,6 +262,7 @@ impl Render for SettingsView {
                             .child(self.setup.clone()),
                     )
                     .child(self.maestro_section(cx))
+                    .child(self.music_section(cx))
                     .child(theme::theme_section(&self.transparency, cx))
                     .child(models::models_section(s))
                     .child(self.gentle_ai_section(s, cx))

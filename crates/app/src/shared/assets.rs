@@ -81,7 +81,12 @@ gpui_kit::assets::icon_assets!(
         // Device cards and the instance tray.
         Smartphone,
         MonitorSmartphone,
-        Power
+        Power,
+        // The music player.
+        Music,
+        SkipForward,
+        Volume2,
+        Square
     ]
 );
 

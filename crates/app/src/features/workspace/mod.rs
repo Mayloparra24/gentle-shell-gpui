@@ -48,6 +48,7 @@ mod stages;
 mod tabs;
 mod view;
 
+use crate::features::music::{Music, MusicChanged};
 use layout::*;
 use stages::Stage;
 use view::*;
@@ -258,6 +259,8 @@ pub struct Workspace {
     /// While a pane is dragged: the pane under the pointer and where it would
     /// land there.
     drop_hint: Option<(PaneId, DropZone)>,
+    /// gentle-stream, behind the title bar's ♪ button.
+    music: Entity<Music>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -286,9 +289,11 @@ impl Workspace {
                 saved: Some((w.tabs, w.active_tab)),
             })
             .collect();
+        let music = cx.new(|cx| Music::new(window, cx));
         let lifecycle = vec![
             cx.on_app_quit(|this, cx| {
                 this.shutdown_stages(cx);
+                this.music.read(cx).shutdown();
                 this.save_now(cx);
                 async {}
             }),
@@ -302,6 +307,9 @@ impl Workspace {
                     this.tile_stages(window, cx);
                 }
             }),
+            // The ♪ button's look follows the player; the player's own panel
+            // redraws itself (its spectrum) without redrawing the window.
+            cx.subscribe(&music, |_, _, _: &MusicChanged, cx| cx.notify()),
         ];
         let mut this = Self {
             current: saved.current.min(spaces.len().saturating_sub(1)),
@@ -320,6 +328,7 @@ impl Workspace {
             next_stage: 1,
             resume_welcome: None,
             drop_hint: None,
+            music,
             _surge_end: None,
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {

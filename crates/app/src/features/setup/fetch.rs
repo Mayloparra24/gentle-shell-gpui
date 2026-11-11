@@ -544,6 +544,74 @@ pub fn install_maestro_release(log: &Log) -> Result<(), String> {
     Ok(())
 }
 
+// ── uv (for gentle-stream) ─────────────────────────────────────────────────
+
+/// The uv that installs the music player: the version and checksums Gentle
+/// Shell's own `/gentle:music` offer pins (`scripts/installer-downloads.mjs`).
+const UV_VERSION: &str = "0.13.6";
+
+/// uv's release archive and its sha256 for `(os, arch)` as
+/// `std::env::consts` names them; gentle-stream runs on macOS and Linux only.
+pub fn uv_asset(os: &str, arch: &str) -> Option<(&'static str, &'static str)> {
+    Some(match (os, arch) {
+        ("macos", "aarch64") => (
+            "uv-aarch64-apple-darwin.tar.gz",
+            "60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472",
+        ),
+        ("macos", "x86_64") => (
+            "uv-x86_64-apple-darwin.tar.gz",
+            "63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02",
+        ),
+        ("linux", "x86_64") => (
+            "uv-x86_64-unknown-linux-gnu.tar.gz",
+            "f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645",
+        ),
+        ("linux", "aarch64") => (
+            "uv-aarch64-unknown-linux-gnu.tar.gz",
+            "229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d",
+        ),
+        _ => return None,
+    })
+}
+
+/// The pinned uv into `target` (its executable only), verified against the
+/// pinned checksum; nothing happens when that uv is already there.
+pub fn install_uv(target: &Path, log: &Log) -> Result<(), String> {
+    if capture(target, &["--version"])
+        .is_some_and(|(ok, out)| ok && out.starts_with(&format!("uv {UV_VERSION} ")))
+    {
+        return Ok(());
+    }
+    let (name, sha256) = uv_asset(std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or("uv has no build for this system.")?;
+    let dir = target.parent().ok_or("uv has nowhere to go.")?;
+    fs::create_dir_all(dir).map_err(|e| format!("Couldn't create {}: {e}", dir.display()))?;
+    let staging = Staging::new(dir, "uv-download")?;
+    let archive = staging.0.join(name);
+    log(format!("Downloading uv {UV_VERSION}…"));
+    let digest = download(
+        &format!("https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/{name}"),
+        &archive,
+        log,
+    )?;
+    if digest != sha256 {
+        return Err(format!(
+            "{name} doesn't match its pinned checksum; refusing to install it."
+        ));
+    }
+    let unpacked = staging.0.join("unpacked");
+    extract(&archive, &unpacked)?;
+    let uv = find_file(&unpacked, "uv").ok_or("The uv download has no uv executable.")?;
+    fs::copy(&uv, target).map_err(|e| format!("Couldn't install uv: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(target, fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("Couldn't make uv executable: {e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
