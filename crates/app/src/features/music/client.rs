@@ -9,6 +9,8 @@ use gentle_core::music::MusicState;
 
 /// Why a request didn't get an answer.
 #[derive(Debug)]
+// Without a player (Windows) nothing can fail talking to one.
+#[cfg_attr(not(unix), allow(dead_code))]
 pub enum Error {
     /// Nothing is playing: no player, or it stopped while we talked.
     NoPlayer,
@@ -122,16 +124,14 @@ mod unix {
     }
 }
 
-/// gentle-stream has no player outside Unix.
+/// gentle-stream has no player outside Unix: nothing ever plays.
 #[cfg(not(unix))]
 pub struct Connection(std::convert::Infallible);
 
 #[cfg(not(unix))]
 impl Connection {
     pub fn open(_: &Path) -> Result<Self, Error> {
-        Err(Error::Failed(
-            "gentle-stream runs on macOS and Linux only.".into(),
-        ))
+        Err(Error::NoPlayer)
     }
 
     pub fn request(&mut self, _: &serde_json::Value) -> Result<Option<MusicState>, Error> {
