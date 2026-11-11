@@ -41,6 +41,13 @@ const CRUISE: f32 = 420.;
 /// How long the scroll thumb stays after the last scroll.
 const THUMB_LINGER: Duration = Duration::from_millis(1200);
 
+/// A thumb drag: where the mouse and the thumb were when it began.
+#[derive(Clone, Copy)]
+pub(super) struct RailDrag {
+    mouse_y: f32,
+    thumb_top: f32,
+}
+
 /// The rail's layout for one frame.
 pub(super) struct RailGeometry {
     estimate: scroll::Estimate,
@@ -150,6 +157,47 @@ impl SessionView {
         window.request_animation_frame();
     }
 
+    /// The thumb was grabbed at `mouse_y`.
+    fn start_rail_drag(&mut self, mouse_y: f32, thumb_top: f32, cx: &mut Context<Self>) {
+        self.live.glide = None;
+        self.live.rail_hide = None;
+        self.live.rail_scrolling = true;
+        self.live.rail_drag = Some(RailDrag { mouse_y, thumb_top });
+        cx.notify();
+    }
+
+    /// The mouse moved while the thumb is held: put the pane where the thumb
+    /// is along the track, landing on the row the estimate places there (so
+    /// rows the list hasn't laid out yet are reached too).
+    fn drag_rail(&mut self, mouse_y: f32, cx: &mut Context<Self>) {
+        let Some(drag) = self.live.rail_drag else {
+            return;
+        };
+        let geometry = self.scroll_estimate();
+        let track = (geometry.rail - geometry.thumb_size).max(1.);
+        let top = (drag.thumb_top + mouse_y - drag.mouse_y).clamp(0., track);
+        let max_offset = (geometry.estimate.content - geometry.viewport).max(0.);
+        let target = top / track * max_offset;
+        let tops = &geometry.estimate.tops;
+        let row = tops.partition_point(|t| *t <= target).saturating_sub(1);
+        let within = target - tops.get(row).copied().unwrap_or(0.);
+        self.list.state().scroll_to(ListOffset {
+            item_ix: row,
+            offset_in_item: px(within.max(0.)),
+        });
+        // The thumb stays under the mouse.
+        self.live.rail_thumb = Some((target, top));
+        cx.notify();
+    }
+
+    fn end_rail_drag(&mut self, cx: &mut Context<Self>) {
+        if self.live.rail_drag.take().is_some() {
+            // The thumb lingers like after a wheel scroll.
+            self.on_user_scroll(cx);
+            cx.notify();
+        }
+    }
+
     /// Note the heights the pane shows, estimate where it is along the whole
     /// conversation and place the thumb (see `gentle_core::scroll`).
     pub(super) fn scroll_estimate(&mut self) -> RailGeometry {
@@ -201,18 +249,53 @@ impl SessionView {
         if content <= viewport + 1. {
             return None;
         }
+        let dragging = self.live.rail_drag.is_some();
         let thumb = div()
+            .id("rail-thumb")
             .absolute()
             .right(px(2.))
             .w(px(10.))
             .top(px(thumb_top))
             .h(px(size))
             .rounded_full()
-            .bg(ui::fg().opacity(0.08))
+            .cursor_grab()
+            .bg(ui::fg().opacity(if dragging { 0.2 } else { 0.08 }))
+            .hover(|s| s.bg(ui::fg().opacity(0.16)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    this.start_rail_drag(f32::from(event.position.y), thumb_top, cx);
+                }),
+            )
             .when(
-                !self.live.rail_scrolling && self.live.glide.is_none(),
+                !self.live.rail_scrolling && self.live.glide.is_none() && !dragging,
                 |d| d.invisible().group_hover("rail", |s| s.visible()),
             );
+        // While the thumb is held, follow the mouse anywhere in the window.
+        let follow = dragging.then(|| {
+            let entity = cx.entity();
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    let moved = entity.clone();
+                    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            let y = f32::from(event.position.y);
+                            moved.update(cx, |this, cx| this.drag_rail(y, cx));
+                        }
+                    });
+                    let released = entity.clone();
+                    window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                        if phase == DispatchPhase::Bubble {
+                            released.update(cx, |this, cx| this.end_rail_drag(cx));
+                        }
+                    });
+                },
+            )
+            .absolute()
+            .size_0()
+        });
         let marks: Vec<(usize, String)> = self
             .transcript
             .items
@@ -241,6 +324,7 @@ impl SessionView {
                 .right(px(2.))
                 .w(px(16.))
                 .child(thumb)
+                .children(follow)
                 .children(marks.into_iter().map(|(ix, text)| {
                     let at = tops.get(ix + 1).copied().unwrap_or(content) * scale;
                     let active = Some(ix) == current;

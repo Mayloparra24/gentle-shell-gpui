@@ -42,6 +42,9 @@ use live::{Span, TICK, label_stamp, ticker_needed, track};
 pub(super) use transcript_list::TranscriptList;
 use transcript_list::{HeaderKey, Prepared, Row, Tail};
 
+/// How long a finished answer's petal line takes to draw back and fade.
+const ANSWER_FADE: Duration = Duration::from_millis(500);
+
 // Keys into `SessionView::expanded`: one per foldable region.
 const OUTPUT: usize = 0;
 const INPUT: usize = 1;
@@ -546,12 +549,42 @@ impl SessionView {
                 if let Some(error) = error {
                     column = column.child(notice_card(NoticeLevel::Error, error));
                 }
+                // While the agent writes, a soft rose dot breathes after the
+                // text; when it's done, the dot fades with the line.
+                let settle = self.answer_settle(ix, *streaming);
+                if has_text {
+                    match settle {
+                        Some(_) if *streaming => {
+                            column = column.child(ui::pulse(
+                                ("answer-cursor", ix),
+                                div().size(px(7.)).rounded_full().bg(ui::petal()),
+                            ))
+                        }
+                        Some(k) if k < 1. => {
+                            column = column.child(
+                                div()
+                                    .size(px(7.))
+                                    .rounded_full()
+                                    .bg(ui::petal().opacity(1. - ease_out_quint()(k))),
+                            )
+                        }
+                        _ => {}
+                    }
+                }
                 if !*streaming && has_text {
                     column = column
                         .group("assistant")
                         .child(self.render_answer_actions(ix, cx));
                 }
-                column.into_any_element()
+                match self.petal_line(settle) {
+                    Some(line) => div()
+                        .relative()
+                        .w_full()
+                        .child(line)
+                        .child(column)
+                        .into_any_element(),
+                    None => column.into_any_element(),
+                }
             }
             Item::Tool { .. } | Item::Shell { .. } => {
                 let computed;
@@ -592,6 +625,67 @@ impl SessionView {
             }
             Item::Notice { level, text } => notice_card(*level, text).into_any_element(),
         }
+    }
+
+    /// How far answer `ix` has settled: 0 while the agent writes, rising
+    /// to 1 over `ANSWER_FADE` once it's done; `None` for answers that
+    /// finished before this view saw them (nothing to animate).
+    fn answer_settle(&self, ix: usize, streaming: bool) -> Option<f32> {
+        if streaming {
+            return Some(0.);
+        }
+        self.live
+            .answer_done
+            .get(&ix)
+            .map(|at| (at.elapsed().as_secs_f32() / ANSWER_FADE.as_secs_f32()).min(1.))
+    }
+
+    /// The thin rose line at an answer's left, in the row's margin (so the
+    /// text doesn't move). It spans the answer, so it grows down with the
+    /// text while the agent writes; once the answer is done it draws back
+    /// up and fades out, and finished answers have none.
+    fn petal_line(&self, settle: Option<f32>) -> Option<Div> {
+        let settle = settle.filter(|k| *k < 1.)?;
+        let k = ease_out_quint()(settle);
+        let narrow = self.pane_width.get() < NARROW;
+        Some(
+            div()
+                .absolute()
+                .top(px(2.))
+                .h(relative(1. - k))
+                .left(px(if narrow { -8. } else { -14. }))
+                .w(px(2.))
+                .rounded_full()
+                .bg(ui::petal().opacity(0.75 * (1. - k))),
+        )
+    }
+
+    /// Answer `ix` just finished: fade its petal line, redrawing until done.
+    pub(in crate::features::session) fn answer_finished(
+        &mut self,
+        ix: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.live.answer_done.insert(ix, Instant::now());
+        self.live.answer_fade = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let Ok(going) = this.update(cx, |this, cx| {
+                    cx.notify();
+                    this.live
+                        .answer_done
+                        .values()
+                        .any(|at| at.elapsed() < ANSWER_FADE)
+                }) else {
+                    return;
+                };
+                if !going {
+                    return;
+                }
+            }
+        }));
     }
 
     fn render_thinking(
