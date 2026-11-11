@@ -35,14 +35,23 @@ pub(super) fn host(window: &Window) -> Result<Host, String> {
 
 pub(super) struct NativeView {
     webview: wry::WebView,
+    /// GPUI's view, which gets the keyboard back when this view goes.
+    host: NonNull<std::ffi::c_void>,
     /// Where it was last placed, and whether it showed.
     placed: Option<(Bounds<Pixels>, bool)>,
 }
 
 impl NativeView {
-    pub(super) fn new(host: Host, url: &str, background: (u8, u8, u8, u8)) -> Result<Self, String> {
+    pub(super) fn new(
+        host: Host,
+        url: &str,
+        background: (u8, u8, u8, u8),
+        script: Option<&str>,
+    ) -> Result<Self, String> {
         let webview = wry::WebViewBuilder::new()
             .with_url(url)
+            // Runs before the page's own scripts (a device panel names its device).
+            .with_initialization_script(script.unwrap_or_default())
             .with_background_color(background)
             .with_visible(false)
             .build_as_child(&host)
@@ -50,6 +59,7 @@ impl NativeView {
         round_corners(&webview);
         Ok(Self {
             webview,
+            host: host.0,
             placed: None,
         })
     }
@@ -60,6 +70,9 @@ impl NativeView {
         }
         let _ = self.webview.set_bounds(super::logical_rect(bounds));
         let _ = self.webview.set_visible(visible);
+        if !visible {
+            give_keyboard_to(self.host);
+        }
         self.placed = Some((bounds, visible));
     }
 
@@ -69,6 +82,40 @@ impl NativeView {
 
     pub(super) fn reload(&self) {
         let _ = self.webview.reload();
+    }
+}
+
+impl Drop for NativeView {
+    fn drop(&mut self) {
+        // A page that had the keyboard would take it with it: keys would go
+        // nowhere until the window is recreated.
+        give_keyboard_to(self.host);
+    }
+}
+
+/// Make GPUI's view (`ns_view`) the window's first responder again. AppKit
+/// sends keys to the first responder; a click in a web page makes the page
+/// it, and GPUI's view never asks for it back on its own clicks, so typing
+/// in the app would stop working.
+fn give_keyboard_to(ns_view: NonNull<std::ffi::c_void>) {
+    // SAFETY: GPUI's content view lives as long as its window.
+    let view: &objc2_app_kit::NSView = unsafe { ns_view.cast().as_ref() };
+    let Some(window) = view.window() else { return };
+    let current = window.firstResponder();
+    let is_view = current
+        .as_deref()
+        .is_some_and(|responder| std::ptr::eq(responder, &**view));
+    if !is_view {
+        window.makeFirstResponder(Some(view));
+    }
+}
+
+/// A click reached GPUI (so not a web page): GPUI's view gets the keyboard.
+pub(super) fn reclaim_keyboard(window: &Window) {
+    if let Ok(RawWindowHandle::AppKit(handle)) =
+        HasWindowHandle::window_handle(window).map(|handle| handle.as_raw())
+    {
+        give_keyboard_to(handle.ns_view);
     }
 }
 

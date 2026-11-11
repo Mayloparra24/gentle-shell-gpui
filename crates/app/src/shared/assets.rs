@@ -86,7 +86,11 @@ gpui_kit::assets::icon_assets!(
         Music,
         SkipForward,
         Volume2,
-        Square
+        Square,
+        // The device panel.
+        Apple,
+        PanelRight,
+        PictureInPicture2
     ]
 );
 

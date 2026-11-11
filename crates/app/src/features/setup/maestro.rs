@@ -205,24 +205,6 @@ pub fn remove(log: &Log) -> Result<(), String> {
     Ok(())
 }
 
-/// Maestro finds iOS simulators with `xcrun simctl`, which follows
-/// `xcode-select`. When that points at the Command Line Tools (no simctl)
-/// while Xcode is installed, Maestro would see no simulator at all, so the
-/// server gets Xcode's developer folder, found the way the device panel
-/// finds it.
-fn xcode_developer_dir() -> Option<PathBuf> {
-    if !cfg!(target_os = "macos") || output_of(Path::new("xcrun"), &["--find", "simctl"]).is_some()
-    {
-        return None;
-    }
-    // `<Developer>/usr/bin/simctl`
-    crate::features::devices::simctl_path()?
-        .ancestors()
-        .nth(3)
-        .filter(|dir| dir.ends_with("Developer"))
-        .map(Path::to_path_buf)
-}
-
 /// Java (when missing), the CLI (when missing), then the MCP server.
 pub fn install(log: &Log) -> Result<(), String> {
     let spec = launcher()?;
@@ -248,7 +230,8 @@ pub fn install(log: &Log) -> Result<(), String> {
         }
     };
     let java_env = format!("JAVA_HOME={}", java.display());
-    let developer_env = xcode_developer_dir().map(|dir| format!("DEVELOPER_DIR={}", dir.display()));
+    let developer_env = crate::features::devices::xcode_developer_dir()
+        .map(|dir| format!("DEVELOPER_DIR={}", dir.display()));
     let maestro = maestro.to_string_lossy();
     let mut args = vec!["mcp", "add", SERVER, "--env", &java_env];
     if let Some(developer_env) = &developer_env {

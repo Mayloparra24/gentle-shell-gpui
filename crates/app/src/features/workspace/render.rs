@@ -23,6 +23,11 @@ impl Render for Workspace {
         // Native web views would cover a screen opened over them; device
         // cards stop capturing while covered.
         self.set_stages_covered(self.overlay.is_some(), cx);
+        let (devices_docked, devices_floating) = {
+            let panel = self.devices.read(cx);
+            let docked = panel.mode() == crate::features::devices::Mode::Docked;
+            (panel.visible() && docked, panel.visible() && !docked)
+        };
         // While the surge plays, the window shakes before the rose hatches:
         // the root moves in place and asks for the next frame, so the element
         // tree (and every element's state) stays the same.
@@ -36,6 +41,11 @@ impl Render for Workspace {
         v_flex()
             .size_full()
             .text_color(ui::fg())
+            // A click in a web page (a device, the browser card) takes the
+            // keyboard away from GPUI; any click that reaches GPUI takes it back.
+            .capture_any_mouse_down(|_, window, _| {
+                crate::features::browser::reclaim_keyboard(window)
+            })
             .on_action(cx.listener(Self::on_new_tab))
             .on_action(cx.listener(Self::on_new_terminal_tab))
             .on_action(cx.listener(Self::on_close_tab))
@@ -161,6 +171,7 @@ impl Render for Workspace {
                                         },
                                     )
                                     .children(crate::features::music::title_button(&self.music, cx))
+                                    .children(self.render_devices_button(cx))
                                     .children(self.render_tray(cx))
                                     .child({
                                         let weak = cx.entity().downgrade();
@@ -381,9 +392,11 @@ impl Render for Workspace {
                             .min_w_0()
                             .h_full()
                             .child(self.render_body(window, cx)),
-                    ),
+                    )
+                    .when(devices_docked, |row| row.child(self.devices.clone())),
             )
             .children(self.stages.iter().filter_map(Stage::element))
+            .when(devices_floating, |root| root.child(self.devices.clone()))
             .children(self.overlay.as_ref().map(|(overlay, _)| match overlay {
                 Overlay::Providers(view) => view.clone().into_any_element(),
                 Overlay::Sessions(view) => view.clone().into_any_element(),
@@ -398,5 +411,32 @@ impl Render for Workspace {
             .when_some(self.surge, |root, (run, _)| {
                 root.child(crate::shared::surge::overlay(run))
             })
+    }
+}
+
+impl Workspace {
+    /// The title bar's device panel button, while "Use devices" is on.
+    fn render_devices_button(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !crate::features::devices::hub(cx).read(cx).prefs().enabled {
+            return None;
+        }
+        let open = self.devices.read(cx).visible();
+        Some(
+            div()
+                // Clicks here are not title-bar drags.
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(
+                    Button::new("title-devices")
+                        .ghost()
+                        .xsmall()
+                        .icon(Icon::new(IconName::Smartphone))
+                        .when(open, |b| b.text_color(ui::petal()))
+                        .tooltip("Devices: simulators and emulators")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.devices.update(cx, |panel, cx| panel.toggle(cx))
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 }

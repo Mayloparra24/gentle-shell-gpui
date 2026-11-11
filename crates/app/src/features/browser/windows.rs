@@ -94,7 +94,12 @@ impl NativeView {
     /// Pumps the thread's messages until WebView2 is ready
     /// (`webview2_com::wait_with_pump`), so it must run outside any GPUI
     /// update: GPUI's window procedure re-enters and would panic.
-    pub(super) fn new(host: Host, url: &str, background: (u8, u8, u8, u8)) -> Result<Self, String> {
+    pub(super) fn new(
+        host: Host,
+        url: &str,
+        background: (u8, u8, u8, u8),
+        script: Option<&str>,
+    ) -> Result<Self, String> {
         let owner = host.0;
         register_class();
         let popup = unsafe {
@@ -127,6 +132,8 @@ impl NativeView {
         }
         let webview = wry::WebViewBuilder::new()
             .with_url(url)
+            // Runs before the page's own scripts (a device panel names its device).
+            .with_initialization_script(script.unwrap_or_default())
             .with_background_color(background)
             .with_bounds(wry::Rect {
                 position: wry::dpi::PhysicalPosition::new(0, 0).into(),
@@ -212,3 +219,7 @@ impl Drop for NativeView {
         }
     }
 }
+
+/// The page lives in its own native window here, which gives the keyboard
+/// back when the app's window is clicked.
+pub(super) fn reclaim_keyboard(_window: &Window) {}

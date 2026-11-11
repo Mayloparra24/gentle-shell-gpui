@@ -72,13 +72,17 @@ pub fn run(
             // Requests from later launches: bring this window forward and act on them.
             cx.spawn(async move |cx| {
                 while let Ok(request) = requests.recv().await {
+                    // An agent's `gentle-device` doesn't pull the window forward.
+                    let activate = request.device.is_none();
                     let _ = handle.update(cx, |_, window, cx| {
-                        window.activate_window();
-                        workspace.update(cx, |w, cx| {
-                            w.open_request(request.folder, request.prompt, request.url, window, cx)
-                        });
+                        if activate {
+                            window.activate_window();
+                        }
+                        workspace.update(cx, |w, cx| w.open_request(request, window, cx));
                     });
-                    cx.update(|cx| cx.activate(true));
+                    if activate {
+                        cx.update(|cx| cx.activate(true));
+                    }
                 }
             })
             .detach();

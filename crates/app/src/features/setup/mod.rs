@@ -7,6 +7,7 @@
 //! (`node/`, `npm-global/`, `bin/`); `apply_toolchain_path` puts them first
 //! on pi-rpc's search PATH, so sessions find them on every launch.
 
+pub mod devices;
 mod extras;
 mod fetch;
 mod gentle;
@@ -123,6 +124,8 @@ fn managed_dirs() -> Vec<PathBuf> {
     .into_iter()
     // The Android SDK's tools, so agents can start emulators and use adb.
     .chain(crate::features::devices::android_tool_dirs())
+    // agent-device, once "Agents can use devices" installed it.
+    .chain(devices::agent_bin_dir())
     .filter(|dir| dir.is_dir())
     .collect()
 }

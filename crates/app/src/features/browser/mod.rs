@@ -24,8 +24,14 @@ use gpui_kit::*;
 use crate::shared::floating::{self, CardState, DragKind};
 use crate::shared::ui;
 
-mod tool;
-pub use tool::install_open_tool;
+mod surface;
+pub use surface::WebSurface;
+
+/// A mouse-down reached GPUI rather than a page: give GPUI the keyboard
+/// back if a page had taken it (see `macos::give_keyboard_to`).
+pub fn reclaim_keyboard(window: &Window) {
+    native::reclaim_keyboard(window);
+}
 
 // The native web view, one module per system with the same interface:
 // `host` (the window to build in, taken during a frame), `NativeView::{new,
@@ -151,37 +157,20 @@ pub struct BrowserPanel {
     /// host), so any web app can use the card, not only Gentle Design.
     label: Option<String>,
     card: CardState,
-    /// A screen covers the window: the native view must not show over it.
-    covered: bool,
-    /// The card is in the window's instance tray: no native view exists.
-    hidden: bool,
-    /// The native web view, created after the card is first laid out.
-    view: Option<native::NativeView>,
-    /// The view is being built (see `place_webview`).
-    creating: bool,
-    failed: Option<String>,
-    /// Pumps GTK's loop while a native view exists (Linux).
-    _pump: Option<Task<()>>,
-    /// Re-places the view when the window moves (Windows hosts it in a popup
-    /// positioned in screen coordinates).
-    _window_moves: Option<Subscription>,
+    /// The page itself.
+    surface: Entity<WebSurface>,
 }
 
 impl EventEmitter<BrowserEvent> for BrowserPanel {}
 
 impl BrowserPanel {
-    pub fn new(url: String, label: Option<String>) -> Self {
+    pub fn new(url: String, label: Option<String>, cx: &mut Context<Self>) -> Self {
+        let surface = cx.new(|_| WebSurface::new(url.clone(), None));
         Self {
             url,
             label,
             card: CardState::new(DEFAULT_FRAME),
-            covered: false,
-            hidden: false,
-            view: None,
-            creating: false,
-            failed: None,
-            _pump: None,
-            _window_moves: None,
+            surface,
         }
     }
 
@@ -204,13 +193,8 @@ impl BrowserPanel {
     /// Show `url`, or reload when it is already showing (the canvas was
     /// refreshed).
     pub fn navigate(&mut self, url: String, label: Option<String>, cx: &mut Context<Self>) {
-        if let Some(view) = &self.view {
-            if url == self.url {
-                view.reload();
-            } else {
-                view.load_url(&url);
-            }
-        }
+        self.surface
+            .update(cx, |surface, cx| surface.navigate(url.clone(), cx));
         self.url = url;
         self.label = label;
         cx.notify();
@@ -218,25 +202,19 @@ impl BrowserPanel {
 
     /// A screen opened or closed over the window.
     pub fn set_covered(&mut self, covered: bool, cx: &mut Context<Self>) {
-        if self.covered != covered {
-            self.covered = covered;
-            cx.notify();
-        }
+        self.surface
+            .update(cx, |surface, cx| surface.set_covered(covered, cx));
     }
 
     /// The card went to the instance tray: drop the native view, and the web
     /// process behind it, so a hidden page costs nothing. Showing it again
     /// builds a fresh view on [`Self::url`].
     pub fn hide(&mut self, cx: &mut Context<Self>) {
-        self.hidden = true;
-        self.view = None;
-        self._pump = None;
-        cx.notify();
+        self.surface.update(cx, |surface, cx| surface.hide(cx));
     }
 
     pub fn show(&mut self, cx: &mut Context<Self>) {
-        self.hidden = false;
-        cx.notify();
+        self.surface.update(cx, |surface, cx| surface.show(cx));
     }
 
     /// What the header and the tray call this page.
@@ -249,10 +227,7 @@ impl BrowserPanel {
     }
 
     fn reload(&mut self, cx: &mut Context<Self>) {
-        if let Some(view) = &self.view {
-            view.reload();
-        }
-        cx.notify();
+        self.surface.update(cx, |surface, cx| surface.reload(cx));
     }
 
     fn toggle_maximized(&mut self, cx: &mut Context<Self>) {
@@ -275,65 +250,6 @@ impl BrowserPanel {
         if self.card.end_drag() {
             cx.notify();
         }
-    }
-
-    /// Place the native view over the card's body. The first call builds it in
-    /// a task instead: that runs outside GPUI's update, which matters because
-    /// WebView2 pumps the thread's messages while it starts and GPUI's window
-    /// procedure would re-enter a borrowed window and abort the app.
-    fn place_webview(&mut self, bounds: Bounds<Pixels>, window: &Window, cx: &mut Context<Self>) {
-        if self.failed.is_some() || self.creating {
-            return;
-        }
-        if let Some(view) = &mut self.view {
-            view.place(window, bounds, !self.covered);
-            return;
-        }
-        let host = match native::host(window) {
-            Ok(host) => host,
-            Err(error) => {
-                self.failed = Some(error);
-                cx.notify();
-                return;
-            }
-        };
-        self.creating = true;
-        let url = self.url.clone();
-        let background = page_background();
-        cx.spawn(async move |this, cx| {
-            let view = native::NativeView::new(host, &url, background);
-            // A card closed meanwhile drops the view, and its popup with it;
-            // one sent to the tray meanwhile drops the view right here.
-            let _ = this.update(cx, |panel, cx| {
-                panel.creating = false;
-                if panel.hidden {
-                    return;
-                }
-                match view {
-                    Ok(view) => {
-                        // The canvas moved on while the view was starting.
-                        if panel.url != url {
-                            view.load_url(&panel.url);
-                        }
-                        panel.view = Some(view);
-                        // GTK's loop only needs pumping while a view exists;
-                        // `hide` drops the pump with the view.
-                        if native::NEEDS_PUMP {
-                            panel._pump = Some(cx.spawn(async move |_, cx| {
-                                loop {
-                                    cx.background_executor().timer(PUMP_EVERY).await;
-                                    native::pump();
-                                }
-                            }));
-                        }
-                    }
-                    Err(error) => panel.failed = Some(error),
-                }
-                // The next frame places the view.
-                cx.notify();
-            });
-        })
-        .detach();
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -431,42 +347,16 @@ impl BrowserPanel {
             )
     }
 
-    fn body(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let this = cx.entity();
-        let note = self.failed.clone();
+    fn body(&self) -> impl IntoElement {
         div()
             .flex_1()
             .min_h_0()
             .mx(px(floating::GRIP))
             .mb(px(floating::GRIP))
-            .relative()
             .rounded(px(floating::BODY_RADIUS))
             .bg(ui::well())
             .overflow_hidden()
-            .child(
-                canvas(
-                    move |bounds, window, cx| {
-                        this.update(cx, |panel, cx| panel.place_webview(bounds, window, cx));
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
-            .when_some(note, |d, note| {
-                d.child(
-                    div()
-                        .absolute()
-                        .inset_0()
-                        .flex()
-                        .items_center()
-                        .justify_center()
-                        .p_4()
-                        .text_size(px(12.))
-                        .text_color(ui::muted())
-                        .child(note),
-                )
-            })
+            .child(self.surface.clone())
     }
 
     /// The bands along the card's edges and corners that resize it.
@@ -478,10 +368,7 @@ impl BrowserPanel {
 }
 
 impl Render for BrowserPanel {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self._window_moves.is_none() {
-            self._window_moves = Some(cx.observe_window_bounds(window, |_, _, cx| cx.notify()));
-        }
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.card.fit();
         let card = ui::island(cx)
             .absolute()
@@ -491,7 +378,7 @@ impl Render for BrowserPanel {
             .shadow(floating::shadow(self.card.dragging()))
             .map(|card| floating::position(&self.card, card))
             .child(self.header(cx))
-            .child(self.body(cx))
+            .child(self.body())
             .children(self.grips(cx));
         let drag_layer = floating::drag_layer(
             &self.card,

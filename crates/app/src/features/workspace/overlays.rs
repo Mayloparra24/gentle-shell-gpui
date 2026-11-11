@@ -78,7 +78,7 @@ impl Workspace {
             PaletteAction::Profiles => self.open_profiles(window, cx),
             PaletteAction::Usage => self.open_usage(window, cx),
             PaletteAction::Memory => self.open_memory(window, cx),
-            PaletteAction::Devices => self.show_devices(window, cx),
+            PaletteAction::Devices => self.devices.update(cx, |panel, cx| panel.show(cx)),
             PaletteAction::Settings => self.open_settings(window, cx),
             PaletteAction::Setup => self.open_onboarding(None, window, cx),
             PaletteAction::Welcome => self.open_welcome(None, window, cx),
@@ -302,6 +302,16 @@ impl Workspace {
                     for tab in this.sessions() {
                         tab.update(cx, |session, cx| session.reload_models(window, cx));
                     }
+                }
+                SettingsEvent::DevicesChanged(prefs) => {
+                    let prefs = *prefs;
+                    crate::features::devices::hub(cx)
+                        .update(cx, |hub, cx| hub.set_prefs(prefs, cx));
+                    pi_rpc::set_system_prompt(crate::features::devices::agent_instructions(prefs));
+                    if !prefs.enabled {
+                        this.devices.update(cx, |panel, cx| panel.hide(cx));
+                    }
+                    cx.notify();
                 }
                 SettingsEvent::MusicChanged => {
                     this.music.update(cx, |music, cx| music.refresh(cx));

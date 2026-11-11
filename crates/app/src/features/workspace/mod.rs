@@ -48,6 +48,7 @@ mod stages;
 mod tabs;
 mod view;
 
+use crate::features::devices::{DevicePanel, DevicePanelEvent};
 use crate::features::music::{Music, MusicChanged};
 use layout::*;
 use stages::Stage;
@@ -261,6 +262,8 @@ pub struct Workspace {
     drop_hint: Option<(PaneId, DropZone)>,
     /// gentle-stream, behind the title bar's ♪ button.
     music: Entity<Music>,
+    /// Simulators and emulators, docked at the right or floating.
+    devices: Entity<DevicePanel>,
 }
 
 impl EventEmitter<WorkspaceEvent> for Workspace {}
@@ -290,9 +293,9 @@ impl Workspace {
             })
             .collect();
         let music = cx.new(|cx| Music::new(window, cx));
+        let devices = cx.new(DevicePanel::new);
         let lifecycle = vec![
             cx.on_app_quit(|this, cx| {
-                this.shutdown_stages(cx);
                 this.music.read(cx).shutdown();
                 this.save_now(cx);
                 async {}
@@ -310,6 +313,14 @@ impl Workspace {
             // The ♪ button's look follows the player; the player's own panel
             // redraws itself (its spectrum) without redrawing the window.
             cx.subscribe(&music, |_, _, _: &MusicChanged, cx| cx.notify()),
+            cx.subscribe_in(
+                &devices,
+                window,
+                |this, _, event: &DevicePanelEvent, window, cx| match event {
+                    DevicePanelEvent::Layout => cx.notify(),
+                    DevicePanelEvent::OpenSettings => this.open_settings(window, cx),
+                },
+            ),
         ];
         let mut this = Self {
             current: saved.current.min(spaces.len().saturating_sub(1)),
@@ -329,6 +340,7 @@ impl Workspace {
             resume_welcome: None,
             drop_hint: None,
             music,
+            devices,
             _surge_end: None,
             _title_poll: cx.spawn(async move |this, cx| {
                 loop {
@@ -386,16 +398,21 @@ impl Workspace {
 
     // ── Public hooks ────────────────────────────────────────────────────────
 
-    /// A later launch's request (see `crate::platform::instance`): show the workspace
-    /// rooted at `folder` (creating it), and open `prompt` in a new agent tab.
+    /// A later launch's request (see `crate::platform::instance`): show the
+    /// workspace rooted at `folder` (creating it), open `prompt` in a new
+    /// agent tab, a page, or what `gentle-device` asked for.
     pub fn open_request(
         &mut self,
-        folder: Option<PathBuf>,
-        prompt: Option<String>,
-        url: Option<String>,
+        request: crate::platform::instance::OpenRequest,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let crate::platform::instance::OpenRequest {
+            folder,
+            prompt,
+            url,
+            device,
+        } = request;
         if let Some(folder) = folder {
             let index = match self.spaces.iter().position(|s| s.root == folder) {
                 Some(index) => index,
@@ -410,7 +427,23 @@ impl Workspace {
         if let Some(url) = url {
             self.open_web(url, None, false, window, cx);
         }
+        if let Some(args) = device {
+            self.device_request(&args, cx);
+        }
         cx.notify();
+    }
+
+    /// `gentle-device`'s request: start the hub, open a device, close one.
+    fn device_request(&mut self, args: &[String], cx: &mut Context<Self>) {
+        use crate::features::devices::cli::{Request, parse};
+        let Ok(request) = parse(args) else { return };
+        self.devices.update(cx, |panel, cx| match request {
+            Request::Ensure => {
+                crate::features::devices::hub(cx).update(cx, |hub, cx| hub.ensure(cx))
+            }
+            Request::Open(query) => panel.open_query(query, cx),
+            Request::Close { query, shutdown } => panel.close_query(&query, shutdown, cx),
+        });
     }
 
     /// Put `view` in the left sidebar slot (cmd-b toggles it).

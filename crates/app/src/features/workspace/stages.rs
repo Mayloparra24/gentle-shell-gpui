@@ -1,51 +1,25 @@
-//! Floating stages (web pages and device cards) and the title bar's instance
-//! tray. What an agent opens (a dev server's URL, the design canvas, an
-//! emulator it boots) starts hidden in the tray, so the window never
-//! rearranges on its own; the user looks at it from the tray's circle. What
-//! the user opens (`/web`, the palette's Devices) shows at once. A hidden
-//! stage costs nothing on screen: a web page has no native view and a device
-//! takes no screenshots.
+//! Floating web pages and the title bar's instance tray. What an agent opens
+//! (a dev server's URL, the design canvas, `gentle-open`) starts hidden in the
+//! tray, so the window never rearranges on its own; the user looks at it from
+//! the tray's circle. What the user opens (`/web`) shows at once. A hidden
+//! page costs nothing: it has no native view. Simulators and emulators have
+//! their own panel (`features::devices`).
 
 use super::*;
 use crate::features::browser::{BrowserEvent, BrowserPanel, CanvasNotice};
-use crate::features::devices::{DevicesEvent, DevicesPanel};
-use crate::shared::floating::{self, Frame};
-use gentle_core::devices::{DeviceCommand, LaunchIntent};
+use crate::shared::floating;
 use gpui_kit::component::popover::{Popover, PopoverState};
 use gpui_kit::component::{ActiveTheme as _, Selectable};
 
-pub(super) enum StageKind {
-    Web(Entity<BrowserPanel>),
-    Device(Entity<DevicesPanel>),
-}
-
-impl StageKind {
-    /// What the tray shows for it: title and status line.
-    fn summary(&self, cx: &App) -> (String, String) {
-        match self {
-            Self::Web(entity) => {
-                let panel = entity.read(cx);
-                (panel.title(), address(panel.url()))
-            }
-            Self::Device(entity) => {
-                let panel = entity.read(cx);
-                (panel.title(), panel.status())
-            }
-        }
-    }
-}
-
-/// One web page or device card, shown floating or kept in the tray.
+/// One web page, shown floating or kept in the tray.
 pub(super) struct Stage {
     id: u64,
-    kind: StageKind,
+    panel: Entity<BrowserPanel>,
     shown: bool,
-    /// The agent pane that opened it (or drives it), named in the tray.
+    /// The agent pane that opened it, named in the tray.
     origin: Option<PaneId>,
-    /// The last device command that agent ran on it.
-    activity: Option<String>,
-    /// What the tray last drew for it. A panel's own redraws (a new frame
-    /// every 1.5 s) only redraw the window when this changes.
+    /// What the tray last drew for it: title and address. The page's own
+    /// redraws only redraw the window when this changes.
     summary: (String, String),
     _subscriptions: [Subscription; 2],
 }
@@ -53,46 +27,24 @@ pub(super) struct Stage {
 impl Stage {
     /// The floating card, while shown.
     pub(super) fn element(&self) -> Option<AnyElement> {
-        self.shown.then(|| match &self.kind {
-            StageKind::Web(entity) => entity.clone().into_any_element(),
-            StageKind::Device(entity) => entity.clone().into_any_element(),
-        })
+        self.shown.then(|| self.panel.clone().into_any_element())
     }
 
     fn set_shown(&mut self, shown: bool, cx: &mut App) {
         self.shown = shown;
-        match &self.kind {
-            StageKind::Web(entity) => entity.update(cx, |panel, cx| {
-                if shown {
-                    panel.show(cx)
-                } else {
-                    panel.hide(cx)
-                }
-            }),
-            StageKind::Device(entity) => entity.update(cx, |panel, cx| {
-                if shown {
-                    panel.show(cx)
-                } else {
-                    panel.hide(cx)
-                }
-            }),
-        }
+        self.panel.update(cx, |panel, cx| {
+            if shown {
+                panel.show(cx)
+            } else {
+                panel.hide(cx)
+            }
+        });
     }
 
-    /// The size a card opens with, before docking scales it.
-    fn natural_size(&self) -> (f32, f32) {
-        let frame = match self.kind {
-            StageKind::Web(_) => crate::features::browser::DEFAULT_FRAME,
-            StageKind::Device(_) => crate::features::devices::DEFAULT_FRAME,
-        };
-        (frame.w, frame.h)
-    }
-
-    fn place(&self, frame: Frame, cx: &mut App) {
-        match &self.kind {
-            StageKind::Web(entity) => entity.update(cx, |panel, cx| panel.set_frame(frame, cx)),
-            StageKind::Device(entity) => entity.update(cx, |panel, cx| panel.set_frame(frame, cx)),
-        }
+    /// What the tray shows for it: title and address.
+    fn summary(panel: &Entity<BrowserPanel>, cx: &App) -> (String, String) {
+        let panel = panel.read(cx);
+        (panel.title(), address(panel.url()))
     }
 }
 
@@ -117,12 +69,9 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let existing = self.stages.iter().find_map(|stage| match &stage.kind {
-            StageKind::Web(entity) => {
-                let panel = entity.read(cx);
-                (!panel.is_design() && panel.url() == url).then(|| (stage.id, entity.clone()))
-            }
-            StageKind::Device(_) => None,
+        let existing = self.stages.iter().find_map(|stage| {
+            let panel = stage.panel.read(cx);
+            (!panel.is_design() && panel.url() == url).then(|| (stage.id, stage.panel.clone()))
         });
         if let Some((id, entity)) = existing {
             entity.update(cx, |panel, cx| panel.navigate(url, None, cx));
@@ -131,8 +80,8 @@ impl Workspace {
             }
             return;
         }
-        let panel = cx.new(|_| BrowserPanel::new(url, None));
-        self.add_stage(StageKind::Web(panel), origin, reveal, window, cx);
+        let panel = cx.new(|cx| BrowserPanel::new(url, None, cx));
+        self.add_stage(panel, origin, reveal, window, cx);
     }
 
     /// Gentle Design's canvas: kept in the tray when it opens, reloaded in
@@ -144,9 +93,12 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let design = |stage: &Stage, cx: &App| match &stage.kind {
-            StageKind::Web(entity) if entity.read(cx).is_design() => Some(entity.clone()),
-            _ => None,
+        let design = |stage: &Stage, cx: &App| {
+            stage
+                .panel
+                .read(cx)
+                .is_design()
+                .then(|| stage.panel.clone())
         };
         match canvas {
             CanvasNotice::Stopped => {
@@ -157,7 +109,7 @@ impl Workspace {
                     .map(|stage| stage.id)
                     .collect();
                 for id in ids {
-                    self.remove_stage(id, false, window, cx);
+                    self.remove_stage(id, window, cx);
                 }
             }
             CanvasNotice::Open { url, .. } => {
@@ -165,110 +117,17 @@ impl Workspace {
                 match self.stages.iter().find_map(|stage| design(stage, cx)) {
                     Some(entity) => entity.update(cx, |panel, cx| panel.navigate(url, label, cx)),
                     None => {
-                        let panel = cx.new(|_| BrowserPanel::new(url, label));
-                        self.add_stage(StageKind::Web(panel), Some(origin), false, window, cx);
+                        let panel = cx.new(|cx| BrowserPanel::new(url, label, cx));
+                        self.add_stage(panel, Some(origin), false, window, cx);
                     }
                 }
             }
         }
     }
 
-    /// The palette's Devices: show the first device card, or a new one.
-    pub(super) fn show_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let existing = self
-            .stages
-            .iter()
-            .find(|stage| matches!(stage.kind, StageKind::Device(_)))
-            .map(|stage| stage.id);
-        match existing {
-            Some(id) => self.set_stage_shown(id, true, window, cx),
-            None => {
-                let panel = cx.new(|cx| DevicesPanel::new(window, cx));
-                self.add_stage(StageKind::Device(panel), None, true, window, cx);
-            }
-        }
-    }
-
-    /// An agent is starting a device: follow it from the tray, reusing the
-    /// card already on that device. Each different device gets its own card,
-    /// so Android and iOS (or two emulators) can be followed at once.
-    pub(super) fn follow_device(
-        &mut self,
-        intent: LaunchIntent,
-        origin: PaneId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let existing = self.stages.iter_mut().find(|stage| {
-            let StageKind::Device(entity) = &stage.kind else {
-                return false;
-            };
-            let panel = entity.read(cx);
-            match intent.id.as_deref() {
-                Some(want) => panel.selected_key() == Some(want),
-                // An unnamed device: reuse a card that is not on one yet.
-                None => {
-                    panel.selected_key().is_none()
-                        && panel
-                            .platform()
-                            .is_none_or(|platform| platform == intent.platform)
-                }
-            }
-        });
-        if let Some(stage) = existing {
-            stage.origin.get_or_insert(origin);
-            if let StageKind::Device(entity) = &stage.kind {
-                entity.update(cx, |panel, cx| panel.follow(intent, cx));
-            }
-            cx.notify();
-            return;
-        }
-        let panel = cx.new(|cx| DevicesPanel::new(window, cx));
-        panel.update(cx, |panel, cx| panel.follow(intent, cx));
-        self.add_stage(StageKind::Device(panel), Some(origin), false, window, cx);
-    }
-
-    /// An agent drove a device: show the command on that agent's device
-    /// card (a card opened from the palette is adopted by the first agent
-    /// that drives its platform).
-    pub(super) fn device_activity(
-        &mut self,
-        origin: PaneId,
-        command: DeviceCommand,
-        cx: &mut Context<Self>,
-    ) {
-        let fits = |stage: &Stage, cx: &App| match &stage.kind {
-            StageKind::Device(entity) => match (command.platform, entity.read(cx).platform()) {
-                (Some(wanted), Some(platform)) => wanted == platform,
-                _ => true,
-            },
-            StageKind::Web(_) => false,
-        };
-        let own = self
-            .stages
-            .iter()
-            .any(|stage| stage.origin == Some(origin) && fits(stage, cx));
-        let mut changed = false;
-        for stage in &mut self.stages {
-            let candidate = if own {
-                stage.origin == Some(origin)
-            } else {
-                stage.origin.is_none()
-            };
-            if candidate && fits(stage, cx) {
-                stage.origin = Some(origin);
-                stage.activity = Some(command.summary.clone());
-                changed = true;
-            }
-        }
-        if changed {
-            cx.notify();
-        }
-    }
-
     fn add_stage(
         &mut self,
-        kind: StageKind,
+        panel: Entity<BrowserPanel>,
         origin: Option<PaneId>,
         shown: bool,
         window: &mut Window,
@@ -276,36 +135,23 @@ impl Workspace {
     ) {
         let id = self.next_stage;
         self.next_stage += 1;
-        // The card's own button only hides it; the tray stops or closes it.
-        let subscriptions = match &kind {
-            StageKind::Web(entity) => [
-                cx.subscribe_in(
-                    entity,
-                    window,
-                    move |this, _, _: &BrowserEvent, window, cx| {
-                        this.set_stage_shown(id, false, window, cx)
-                    },
-                ),
-                cx.observe(entity, move |this, _, cx| this.stage_changed(id, cx)),
-            ],
-            StageKind::Device(entity) => [
-                cx.subscribe_in(
-                    entity,
-                    window,
-                    move |this, _, _: &DevicesEvent, window, cx| {
-                        this.set_stage_shown(id, false, window, cx)
-                    },
-                ),
-                cx.observe(entity, move |this, _, cx| this.stage_changed(id, cx)),
-            ],
-        };
-        let summary = kind.summary(cx);
+        // The card's own button only hides it; the tray closes it.
+        let subscriptions = [
+            cx.subscribe_in(
+                &panel,
+                window,
+                move |this, _, _: &BrowserEvent, window, cx| {
+                    this.set_stage_shown(id, false, window, cx)
+                },
+            ),
+            cx.observe(&panel, move |this, _, cx| this.stage_changed(id, cx)),
+        ];
+        let summary = Stage::summary(&panel, cx);
         let mut stage = Stage {
             id,
-            kind,
+            panel,
             shown: false,
             origin,
-            activity: None,
             summary,
             _subscriptions: subscriptions,
         };
@@ -324,7 +170,7 @@ impl Workspace {
         let Some(stage) = self.stages.iter_mut().find(|stage| stage.id == id) else {
             return;
         };
-        let summary = stage.kind.summary(cx);
+        let summary = Stage::summary(&stage.panel, cx);
         if stage.summary != summary {
             stage.summary = summary;
             cx.notify();
@@ -356,58 +202,31 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Drop a stage. `stop` also stops the device it follows (the tray's
-    /// Stop); dropping the panel already stops what the card launched.
-    fn remove_stage(&mut self, id: u64, stop: bool, window: &mut Window, cx: &mut Context<Self>) {
+    /// Close a page.
+    fn remove_stage(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
         let Some(index) = self.stages.iter().position(|stage| stage.id == id) else {
             return;
         };
         let stage = self.stages.remove(index);
-        if stop && let StageKind::Device(entity) = &stage.kind {
-            entity.update(cx, |panel, _| panel.stop_all());
-        }
         if stage.shown {
             self.tile_stages(window, cx);
         }
         cx.notify();
     }
 
-    /// Stop every device the cards started; called on quit.
-    pub(super) fn shutdown_stages(&self, cx: &mut App) {
-        for stage in &self.stages {
-            if let StageKind::Device(entity) = &stage.kind {
-                entity.update(cx, |panel, _| panel.shutdown_all());
-            }
-        }
-    }
-
-    /// A screen opened or closed over the window: web views hide under it
-    /// and device cards stop capturing.
+    /// A screen opened or closed over the window: web views hide under it.
     pub(super) fn set_stages_covered(&self, covered: bool, cx: &mut App) {
         for stage in self.stages.iter().filter(|stage| stage.shown) {
-            match &stage.kind {
-                StageKind::Web(entity) => {
-                    entity.update(cx, |panel, cx| panel.set_covered(covered, cx))
-                }
-                StageKind::Device(entity) => {
-                    entity.update(cx, |panel, cx| panel.set_covered(covered, cx))
-                }
-            }
+            stage
+                .panel
+                .update(cx, |panel, cx| panel.set_covered(covered, cx));
         }
+        self.devices
+            .update(cx, |panel, cx| panel.set_covered(covered, cx));
     }
 
     pub(super) fn shown_stages(&self) -> usize {
         self.stages.iter().filter(|stage| stage.shown).count()
-    }
-
-    /// The tray opened: discover again any device whose state may be stale
-    /// (a hidden card stops polling once its device has booted).
-    fn refresh_tray(&mut self, cx: &mut Context<Self>) {
-        for stage in &self.stages {
-            if let StageKind::Device(entity) = &stage.kind {
-                entity.update(cx, |panel, cx| panel.refresh_if_stale(cx));
-            }
-        }
     }
 
     /// Dock the shown stages at the bottom-right ([`floating::docked`]): side
@@ -416,11 +235,14 @@ impl Workspace {
     /// Cards stay draggable and resizable afterwards.
     pub(super) fn tile_stages(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let shown: Vec<&Stage> = self.stages.iter().filter(|stage| stage.shown).collect();
-        let sizes: Vec<(f32, f32)> = shown.iter().map(|stage| stage.natural_size()).collect();
+        let frame = crate::features::browser::DEFAULT_FRAME;
+        let sizes: Vec<(f32, f32)> = shown.iter().map(|_| (frame.w, frame.h)).collect();
         let size = window.viewport_size();
         let frames = floating::docked(&sizes, (size.width.as_f32(), size.height.as_f32()));
         for (stage, frame) in shown.iter().zip(frames) {
-            stage.place(frame, cx);
+            stage
+                .panel
+                .update(cx, |panel, cx| panel.set_frame(frame, cx));
         }
     }
 
@@ -438,54 +260,26 @@ impl Workspace {
             .iter()
             .map(|stage| {
                 let (title, status) = stage.summary.clone();
-                let (device, design, color) = match &stage.kind {
-                    StageKind::Device(entity) => (true, false, entity.read(cx).status_color()),
-                    StageKind::Web(entity) => (
-                        false,
-                        entity.read(cx).is_design(),
-                        if stage.shown {
-                            ui::accent()
-                        } else {
-                            ui::faint()
-                        },
-                    ),
-                };
                 TrayRow {
                     id: stage.id,
-                    device,
-                    design,
+                    design: stage.panel.read(cx).is_design(),
                     title,
                     status,
-                    color,
+                    color: if stage.shown {
+                        ui::accent()
+                    } else {
+                        ui::faint()
+                    },
                     source: stage
                         .origin
                         .map(|origin| self.pane_title(origin))
                         .unwrap_or_default(),
-                    activity: stage.activity.clone(),
                     shown: stage.shown,
                 }
             })
             .collect();
-        let rank = |color: Hsla| {
-            if color == ui::danger() {
-                3
-            } else if color == ui::champagne() {
-                2
-            } else if color == ui::success() {
-                1
-            } else {
-                0
-            }
-        };
-        let badge = rows
-            .iter()
-            .map(|row| row.color)
-            .max_by_key(|color| rank(*color))
-            .filter(|color| rank(*color) > 0)
-            .unwrap_or_else(ui::petal);
         let count = rows.len();
         let weak = cx.entity().downgrade();
-        let refresh = weak.clone();
         Some(
             div()
                 // Clicks here are not title-bar drags.
@@ -493,16 +287,7 @@ impl Workspace {
                 .child(
                     Popover::new("instances")
                         .anchor(Anchor::TopRight)
-                        .trigger(TrayTrigger {
-                            count,
-                            badge,
-                            open: false,
-                        })
-                        .on_open_change(move |open, _, cx| {
-                            if *open {
-                                let _ = refresh.update(cx, |this, cx| this.refresh_tray(cx));
-                            }
-                        })
+                        .trigger(TrayTrigger { count, open: false })
                         .w(px(380.))
                         .p_0()
                         .content(move |_, _, cx| {
@@ -522,14 +307,12 @@ impl Workspace {
 #[derive(Clone)]
 struct TrayRow {
     id: u64,
-    device: bool,
     design: bool,
     title: String,
     status: String,
     color: Hsla,
-    /// The agent tab that opened or drives it.
+    /// The agent tab that opened it.
     source: SharedString,
-    activity: Option<String>,
     shown: bool,
 }
 
@@ -549,7 +332,7 @@ fn tray_panel(
                 .text_size(px(13.))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(ui::fg())
-                .child("Instances"),
+                .child("Pages"),
         )
         .child(div().flex_1())
         .when(any_shown, |d| {
@@ -574,10 +357,10 @@ fn tray_panel(
         });
     let rows = rows.into_iter().map(|row| {
         let id = row.id;
-        let icon = match (row.device, row.design) {
-            (true, _) => IconName::Smartphone,
-            (false, true) => IconName::Palette,
-            (false, false) => IconName::Globe,
+        let icon = if row.design {
+            IconName::Palette
+        } else {
+            IconName::Globe
         };
         let mut meta = row.source.to_string();
         if !meta.is_empty() {
@@ -636,17 +419,7 @@ fn tray_panel(
                             .text_color(ui::faint())
                             .truncate()
                             .child(meta),
-                    )
-                    .when_some(row.activity, |d, activity| {
-                        d.child(
-                            div()
-                                .font_family(ui::MONO)
-                                .text_size(px(10.5))
-                                .text_color(ui::muted())
-                                .truncate()
-                                .child(format!("› {activity}")),
-                        )
-                    }),
+                    ),
             )
             .child(
                 h_flex()
@@ -672,19 +445,11 @@ fn tray_panel(
                         Button::new(("instance-close", id as usize))
                             .ghost()
                             .xsmall()
-                            .icon(Icon::new(if row.device {
-                                IconName::Power
-                            } else {
-                                IconName::X
-                            }))
-                            .tooltip(if row.device {
-                                "Stop the device"
-                            } else {
-                                "Close"
-                            })
+                            .icon(Icon::new(IconName::X))
+                            .tooltip("Close")
                             .on_click(move |_, window, cx| {
-                                let _ = close
-                                    .update(cx, |this, cx| this.remove_stage(id, true, window, cx));
+                                let _ =
+                                    close.update(cx, |this, cx| this.remove_stage(id, window, cx));
                             }),
                     ),
             )
@@ -705,12 +470,10 @@ fn tray_panel(
         )
 }
 
-/// The circle in the title bar; a badge with the count, colored by the
-/// instance that most needs a look (error, booting, ready).
+/// The circle in the title bar, with a badge counting the pages.
 #[derive(IntoElement)]
 struct TrayTrigger {
     count: usize,
-    badge: Hsla,
     open: bool,
 }
 
@@ -740,11 +503,9 @@ impl RenderOnce for TrayTrigger {
             .hover(|s| s.bg(ui::surface_hover()))
             .when(self.open, |d| d.bg(ui::surface_hover()))
             .when(!self.open, |d| {
-                d.tooltip(|window, cx| {
-                    Tooltip::new("Instances: devices and pages agents opened").build(window, cx)
-                })
+                d.tooltip(|window, cx| Tooltip::new("Pages agents opened").build(window, cx))
             })
-            .child(Icon::new(IconName::MonitorSmartphone).small())
+            .child(Icon::new(IconName::Globe).small())
             .child(
                 div()
                     .absolute()
@@ -757,7 +518,7 @@ impl RenderOnce for TrayTrigger {
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .bg(self.badge)
+                    .bg(ui::petal())
                     .text_color(ui::well().opacity(1.))
                     .text_size(px(9.))
                     .font_weight(FontWeight::BOLD)

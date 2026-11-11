@@ -148,9 +148,18 @@ impl Workspace {
                 SessionEvent::DesignCanvas(canvas) => {
                     this.show_design_canvas(canvas.clone(), id, window, cx)
                 }
-                SessionEvent::Device(intent) => this.follow_device(intent.clone(), id, window, cx),
+                SessionEvent::Device(intent) => {
+                    // A device an agent starts itself still shows in the app.
+                    if crate::features::devices::hub(cx).read(cx).prefs().enabled {
+                        let intent = intent.clone();
+                        this.devices
+                            .update(cx, |panel, cx| panel.follow(intent, cx));
+                    }
+                }
                 SessionEvent::DeviceCommand(command) => {
-                    this.device_activity(id, command.clone(), cx)
+                    let command = command.clone();
+                    this.devices
+                        .update(cx, |panel, cx| panel.activity(command, cx));
                 }
                 SessionEvent::OpenWeb(url) => {
                     this.open_web(url.clone(), Some(id), true, window, cx)

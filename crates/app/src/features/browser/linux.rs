@@ -61,10 +61,17 @@ pub(super) struct NativeView {
 }
 
 impl NativeView {
-    pub(super) fn new(host: Host, url: &str, background: (u8, u8, u8, u8)) -> Result<Self, String> {
+    pub(super) fn new(
+        host: Host,
+        url: &str,
+        background: (u8, u8, u8, u8),
+        script: Option<&str>,
+    ) -> Result<Self, String> {
         GTK.clone()?;
         let webview = wry::WebViewBuilder::new()
             .with_url(url)
+            // Runs before the page's own scripts (a device panel names its device).
+            .with_initialization_script(script.unwrap_or_default())
             .with_background_color(background)
             .with_visible(false)
             .build_as_child(&host)
@@ -94,3 +101,7 @@ impl NativeView {
         let _ = self.webview.reload();
     }
 }
+
+/// The page lives in its own native window here, which gives the keyboard
+/// back when the app's window is clicked.
+pub(super) fn reclaim_keyboard(_window: &Window) {}
