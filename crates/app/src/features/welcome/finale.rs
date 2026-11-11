@@ -10,6 +10,7 @@ use gpui_kit::component::{h_flex, v_flex};
 use gpui_kit::*;
 
 use crate::shared::banner::{BannerConfig, banner};
+use crate::shared::kisses::{HEART, LIPS, noise, paint_sprite};
 use crate::shared::ui;
 
 /// From Continue to the app.
@@ -37,20 +38,6 @@ const WORD_AT: f32 = 3.0;
 const LETTER_GAP: f32 = 0.11;
 const WORD: &str = "Sexyyyy";
 
-/// Pixel lips: `#` the lips, `o` the line between them.
-const LIPS: [&str; 6] = [
-    "..###.###..",
-    ".#########.",
-    "###########",
-    "#ooooooooo#",
-    ".#########.",
-    "..#######..",
-];
-/// A pixel heart.
-const HEART: [&str; 6] = [
-    ".##.##.", "#######", "#######", ".#####.", "..###..", "...#...",
-];
-
 fn ease_out(t: f32) -> f32 {
     1. - (1. - t.clamp(0., 1.)).powi(3)
 }
@@ -58,44 +45,6 @@ fn ease_out(t: f32) -> f32 {
 fn smoothstep(t: f32) -> f32 {
     let t = t.clamp(0., 1.);
     t * t * (3. - 2. * t)
-}
-
-/// A stable pseudo-random value in 0..1 for kiss `i`'s `salt`.
-fn noise(i: usize, salt: u32) -> f32 {
-    let mut x = (i as u32).wrapping_mul(0x9E37_79B9) ^ salt.wrapping_mul(0x85EB_CA6B);
-    x ^= x >> 15;
-    x = x.wrapping_mul(0x2C1B_3C6D);
-    x ^= x >> 12;
-    (x & 0xFFFF) as f32 / 65535.
-}
-
-/// Paint `sprite` centered on `center`, `dot` px per pixel.
-fn paint_sprite(
-    window: &mut Window,
-    sprite: &[&str],
-    center: Point<Pixels>,
-    dot: f32,
-    body: Hsla,
-    line: Hsla,
-) {
-    let rows = sprite.len() as f32;
-    let cols = sprite[0].len() as f32;
-    let left = center.x - px(cols * dot / 2.);
-    let top = center.y - px(rows * dot / 2.);
-    for (y, row) in sprite.iter().enumerate() {
-        for (x, cell) in row.chars().enumerate() {
-            let color = match cell {
-                '#' => body,
-                'o' => line,
-                _ => continue,
-            };
-            let origin = point(left + px(x as f32 * dot), top + px(y as f32 * dot));
-            window.paint_quad(fill(
-                Bounds::new(origin, size(px(dot * 0.9), px(dot * 0.9))),
-                color,
-            ));
-        }
-    }
 }
 
 /// The kisses the rose blows: each leaves the rose, floats up swaying,
