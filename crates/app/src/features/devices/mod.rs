@@ -21,8 +21,8 @@ use gpui_kit::*;
 
 use crate::shared::floating::{self, CardState};
 use crate::shared::ui;
-pub(crate) use tools::simctl_path;
 use tools::{Launched, Tools};
+pub(crate) use tools::{android_tool_dirs, simctl_path};
 
 /// The card's place when it opens: a phone-shaped column at the bottom-right.
 /// Docking scales it.

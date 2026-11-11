@@ -75,7 +75,7 @@ It is used by `pi_package` (to find `@earendil-works/pi-coding-agent`) and by `L
 | --- | --- |
 | `login_shell_path()` (Unix only) | Runs `$SHELL -l -i -c "printf '__GENTLE_PATH_START__%s__GENTLE_PATH_END__' \"$PATH\""` with a 5 s limit; the markers isolate the value from whatever the rc files print (nvm, fnm, mise). On Windows it returns `None`. |
 | `base_path()` | Login shell PATH first, then the inherited one without duplicates. Computed once (`BASE_PATH`). |
-| `set_extra_path(dirs)` | Folders that go before everything else. `setup::apply_toolchain_path` puts the toolchains installed by the app here (`<data dir>/gentle-shell-gpui/toolchain/{node,npm-global,bin,maestro/bin,music/bin}` and the Java runtime's `bin`). |
+| `set_extra_path(dirs)` | Folders that go before everything else. `setup::apply_toolchain_path` puts the toolchains installed by the app here (`<data dir>/gentle-shell-gpui/toolchain/{node,npm-global,bin,maestro/bin,music/bin}` and the Java runtime's `bin`), plus the Android SDK's `emulator` and `platform-tools` when an SDK is installed (`devices::android_tool_dirs`: Android Studio doesn't put them on the PATH, so an agent asked to start an emulator wouldn't find them). |
 | `search_path()` / `child_path()` | Extra + base. This is the PATH every child receives. |
 | `find_program(name)`, `resolve_node(cwd)` | Lookup on that PATH. |
 | `forget_cached()` | Forgets the login PATH and the cached `--version` outputs; call it after installing something. |

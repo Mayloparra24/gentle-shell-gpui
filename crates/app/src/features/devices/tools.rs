@@ -49,10 +49,7 @@ pub struct Launched {
 impl Tools {
     /// Find the tools on the PATH and under the usual SDK install folders.
     pub fn detect() -> Self {
-        let sdk = sdk_roots().into_iter().find(|dir| {
-            dir.join("platform-tools").join(exe("adb")).is_file()
-                || dir.join("emulator").join(exe("emulator")).is_file()
-        });
+        let sdk = find_sdk();
         let from_sdk = |folder: &str, name: &str| {
             sdk.as_ref()
                 .map(|sdk| sdk.join(folder).join(exe(name)))
@@ -511,6 +508,24 @@ fn port_free(port: u16) -> bool {
     let console = std::net::TcpListener::bind(("127.0.0.1", port)).is_ok();
     let adb = std::net::TcpListener::bind(("127.0.0.1", port + 1)).is_ok();
     console && adb
+}
+
+/// The first Android SDK folder that has adb or the emulator.
+fn find_sdk() -> Option<PathBuf> {
+    sdk_roots().into_iter().find(|dir| {
+        dir.join("platform-tools").join(exe("adb")).is_file()
+            || dir.join("emulator").join(exe("emulator")).is_file()
+    })
+}
+
+/// The SDK's `emulator` and `platform-tools` folders, for the agent's PATH:
+/// Android Studio installs them (on Windows under `%LOCALAPPDATA%\Android\Sdk`)
+/// without putting either on the PATH, so an agent asked to start an
+/// emulator wouldn't find `emulator` or `adb`.
+pub(crate) fn android_tool_dirs() -> Vec<PathBuf> {
+    find_sdk()
+        .map(|sdk| vec![sdk.join("emulator"), sdk.join("platform-tools")])
+        .unwrap_or_default()
 }
 
 fn sdk_roots() -> Vec<PathBuf> {
