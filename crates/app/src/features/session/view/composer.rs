@@ -1,6 +1,9 @@
 //! The composer: context line, attachments, text area and its bottom bar.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// The focus pulse's length.
+const PULSE: Duration = Duration::from_millis(460);
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -206,27 +209,62 @@ impl SessionView {
             )
     }
 
-    /// A small pulse when the composer takes the keyboard: the box swells
-    /// outward on every side and settles back, inside a margin it keeps for
-    /// that, so nothing around it moves. Only emphasis: nothing stays bigger.
-    fn pulse_on_focus(&self, composer_box: Div) -> AnyElement {
-        /// The room the pulse grows into, on every side.
-        const ROOM: f32 = 6.;
-        let frame = div().p(px(ROOM));
-        if self.composer_pulses == 0 {
-            return frame.child(composer_box).into_any_element();
-        }
-        frame
-            .child(composer_box.with_animation(
-                ("composer-pulse", self.composer_pulses as usize),
-                Animation::new(Duration::from_millis(460)),
-                move |el, t| {
-                    // Out and back along one smooth arc.
-                    let grow = ROOM * (std::f32::consts::PI * ease_in_out(t)).sin();
-                    el.m(px(-grow))
-                },
-            ))
-            .into_any_element()
+    /// Play the focus pulse: redraw every frame until it's over. Timed
+    /// from `composer_pulse` rather than `with_animation`, whose progress
+    /// is lost when the session view is reused from cache, which would
+    /// replay the pulse on every later redraw.
+    pub(in crate::features::session) fn start_composer_pulse(&mut self, cx: &mut Context<Self>) {
+        self.composer_pulse = Some(Instant::now());
+        self._pulse = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let Ok(going) = this.update(cx, |this, cx| {
+                    cx.notify();
+                    let going = this.composer_pulse.is_some_and(|at| at.elapsed() < PULSE);
+                    if !going {
+                        this.composer_pulse = None;
+                    }
+                    going
+                }) else {
+                    return;
+                };
+                if !going {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// The composer's box (background, border, shadow), drawn as a layer
+    /// behind its content. During the focus pulse it swells outward on
+    /// every side and settles back along one smooth arc. Only this layer
+    /// moves (it's absolute), so the text, the buttons and everything
+    /// around stay put, and nothing stays bigger.
+    fn composer_shell(&self) -> Div {
+        /// How far the pulse reaches past the box, on every side.
+        const REACH: f32 = 6.;
+        let t = self
+            .composer_pulse
+            .map(|at| (at.elapsed().as_secs_f32() / PULSE.as_secs_f32()).min(1.))
+            .unwrap_or(1.);
+        let out = px(-REACH * (std::f32::consts::PI * ease_in_out(t)).sin());
+        div()
+            .absolute()
+            .top(out)
+            .bottom(out)
+            .left(out)
+            .right(out)
+            .rounded_2xl()
+            .border_1()
+            .border_color(if self.composer_focused {
+                ui::petal().opacity(0.45)
+            } else {
+                ui::border_strong()
+            })
+            .bg(ui::surface())
+            .shadow_lg()
     }
 
     pub(super) fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -366,7 +404,8 @@ impl SessionView {
             })
             .child(div().flex_shrink_0().child(action_button));
 
-        let composer_box = v_flex()
+        let content = v_flex()
+            .relative()
             .w_full()
             .min_w_0()
             .overflow_hidden()
@@ -374,19 +413,15 @@ impl SessionView {
             .map(|d| if narrow { d.px_3() } else { d.px_4() })
             .pt_3()
             .pb_2()
-            .rounded_2xl()
-            .border_1()
-            .border_color(if self.composer_focused {
-                ui::petal().opacity(0.45)
-            } else {
-                ui::border_strong()
-            })
-            .bg(ui::surface())
-            .shadow_lg()
             .children(self.render_attachments(cx))
             .child(self.render_text_field(ready, cx))
             .child(bottom);
-        let composer_box = self.pulse_on_focus(composer_box);
+        let composer_box = div()
+            .relative()
+            .w_full()
+            .min_w_0()
+            .child(self.composer_shell())
+            .child(content);
 
         v_flex()
             .w_full()

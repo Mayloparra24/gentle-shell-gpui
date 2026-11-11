@@ -84,8 +84,10 @@ pub struct SessionView {
     composer: Entity<TextareaState>,
     /// The composer has the keyboard: its border takes the accent.
     composer_focused: bool,
-    /// Times the composer took the keyboard; each one plays its pulse.
-    composer_pulses: u64,
+    /// When the composer last took the keyboard: its pulse plays for
+    /// `PULSE` from then (see `composer_shell`), redrawn by `_pulse`.
+    composer_pulse: Option<std::time::Instant>,
+    _pulse: Task<()>,
     /// Images waiting to go with the next prompt; `[Image #N]` is the N-th.
     attachments: Vec<attachments::Attachment>,
     /// Decoded conversation images, by data hash.
@@ -163,7 +165,7 @@ impl SessionView {
                     InputEvent::Focus | InputEvent::Blur => {
                         this.composer_focused = matches!(event, InputEvent::Focus);
                         if this.composer_focused {
-                            this.composer_pulses += 1;
+                            this.start_composer_pulse(cx);
                         }
                         cx.notify();
                     }
@@ -218,7 +220,8 @@ impl SessionView {
             expanded: HashSet::new(),
             composer,
             composer_focused: false,
-            composer_pulses: 0,
+            composer_pulse: None,
+            _pulse: Task::ready(()),
             attachments: Vec::new(),
             image_cache: attachments::ImageCache::default(),
             extension: state::ExtensionUi::default(),
