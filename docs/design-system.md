@@ -79,6 +79,8 @@ All are argument-less functions in `crate::shared::ui` that return `Hsla`.
 
 `Palette::new(theme, clear)` receives the window transparency (`clear`, 0 = most solid glass, 1 = clearest; default `DEFAULT_TRANSPARENCY = 0.6`, adjustable with the Settings slider). Each glass surface lowers its alpha from a solid value down to a floor that keeps text readable (`fade(solid, floor)`); for example `panel` goes from 0.93 to 0.16 and `surface` from 0.94 to 0.4. `popover_bg` and `screen_bg` do not change.
 
+**OLED themes** (`Theme::oled`, today only *OLED Black*) ignore transparency: `window_bg`, `panel`, `well` and `screen` are opaque `#000000` so an OLED panel turns those pixels off, and cards, menus and user messages are opaque layers just above black. Don't add tints or glows that would light large areas in that theme.
+
 ### gpui-component
 
 `ui::apply_theme(cx)` switches `ThemeMode` to light or dark according to `Palette::light` and rewrites the gpui-component colors, so the stock components already match:

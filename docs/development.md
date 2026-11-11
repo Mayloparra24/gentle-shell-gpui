@@ -76,7 +76,7 @@ Everything the app stores lives under `dirs::data_dir()/gentle-shell-gpui/`:
 | `workspaces.json` | `features/workspaces/store.rs` |
 | `settings.json` | `shared/themes.rs` (`store_path`): theme, transparency and the `onboarding` key (`{ "done": true, "version": … }`) that decides the first run (`features/setup/mod.rs`: `first_run`, `mark_done`). |
 | `app-update.json` | `features/app_update/cache.rs` |
-| `toolchain/` | `features/setup/mod.rs` (Node and npm prefix installed by the app) |
+| `toolchain/` | `features/setup/mod.rs` (Node, npm prefix, Engram, Maestro and its Java installed by the app) |
 
 `dirs::data_dir()` is `~/Library/Application Support` on macOS, `$XDG_DATA_HOME` or `~/.local/share` on Linux and `%APPDATA%` on Windows. On macOS and Linux it is derived from `HOME`.
 

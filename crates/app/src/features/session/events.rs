@@ -15,6 +15,7 @@ use crate::features::browser::CanvasNotice;
 use crate::features::git;
 use gentle_core::tools;
 use gentle_core::transcript::{self, NoticeLevel};
+use gentle_core::web;
 
 /// Least time between working-tree refreshes a turn's tool calls trigger.
 const GIT_REFRESH_INTERVAL: Duration = Duration::from_millis(1500);
@@ -88,7 +89,22 @@ impl SessionView {
                     self.transcript.shell_output(index, delta);
                 }
             }
-            Some("tool_execution_start") => self.activity.tool_started(event),
+            Some("tool_execution_start") => {
+                self.activity.tool_started(event);
+                // An agent booting or driving a device from its shell shows up
+                // in the window's instance tray. Launching from the card
+                // itself does not pass through here.
+                if matches!(event["toolName"].as_str(), Some("bash" | "bash_background"))
+                    && let Some(command) = event["args"]["command"].as_str()
+                {
+                    if let Some(intent) = gentle_core::devices::launch_intent(command) {
+                        cx.emit(SessionEvent::Device(intent));
+                    }
+                    if let Some(command) = gentle_core::devices::device_command(command) {
+                        cx.emit(SessionEvent::DeviceCommand(command));
+                    }
+                }
+            }
             Some("tool_execution_end") => {
                 let details = &event["result"]["details"];
                 if event["toolName"] == "todo"
@@ -101,6 +117,13 @@ impl SessionView {
                     && let Some(canvas) = design_canvas(details)
                 {
                     cx.emit(SessionEvent::DesignCanvas(canvas));
+                }
+                if matches!(
+                    event["toolName"].as_str(),
+                    Some("bash" | "bash_background" | "monitor")
+                ) && let Some(url) = web::loopback_url(&tool_output(event))
+                {
+                    cx.emit(SessionEvent::AgentWeb(url));
                 }
             }
             Some("message_end") if event["message"]["role"] == "custom" => {
@@ -166,8 +189,13 @@ impl SessionView {
                 notify_type,
             } => {
                 let level = notice_level(notify_type.as_deref());
-                if let Some(canvas) = crate::features::browser::canvas_notice(&message) {
-                    cx.emit(SessionEvent::DesignCanvas(canvas));
+                match crate::features::browser::canvas_notice(&message) {
+                    Some(canvas) => cx.emit(SessionEvent::DesignCanvas(canvas)),
+                    None => {
+                        if let Some(url) = web::loopback_url(&message) {
+                            cx.emit(SessionEvent::AgentWeb(url));
+                        }
+                    }
                 }
                 let error = level == NoticeLevel::Error;
                 // Usage warnings repeat every turn: keep them as a composer chip.
@@ -368,6 +396,27 @@ fn queued_count(event: &Value) -> usize {
     count("steering") + count("followUp")
 }
 
+/// The text a shell tool's result carries: the command's output.
+fn tool_output(event: &Value) -> String {
+    let mut out = String::new();
+    match &event["result"]["content"] {
+        serde_json::Value::Array(parts) => {
+            for part in parts {
+                if let Some(text) = part["text"].as_str() {
+                    out.push_str(text);
+                    out.push('\n');
+                }
+            }
+        }
+        serde_json::Value::String(text) => out.push_str(text),
+        _ => {}
+    }
+    if let Some(output) = event["result"]["output"].as_str() {
+        out.push_str(output);
+    }
+    out
+}
+
 /// What a `gentle_design` result says about its canvas.
 fn design_canvas(details: &Value) -> Option<CanvasNotice> {
     if details["stopped"] == true {
@@ -404,6 +453,7 @@ mod tests {
 
     use super::{
         GIT_REFRESH_INTERVAL, design_canvas, git_refresh_wait, notice_level, queued_count,
+        tool_output,
     };
     use crate::features::browser::CanvasNotice;
     use crate::features::session::state::TurnActivity;
@@ -428,6 +478,16 @@ mod tests {
         let event = json!({"type": "queue_update", "steering": ["a"], "followUp": ["b", "c"]});
         assert_eq!(queued_count(&event), 3);
         assert_eq!(queued_count(&json!({"type": "queue_update"})), 0);
+    }
+
+    #[test]
+    fn shell_results_expose_their_text_for_url_detection() {
+        let event = json!({
+            "type": "tool_execution_end",
+            "result": {"content": [{"type": "text", "text": "Local: http://localhost:5173/"}]}
+        });
+        assert!(tool_output(&event).contains("http://localhost:5173/"));
+        assert_eq!(tool_output(&json!({"result": {}})), "");
     }
 
     #[test]

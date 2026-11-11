@@ -122,6 +122,22 @@ impl SessionView {
         }
     }
 
+    /// `/web <url>`: show a page in the in-app browser instead of sending the
+    /// command to Gentle Shell.
+    fn open_web(&mut self, url: String, cx: &mut Context<Self>) {
+        let url = url.trim();
+        if url.is_empty() {
+            self.note("Usage: /web <url>".to_string(), cx);
+        } else if !(url.starts_with("http://") || url.starts_with("https://")) {
+            self.note(
+                "Only http:// and https:// URLs can open here.".to_string(),
+                cx,
+            );
+        } else {
+            cx.emit(SessionEvent::OpenWeb(url.to_string()));
+        }
+    }
+
     fn run_builtin(&mut self, builtin: builtins::Builtin, cx: &mut Context<Self>) {
         match builtin {
             builtins::Builtin::Compact(instructions) => self.compact(instructions, cx),
@@ -138,6 +154,7 @@ impl SessionView {
             builtins::Builtin::Copy => self.copy_last_answer(cx),
             builtins::Builtin::Export(path) => self.export_html(path, cx),
             builtins::Builtin::Reload => self.reload(cx),
+            builtins::Builtin::Web(url) => self.open_web(url, cx),
         }
     }
 

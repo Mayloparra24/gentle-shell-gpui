@@ -79,7 +79,7 @@ fn round_corners(webview: &wry::WebView) {
     let view = webview.webview();
     view.setWantsLayer(true);
     if let Some(layer) = view.layer() {
-        layer.setCornerRadius(super::BODY_RADIUS as f64);
+        layer.setCornerRadius(crate::shared::floating::BODY_RADIUS as f64);
         layer.setMasksToBounds(true);
     }
 }

@@ -60,7 +60,7 @@ pub fn launcher() -> Result<Launcher, String> {
 }
 
 /// Launcher options (home selectors from `GENTLE_SHELL_ARGS`) that precede a subcommand.
-fn launcher_command(spec: &pi_rpc::LaunchSpec, sub: &[&str]) -> Command {
+pub(super) fn launcher_command(spec: &pi_rpc::LaunchSpec, sub: &[&str]) -> Command {
     let mut command = pi_rpc::command(&spec.program);
     command
         .args(spec.args.iter().take_while(|a| *a != "--mode"))

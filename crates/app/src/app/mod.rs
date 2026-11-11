@@ -22,6 +22,7 @@ use crate::{
 pub fn run(
     folder: Option<PathBuf>,
     prompt: Option<String>,
+    url: Option<String>,
     requests: async_channel::Receiver<instance::OpenRequest>,
 ) {
     gpui_kit::application()
@@ -61,8 +62,9 @@ pub fn run(
             };
             integration::register(cx);
             let (handle, workspace) = gpui_kit::open_window(options, cx, |window, cx| {
-                let workspace =
-                    cx.new(|cx| Workspace::new(folder.clone(), prompt.clone(), window, cx));
+                let workspace = cx.new(|cx| {
+                    Workspace::new(folder.clone(), prompt.clone(), url.clone(), window, cx)
+                });
                 integration::attach_sidebar(&workspace, window, cx);
                 workspace
             })
@@ -73,7 +75,7 @@ pub fn run(
                     let _ = handle.update(cx, |_, window, cx| {
                         window.activate_window();
                         workspace.update(cx, |w, cx| {
-                            w.open_request(request.folder, request.prompt, window, cx)
+                            w.open_request(request.folder, request.prompt, request.url, window, cx)
                         });
                     });
                     cx.update(|cx| cx.activate(true));

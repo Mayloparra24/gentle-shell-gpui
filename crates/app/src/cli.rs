@@ -1,4 +1,4 @@
-//! Command line: `gentle-shell-gpui [FOLDER] [-p|--prompt TEXT]`.
+//! Command line: `gentle-shell-gpui [FOLDER] [-p|--prompt TEXT] [--open-url URL]`.
 
 use std::path::PathBuf;
 
@@ -6,17 +6,26 @@ use std::path::PathBuf;
 pub struct Cli {
     pub folder: Option<PathBuf>,
     pub prompt: Option<String>,
+    /// `--open-url URL`: show a page in the running app's browser.
+    pub url: Option<String>,
 }
 
 pub fn parse_cli() -> Cli {
     let mut cli = Cli {
         folder: None,
         prompt: None,
+        url: None,
     };
     let mut args = std::env::args_os().skip(1);
     while let Some(arg) = args.next() {
         if arg == "-p" || arg == "--prompt" {
             cli.prompt = args.next().map(|p| p.to_string_lossy().into_owned());
+        } else if arg == "--open-url" || arg == "--url" {
+            cli.url = Some(
+                args.next()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+            );
         } else if cli.folder.is_none() {
             cli.folder = Some(PathBuf::from(arg));
         }

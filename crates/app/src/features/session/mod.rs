@@ -48,9 +48,20 @@ pub enum SessionEvent {
     OpenScreen(gentle_core::commands::Screen),
     /// The thinking level was set to `max`: the window plays its surge.
     MaxEffort,
-    /// Gentle Design's canvas opened, refreshed or stopped: the window shows
-    /// it in its in-app browser.
+    /// Gentle Design's canvas opened, refreshed or stopped: the window keeps
+    /// it in its instance tray (or reloads the card already showing it).
     DesignCanvas(crate::features::browser::CanvasNotice),
+    /// A shell tool is starting an emulator or simulator: the window follows
+    /// that device in its instance tray, without opening a card.
+    Device(gentle_core::devices::LaunchIntent),
+    /// A shell tool drove a device (adb, simctl, Maestro…): the tray shows it
+    /// as what the agent is doing with that device.
+    DeviceCommand(gentle_core::devices::DeviceCommand),
+    /// The user asked for a page (`/web`): the window shows it in a card.
+    OpenWeb(String),
+    /// A tool printed a local web app's URL: the window keeps it in its
+    /// instance tray until the user looks.
+    AgentWeb(String),
 }
 
 /// What the window reads from a tab, to emit [`SessionEvent::ChromeChanged`]

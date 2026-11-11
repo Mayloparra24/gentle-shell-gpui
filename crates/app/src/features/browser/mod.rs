@@ -1,16 +1,18 @@
 //! The in-app browser: a floating card over the window that embeds the
-//! system's web view (WKWebView as a child view, macOS only), for Gentle
-//! Design's live canvas. It sits at the bottom-right by default; drag its
-//! header to move it, any edge or corner to resize it, or maximize it. The
-//! canvas reloads itself as artboards change, so the card shows the design
-//! in real time.
+//! system's web view (WKWebView on macOS, WebView2 on Windows, WebKitGTK on
+//! Linux). It shows Gentle Design's live canvas and any other http(s) page,
+//! opened with `gentle-open`, `/web` or a loopback URL printed by a tool.
+//! Pages an agent opens wait in the window's instance tray; the native view
+//! (and its web process) only exists while the card is shown. A lone card
+//! sits at the bottom-right by default; multiple cards are tiled by the
+//! workspace. Drag its header to move it, any edge or corner to resize it, or
+//! maximize it. The canvas reloads itself as artboards change, so the card
+//! shows the design in real time.
 //!
 //! The web view is a native view above everything GPUI draws, so it hides
 //! while a screen covers the window. It stays up while the card is dragged:
 //! AppKit keeps sending the drag to the view the mouse went down in.
 
-use std::cell::Cell;
-use std::rc::Rc;
 use std::time::Duration;
 
 use gpui_kit::assets::IconName;
@@ -19,7 +21,11 @@ use gpui_kit::component::{Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
+use crate::shared::floating::{self, CardState, DragKind};
 use crate::shared::ui;
+
+mod tool;
+pub use tool::install_open_tool;
 
 // The native web view, one module per system with the same interface:
 // `host` (the window to build in, taken during a frame), `NativeView::{new,
@@ -35,7 +41,7 @@ mod native;
 #[path = "windows.rs"]
 mod native;
 
-/// How often GTK's loop is pumped while the card is open (Linux).
+/// How often GTK's loop is pumped while a native view exists (Linux).
 const PUMP_EVERY: Duration = Duration::from_millis(8);
 
 /// `bounds` (window coordinates) as `wry` takes them.
@@ -113,127 +119,48 @@ fn design_slug(url: &str) -> Option<&str> {
     path.split('/').next().filter(|slug| !slug.is_empty())
 }
 
-// ── Geometry ────────────────────────────────────────────────────────────────
-
-/// The card's place, anchored to the window's bottom-right so it stays put
-/// when the window resizes: margins from the right and bottom, and its size.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Frame {
-    right: f32,
-    bottom: f32,
-    w: f32,
-    h: f32,
+/// A generic web page's title: the host, without the scheme or path.
+fn host_label(url: &str) -> String {
+    let rest = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    let host = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    if host.is_empty() {
+        "Web".to_string()
+    } else {
+        host.to_string()
+    }
 }
 
-const DEFAULT_FRAME: Frame = Frame {
+/// The card's place when it opens: bottom-right. Docking scales it.
+pub const DEFAULT_FRAME: floating::Frame = floating::Frame {
     right: 16.,
     bottom: 16.,
     w: 560.,
     h: 380.,
 };
-const MIN_W: f32 = 320.;
-const MIN_H: f32 = 220.;
-/// Gap around a maximized card; the title bar stays clear.
-const MAX_INSET: f32 = 10.;
-const TITLE_BAR: f32 = 36.;
-/// The header you drag to move the card.
-const HEADER: f32 = 38.;
-/// The grab band along each edge, inside the card.
-const GRIP: f32 = 6.;
-/// The body's corner radius: the card's 18 px less the grip inset, so its
-/// corners follow the card's.
-const BODY_RADIUS: f32 = 12.;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Edges {
-    left: bool,
-    top: bool,
-    right: bool,
-    bottom: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DragKind {
-    Move,
-    Resize(Edges),
-}
-
-#[derive(Clone, Copy)]
-struct Drag {
-    kind: DragKind,
-    start: Point<Pixels>,
-    frame: Frame,
-}
-
-/// `frame` after dragging by (`dx`, `dy`) in a `w` × `h` area. Edges you
-/// don't drag stay where they were; the card keeps a minimum size and stays
-/// inside the area.
-fn dragged(frame: Frame, kind: DragKind, dx: f32, dy: f32, (aw, ah): (f32, f32)) -> Frame {
-    let mut next = frame;
-    match kind {
-        DragKind::Move => {
-            next.right = frame.right - dx;
-            next.bottom = frame.bottom - dy;
-        }
-        DragKind::Resize(edges) => {
-            // The far edges in area coordinates, which a resize keeps fixed.
-            let left = aw - frame.right - frame.w;
-            let top = ah - frame.bottom - frame.h;
-            if edges.left {
-                next.w = (frame.w - dx).clamp(MIN_W, (aw - frame.right).max(MIN_W));
-            }
-            if edges.right {
-                next.w = (frame.w + dx).clamp(MIN_W, (aw - left).max(MIN_W));
-                next.right = aw - left - next.w;
-            }
-            if edges.top {
-                next.h = (frame.h - dy).clamp(MIN_H, (ah - frame.bottom).max(MIN_H));
-            }
-            if edges.bottom {
-                next.h = (frame.h + dy).clamp(MIN_H, (ah - top).max(MIN_H));
-                next.bottom = ah - top - next.h;
-            }
-        }
-    }
-    fitted(next, (aw, ah))
-}
-
-/// `frame` kept inside a `w` × `h` area (the window may have shrunk).
-fn fitted(frame: Frame, (aw, ah): (f32, f32)) -> Frame {
-    if aw <= 0. || ah <= 0. {
-        return frame;
-    }
-    let w = frame.w.min(aw).max(MIN_W.min(aw));
-    let h = frame.h.min(ah - TITLE_BAR).max(MIN_H.min(ah));
-    Frame {
-        w,
-        h,
-        right: frame.right.clamp(0., (aw - w).max(0.)),
-        bottom: frame.bottom.clamp(0., (ah - TITLE_BAR - h).max(0.)),
-    }
-}
 
 // ── The panel ───────────────────────────────────────────────────────────────
 
 pub enum BrowserEvent {
-    Close,
+    /// The card's button: send it to the instance tray.
+    Hide,
 }
 
 pub struct BrowserPanel {
     url: String,
-    frame: Frame,
-    maximized: bool,
+    /// What the header calls this page. `None` derives it from the URL (the
+    /// host), so any web app can use the card, not only Gentle Design.
+    label: Option<String>,
+    card: CardState,
     /// A screen covers the window: the native view must not show over it.
     covered: bool,
-    drag: Option<Drag>,
-    /// The window area the card lives in, as last laid out.
-    area: Rc<Cell<(f32, f32)>>,
+    /// The card is in the window's instance tray: no native view exists.
+    hidden: bool,
     /// The native web view, created after the card is first laid out.
     view: Option<native::NativeView>,
     /// The view is being built (see `place_webview`).
     creating: bool,
     failed: Option<String>,
-    /// Pumps GTK's loop while the card is open (Linux).
+    /// Pumps GTK's loop while a native view exists (Linux).
     _pump: Option<Task<()>>,
     /// Re-places the view when the window moves (Windows hosts it in a popup
     /// positioned in screen coordinates).
@@ -243,33 +170,40 @@ pub struct BrowserPanel {
 impl EventEmitter<BrowserEvent> for BrowserPanel {}
 
 impl BrowserPanel {
-    pub fn new(url: String, cx: &mut Context<Self>) -> Self {
-        let pump = native::NEEDS_PUMP.then(|| {
-            cx.spawn(async move |_, cx| {
-                loop {
-                    cx.background_executor().timer(PUMP_EVERY).await;
-                    native::pump();
-                }
-            })
-        });
+    pub fn new(url: String, label: Option<String>) -> Self {
         Self {
             url,
-            frame: DEFAULT_FRAME,
-            maximized: false,
+            label,
+            card: CardState::new(DEFAULT_FRAME),
             covered: false,
-            drag: None,
-            area: Rc::new(Cell::new((0., 0.))),
+            hidden: false,
             view: None,
             creating: false,
             failed: None,
-            _pump: pump,
+            _pump: None,
             _window_moves: None,
         }
     }
 
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Put the card in a stage slot; see [`crate::shared::floating::CardState`].
+    pub fn set_frame(&mut self, frame: floating::Frame, cx: &mut Context<Self>) {
+        self.card.set_frame(frame);
+        cx.notify();
+    }
+
+    /// Whether the card is showing Gentle Design's canvas (so a canvas
+    /// `Stopped` notice may close it) rather than a generic web app.
+    pub fn is_design(&self) -> bool {
+        self.label.is_some()
+    }
+
     /// Show `url`, or reload when it is already showing (the canvas was
     /// refreshed).
-    pub fn navigate(&mut self, url: String, cx: &mut Context<Self>) {
+    pub fn navigate(&mut self, url: String, label: Option<String>, cx: &mut Context<Self>) {
         if let Some(view) = &self.view {
             if url == self.url {
                 view.reload();
@@ -278,6 +212,7 @@ impl BrowserPanel {
             }
         }
         self.url = url;
+        self.label = label;
         cx.notify();
     }
 
@@ -289,6 +224,30 @@ impl BrowserPanel {
         }
     }
 
+    /// The card went to the instance tray: drop the native view, and the web
+    /// process behind it, so a hidden page costs nothing. Showing it again
+    /// builds a fresh view on [`Self::url`].
+    pub fn hide(&mut self, cx: &mut Context<Self>) {
+        self.hidden = true;
+        self.view = None;
+        self._pump = None;
+        cx.notify();
+    }
+
+    pub fn show(&mut self, cx: &mut Context<Self>) {
+        self.hidden = false;
+        cx.notify();
+    }
+
+    /// What the header and the tray call this page.
+    pub fn title(&self) -> String {
+        match (&self.label, design_slug(&self.url)) {
+            (Some(_), Some(slug)) => format!("Design · {slug}"),
+            (Some(label), None) => label.clone(),
+            (None, _) => host_label(&self.url),
+        }
+    }
+
     fn reload(&mut self, cx: &mut Context<Self>) {
         if let Some(view) = &self.view {
             view.reload();
@@ -297,39 +256,23 @@ impl BrowserPanel {
     }
 
     fn toggle_maximized(&mut self, cx: &mut Context<Self>) {
-        self.maximized = !self.maximized;
+        self.card.toggle_maximized();
         cx.notify();
     }
 
     fn start_drag(&mut self, kind: DragKind, start: Point<Pixels>, cx: &mut Context<Self>) {
-        if self.maximized {
-            // Dragging a maximized card first restores it where it was.
-            if kind != DragKind::Move {
-                return;
-            }
-            self.maximized = false;
-        }
-        self.drag = Some(Drag {
-            kind,
-            start,
-            frame: self.frame,
-        });
+        self.card.start(kind, start);
         cx.notify();
     }
 
     fn drag_to(&mut self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some(drag) = &self.drag else { return };
-        let dx = (position.x - drag.start.x).as_f32();
-        let dy = (position.y - drag.start.y).as_f32();
-        let next = dragged(drag.frame, drag.kind, dx, dy, self.area.get());
-        if next != self.frame {
-            self.frame = next;
+        if self.card.drag_to(position) {
             cx.notify();
         }
     }
 
     fn end_drag(&mut self, cx: &mut Context<Self>) {
-        if self.drag.take().is_some() {
+        if self.card.end_drag() {
             cx.notify();
         }
     }
@@ -359,9 +302,13 @@ impl BrowserPanel {
         let background = page_background();
         cx.spawn(async move |this, cx| {
             let view = native::NativeView::new(host, &url, background);
-            // A card closed meanwhile drops the view, and its popup with it.
+            // A card closed meanwhile drops the view, and its popup with it;
+            // one sent to the tray meanwhile drops the view right here.
             let _ = this.update(cx, |panel, cx| {
                 panel.creating = false;
+                if panel.hidden {
+                    return;
+                }
                 match view {
                     Ok(view) => {
                         // The canvas moved on while the view was starting.
@@ -369,6 +316,16 @@ impl BrowserPanel {
                             view.load_url(&panel.url);
                         }
                         panel.view = Some(view);
+                        // GTK's loop only needs pumping while a view exists;
+                        // `hide` drops the pump with the view.
+                        if native::NEEDS_PUMP {
+                            panel._pump = Some(cx.spawn(async move |_, cx| {
+                                loop {
+                                    cx.background_executor().timer(PUMP_EVERY).await;
+                                    native::pump();
+                                }
+                            }));
+                        }
                     }
                     Err(error) => panel.failed = Some(error),
                 }
@@ -380,22 +337,22 @@ impl BrowserPanel {
     }
 
     fn header(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = match design_slug(&self.url) {
-            Some(slug) => format!("Design · {slug}"),
-            None => "Design canvas".into(),
+        let title = self.title();
+        let icon = if self.label.is_some() {
+            IconName::Palette
+        } else {
+            IconName::Globe
         };
         let address = self
             .url
             .trim_start_matches("http://")
-            .split('/')
-            .next()
-            .unwrap_or_default()
+            .trim_start_matches("https://")
             .to_string();
         let url = self.url.clone();
-        let maximized = self.maximized;
+        let maximized = self.card.maximized();
         h_flex()
             .id("browser-header")
-            .h(px(HEADER))
+            .h(px(floating::HEADER))
             .flex_shrink_0()
             .px_3()
             .gap_2()
@@ -411,7 +368,7 @@ impl BrowserPanel {
                     }
                 }),
             )
-            .child(Icon::new(IconName::Palette).small().text_color(ui::petal()))
+            .child(Icon::new(icon).small().text_color(ui::petal()))
             .child(
                 div()
                     .text_size(px(12.5))
@@ -467,9 +424,9 @@ impl BrowserPanel {
                         Button::new("browser-close")
                             .ghost()
                             .xsmall()
-                            .icon(Icon::new(IconName::X))
-                            .tooltip("Close")
-                            .on_click(cx.listener(|_, _, _, cx| cx.emit(BrowserEvent::Close))),
+                            .icon(Icon::new(IconName::Minus))
+                            .tooltip("Hide · it stays in the top bar")
+                            .on_click(cx.listener(|_, _, _, cx| cx.emit(BrowserEvent::Hide))),
                     ),
             )
     }
@@ -480,10 +437,10 @@ impl BrowserPanel {
         div()
             .flex_1()
             .min_h_0()
-            .mx(px(GRIP))
-            .mb(px(GRIP))
+            .mx(px(floating::GRIP))
+            .mb(px(floating::GRIP))
             .relative()
-            .rounded(px(BODY_RADIUS))
+            .rounded(px(floating::BODY_RADIUS))
             .bg(ui::well())
             .overflow_hidden()
             .child(
@@ -514,110 +471,10 @@ impl BrowserPanel {
 
     /// The bands along the card's edges and corners that resize it.
     fn grips(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let edge = |left, top, right, bottom| Edges {
-            left,
-            top,
-            right,
-            bottom,
-        };
-        let corner = GRIP * 2.;
-        [
-            (
-                "grip-l",
-                edge(true, false, false, false),
-                CursorStyle::ResizeLeftRight,
-            ),
-            (
-                "grip-r",
-                edge(false, false, true, false),
-                CursorStyle::ResizeLeftRight,
-            ),
-            (
-                "grip-t",
-                edge(false, true, false, false),
-                CursorStyle::ResizeUpDown,
-            ),
-            (
-                "grip-b",
-                edge(false, false, false, true),
-                CursorStyle::ResizeUpDown,
-            ),
-            (
-                "grip-tl",
-                edge(true, true, false, false),
-                CursorStyle::ResizeUpLeftDownRight,
-            ),
-            (
-                "grip-br",
-                edge(false, false, true, true),
-                CursorStyle::ResizeUpLeftDownRight,
-            ),
-            (
-                "grip-tr",
-                edge(false, true, true, false),
-                CursorStyle::ResizeUpRightDownLeft,
-            ),
-            (
-                "grip-bl",
-                edge(true, false, false, true),
-                CursorStyle::ResizeUpRightDownLeft,
-            ),
-        ]
-        .into_iter()
-        .map(|(id, edges, cursor)| {
-            let band = div().id(id).absolute().cursor(cursor);
-            let band = match (edges.left, edges.top, edges.right, edges.bottom) {
-                (true, false, false, false) => {
-                    band.left_0().top(px(corner)).bottom(px(corner)).w(px(GRIP))
-                }
-                (false, false, true, false) => band
-                    .right_0()
-                    .top(px(corner))
-                    .bottom(px(corner))
-                    .w(px(GRIP)),
-                (false, true, false, false) => {
-                    band.top_0().left(px(corner)).right(px(corner)).h(px(GRIP))
-                }
-                (false, false, false, true) => band
-                    .bottom_0()
-                    .left(px(corner))
-                    .right(px(corner))
-                    .h(px(GRIP)),
-                (true, true, ..) => band.left_0().top_0().size(px(corner)),
-                (_, _, true, true) => band.right_0().bottom_0().size(px(corner)),
-                (_, true, true, _) => band.right_0().top_0().size(px(corner)),
-                _ => band.left_0().bottom_0().size(px(corner)),
-            };
-            band.on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    cx.stop_propagation();
-                    this.start_drag(DragKind::Resize(edges), event.position, cx);
-                }),
-            )
-            .into_any_element()
+        floating::grips(&self.card, cx, "browser-grip", |this, kind, start, cx| {
+            this.start_drag(kind, start, cx)
         })
-        .collect()
     }
-}
-
-/// A card floating above the window: a wide soft ambient shadow, a tighter
-/// key shadow and a faint rose glow. Picked up (`lifted`, while dragged) it
-/// rises: everything spreads further and drops lower.
-fn floating_shadow(lifted: bool) -> Vec<BoxShadow> {
-    let lift = if lifted { 1.6 } else { 1. };
-    let shadow = |alpha: f32, y: f32, blur: f32, spread: f32, color: Hsla| BoxShadow {
-        color: color.opacity(alpha),
-        offset: point(px(0.), px(y * lift)),
-        blur_radius: px(blur * lift),
-        spread_radius: px(spread),
-        inset: false,
-    };
-    vec![
-        shadow(0.5, 28., 70., -6., ui::backdrop()),
-        shadow(0.45, 10., 24., -2., ui::backdrop()),
-        shadow(if lifted { 0.16 } else { 0.1 }, 0., 40., 2., ui::petal()),
-    ]
 }
 
 impl Render for BrowserPanel {
@@ -625,91 +482,36 @@ impl Render for BrowserPanel {
         if self._window_moves.is_none() {
             self._window_moves = Some(cx.observe_window_bounds(window, |_, _, cx| cx.notify()));
         }
-        let area = self.area.clone();
-        let size = area.get();
-        if size.0 > 0. && !self.maximized {
-            self.frame = fitted(self.frame, size);
-        }
+        self.card.fit();
         let card = ui::island(cx)
             .absolute()
             .flex()
             .flex_col()
             .occlude()
-            .shadow(floating_shadow(self.drag.is_some()))
-            .map(|card| {
-                if self.maximized {
-                    card.left(px(MAX_INSET))
-                        .right(px(MAX_INSET))
-                        .top(px(TITLE_BAR + MAX_INSET / 2.))
-                        .bottom(px(MAX_INSET))
-                } else {
-                    card.right(px(self.frame.right))
-                        .bottom(px(self.frame.bottom))
-                        .w(px(self.frame.w))
-                        .h(px(self.frame.h))
-                }
-            })
+            .shadow(floating::shadow(self.card.dragging()))
+            .map(|card| floating::position(&self.card, card))
             .child(self.header(cx))
             .child(self.body(cx))
-            .when(!self.maximized, |card| card.children(self.grips(cx)));
-        let dragging = self.drag.map(|drag| match drag.kind {
-            DragKind::Move => CursorStyle::ClosedHand,
-            DragKind::Resize(edges) => match (edges.left || edges.right, edges.top || edges.bottom)
-            {
-                (true, false) => CursorStyle::ResizeLeftRight,
-                (false, true) => CursorStyle::ResizeUpDown,
-                _ if edges.left == edges.top => CursorStyle::ResizeUpLeftDownRight,
-                _ => CursorStyle::ResizeUpRightDownLeft,
-            },
-        });
+            .children(self.grips(cx));
+        let drag_layer = floating::drag_layer(
+            &self.card,
+            cx,
+            "browser-drag",
+            |this, position, cx| this.drag_to(position, cx),
+            |this, cx| this.end_drag(cx),
+        );
         div()
             .absolute()
             .inset_0()
-            .child(
-                canvas(
-                    move |bounds, _, _| {
-                        area.set((bounds.size.width.as_f32(), bounds.size.height.as_f32()))
-                    },
-                    |_, _, _, _| {},
-                )
-                .absolute()
-                .inset_0(),
-            )
+            .child(floating::area_canvas(&self.card))
             .child(card)
-            // While dragging, a layer over the whole window follows the
-            // mouse, so a fast drag never slips off the band it started on.
-            .when_some(dragging, |layer, cursor| {
-                layer.child(
-                    div()
-                        .id("browser-drag")
-                        .absolute()
-                        .inset_0()
-                        .occlude()
-                        .cursor(cursor)
-                        .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                            this.drag_to(event.position, cx)
-                        }))
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.end_drag(cx)),
-                        )
-                        .on_mouse_up_out(
-                            MouseButton::Left,
-                            cx.listener(|this, _, _, cx| this.end_drag(cx)),
-                        ),
-                )
-            })
+            .when_some(drag_layer, |root, layer| root.child(layer))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        CanvasNotice, DEFAULT_FRAME, DragKind, Edges, Frame, MIN_H, MIN_W, TITLE_BAR,
-        canvas_notice, design_slug, dragged, fitted,
-    };
-
-    const AREA: (f32, f32) = (1400., 900.);
+    use super::{CanvasNotice, canvas_notice, design_slug, host_label};
 
     #[test]
     fn canvas_notices_come_from_gentle_design_messages() {
@@ -752,59 +554,7 @@ mod tests {
             Some("login")
         );
         assert_eq!(design_slug("http://127.0.0.1:1/tok/"), None);
-    }
-
-    fn edges(left: bool, top: bool, right: bool, bottom: bool) -> DragKind {
-        DragKind::Resize(Edges {
-            left,
-            top,
-            right,
-            bottom,
-        })
-    }
-
-    #[test]
-    fn dragging_moves_and_resizes_from_the_grabbed_edges_only() {
-        let f = DEFAULT_FRAME;
-        // Moving left and up grows the right and bottom margins.
-        let moved = dragged(f, DragKind::Move, -100., -50., AREA);
-        assert_eq!(
-            (moved.right, moved.bottom, moved.w, moved.h),
-            (116., 66., f.w, f.h)
-        );
-        // The left edge grows the card leftward; its right side stays.
-        let wider = dragged(f, edges(true, false, false, false), -200., 0., AREA);
-        assert_eq!((wider.w, wider.right), (f.w + 200., f.right));
-        // The right edge keeps the left side in place.
-        let left_side = AREA.0 - f.right - f.w;
-        let narrower = dragged(f, edges(false, false, true, false), -100., 0., AREA);
-        assert_eq!(narrower.w, f.w - 100.);
-        assert_eq!(AREA.0 - narrower.right - narrower.w, left_side);
-        // The top-left corner grows both ways.
-        let big = dragged(f, edges(true, true, false, false), -300., -200., AREA);
-        assert_eq!((big.w, big.h), (f.w + 300., f.h + 200.));
-        // Never below the minimum size.
-        let tiny = dragged(f, edges(true, true, false, false), 900., 900., AREA);
-        assert_eq!((tiny.w, tiny.h), (MIN_W, MIN_H));
-    }
-
-    #[test]
-    fn the_card_stays_inside_the_window() {
-        // Dragged past the window's edges, it stops at them.
-        let away = dragged(DEFAULT_FRAME, DragKind::Move, 500., 500., AREA);
-        assert_eq!((away.right, away.bottom), (0., 0.));
-        let up = dragged(DEFAULT_FRAME, DragKind::Move, -5000., -5000., AREA);
-        assert_eq!(up.right, AREA.0 - up.w);
-        assert_eq!(up.bottom, AREA.1 - TITLE_BAR - up.h);
-        // A window that shrank keeps the card whole.
-        let big = Frame {
-            right: 400.,
-            bottom: 300.,
-            w: 900.,
-            h: 600.,
-        };
-        let fit = fitted(big, (800., 500.));
-        assert!(fit.w <= 800. && fit.right + fit.w <= 800.);
-        assert!(fit.bottom + fit.h <= 500. - TITLE_BAR);
+        assert_eq!(host_label("http://localhost:3000/app"), "localhost:3000");
+        assert_eq!(host_label("https://example.com/"), "example.com");
     }
 }
