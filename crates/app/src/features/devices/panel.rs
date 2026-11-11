@@ -23,6 +23,11 @@ pub const DOCK_WIDTH: f32 = 400.;
 /// Stop waiting for a device an agent started itself after this long.
 const FOLLOW_FOR: Duration = Duration::from_secs(180);
 
+/// How long the docked column takes to slide in, and out.
+fn slide_length(opening: bool) -> Duration {
+    Duration::from_millis(if opening { 320 } else { 260 })
+}
+
 /// The floating card's place when it opens.
 const FLOAT_FRAME: floating::Frame = floating::Frame {
     right: 24.,
@@ -62,6 +67,10 @@ pub struct DevicePanel {
     mode: Mode,
     card: CardState,
     covered: bool,
+    /// The docked column sliding in (`true`) or out, since when. The web
+    /// view stays hidden meanwhile: GPUI can't clip a native view.
+    slide: Option<(Instant, bool)>,
+    _slide: Task<()>,
     /// The device list replaces the viewer (the + button, or no tabs).
     picking: bool,
     /// Devices agents start themselves (`emulator -avd`, `simctl boot`): a
@@ -86,6 +95,8 @@ impl DevicePanel {
             mode: Mode::Docked,
             card: CardState::new(FLOAT_FRAME),
             covered: false,
+            slide: None,
+            _slide: Task::ready(()),
             picking: false,
             following: Vec::new(),
             pending: Vec::new(),
@@ -108,15 +119,84 @@ impl DevicePanel {
         self.visible = true;
         self.picking |= self.tabs.is_empty();
         self.hub.update(cx, |hub, cx| hub.watch(true, cx));
+        self.start_slide(true, cx);
         self.sync(cx);
         cx.emit(DevicePanelEvent::Layout);
         cx.notify();
     }
 
+    /// Slide the docked column out, then hide it.
     pub fn hide(&mut self, cx: &mut Context<Self>) {
-        if !self.visible {
+        if !self.visible || self.slide.is_some_and(|(_, opening)| !opening) {
             return;
         }
+        if self.mode == Mode::Docked {
+            self.start_slide(false, cx);
+        } else {
+            self.finish_hide(cx);
+        }
+    }
+
+    /// Animate the docked column's width (see [`Self::slide_progress`]),
+    /// redrawing every frame until it lands; then the web view shows again,
+    /// or the panel finishes hiding.
+    fn start_slide(&mut self, opening: bool, cx: &mut Context<Self>) {
+        if self.mode != Mode::Docked {
+            return;
+        }
+        self.slide = Some((Instant::now(), opening));
+        self.apply_cover(cx);
+        self._slide = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let Ok(done) = this.update(cx, |this, cx| {
+                    cx.notify();
+                    let Some((at, opening)) = this.slide else {
+                        return true;
+                    };
+                    if at.elapsed() < slide_length(opening) {
+                        return false;
+                    }
+                    this.slide = None;
+                    if opening {
+                        this.apply_cover(cx);
+                    } else {
+                        this.finish_hide(cx);
+                    }
+                    true
+                }) else {
+                    return;
+                };
+                if done {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// The docked column's share of its width: 0 to 1 while sliding in, 1
+    /// to 0 while sliding out, eased.
+    fn slide_progress(&self) -> f32 {
+        let Some((at, opening)) = self.slide else {
+            return 1.;
+        };
+        let t = (at.elapsed().as_secs_f32() / slide_length(opening).as_secs_f32()).min(1.);
+        let k = ease_out_quint()(t);
+        if opening { k } else { 1. - k }
+    }
+
+    /// Whether the web view must hide: a screen covers the window, or the
+    /// column is sliding.
+    fn apply_cover(&mut self, cx: &mut Context<Self>) {
+        let covered = self.covered || self.slide.is_some();
+        if let Some((_, surface)) = self.tabs.get(self.active).and_then(|t| t.surface.as_ref()) {
+            surface.update(cx, |surface, cx| surface.set_covered(covered, cx));
+        }
+    }
+
+    fn finish_hide(&mut self, cx: &mut Context<Self>) {
         self.visible = false;
         // The web views (and their streams) go; the tabs stay.
         for tab in &mut self.tabs {
@@ -144,9 +224,7 @@ impl DevicePanel {
     /// A screen opened or closed over the window.
     pub fn set_covered(&mut self, covered: bool, cx: &mut Context<Self>) {
         self.covered = covered;
-        if let Some((_, surface)) = self.tabs.get(self.active).and_then(|t| t.surface.as_ref()) {
-            surface.update(cx, |surface, cx| surface.set_covered(covered, cx));
-        }
+        self.apply_cover(cx);
     }
 
     /// Show `device` in its tab (a new one, or the one it has), booting it
@@ -299,7 +377,7 @@ impl DevicePanel {
         }
         // The active tab's viewer, once its device runs and the panel shows.
         let visible = self.visible;
-        let covered = self.covered;
+        let covered = self.covered || self.slide.is_some();
         if let (Some(port), Some(tab)) = (port, self.tabs.get_mut(self.active)) {
             let ready = tab.device.state == State::Ready;
             let current = tab.surface.as_ref().map(|(p, _)| *p);
@@ -623,14 +701,21 @@ impl Render for DevicePanel {
             return div().into_any_element();
         }
         match self.mode {
+            // The column's width slides; its content keeps the full width
+            // inside, clipped, so nothing reflows while it moves.
             Mode::Docked => div()
-                .w(px(DOCK_WIDTH))
+                .w(px(DOCK_WIDTH * self.slide_progress()))
                 .flex_none()
                 .h_full()
                 .rounded_xl()
                 .bg(ui::panel())
                 .overflow_hidden()
-                .child(self.render_panel(cx))
+                .child(
+                    div()
+                        .w(px(DOCK_WIDTH))
+                        .h_full()
+                        .child(self.render_panel(cx)),
+                )
                 .into_any_element(),
             Mode::Floating => {
                 self.card.fit();
