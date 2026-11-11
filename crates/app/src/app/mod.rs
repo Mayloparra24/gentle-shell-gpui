@@ -70,6 +70,8 @@ pub fn run(
             })
             .expect("failed to open the Gentle Shell window");
             // Requests from later launches: bring this window forward and act on them.
+            // Weak, so quitting releases the workspace (and stops its tabs' backends).
+            let workspace = workspace.downgrade();
             cx.spawn(async move |cx| {
                 while let Ok(request) = requests.recv().await {
                     // An agent's `gentle-device` doesn't pull the window forward.
@@ -78,7 +80,7 @@ pub fn run(
                         if activate {
                             window.activate_window();
                         }
-                        workspace.update(cx, |w, cx| w.open_request(request, window, cx));
+                        let _ = workspace.update(cx, |w, cx| w.open_request(request, window, cx));
                     });
                     if activate {
                         cx.update(|cx| cx.activate(true));

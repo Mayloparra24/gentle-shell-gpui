@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use gpui_kit::{Image, ImageFormat};
+use gpui_kit::{App, Image, ImageFormat};
 use serde_json::{Value, json};
 
 use gentle_core::transcript::{UserImage, image_key};
@@ -235,10 +235,14 @@ pub fn chip_text(text: &str) -> (String, Vec<Range<usize>>) {
 
 /// Conversation images decoded from base64 once, by [`UserImage::key`].
 /// Decoding runs off the UI thread: [`ImageCache::request`] hands out the
-/// work and [`ImageCache::finish`] files the results.
+/// work and [`ImageCache::finish`] files the results. GPUI keeps its own
+/// decoded bitmap of every image drawn until told otherwise, so images
+/// this cache forgets are handed back to it ([`ImageCache::release_evicted`]).
 #[derive(Default)]
 pub struct ImageCache {
     images: HashMap<u64, Slot>,
+    /// Forgotten images GPUI may still hold a bitmap of.
+    evicted: Vec<Arc<Image>>,
 }
 
 enum Slot {
@@ -265,7 +269,7 @@ impl ImageCache {
 
     /// Mark the shown images not seen yet as decoding and return them to
     /// decode (once per key). With `prune` (`shown` is every image shown),
-    /// forget the ones no longer shown when any were new.
+    /// forget the ones no longer shown.
     pub fn request<'a>(
         &mut self,
         shown: impl IntoIterator<Item = &'a UserImage>,
@@ -282,10 +286,34 @@ impl ImageCache {
                 jobs.push(image.clone());
             }
         }
-        if prune && !jobs.is_empty() {
-            self.images.retain(|key, _| keys.contains(key));
+        if prune {
+            let evicted = &mut self.evicted;
+            self.images.retain(|key, slot| {
+                let keep = keys.contains(key);
+                if let (false, Slot::Ready(Some(image))) = (keep, &*slot) {
+                    evicted.push(image.clone());
+                }
+                keep
+            });
         }
         jobs
+    }
+
+    /// Drop GPUI's bitmaps of the images forgotten since the last call.
+    pub fn release_evicted(&mut self, cx: &mut App) {
+        for image in self.evicted.drain(..) {
+            image.remove_asset(cx);
+        }
+    }
+
+    /// Drop GPUI's bitmaps of every image here (the tab is going away).
+    pub fn release_all(&mut self, cx: &mut App) {
+        self.release_evicted(cx);
+        for slot in std::mem::take(&mut self.images).into_values() {
+            if let Slot::Ready(Some(image)) = slot {
+                image.remove_asset(cx);
+            }
+        }
     }
 
     /// File decoded images; ones pruned meanwhile stay forgotten.
@@ -468,13 +496,21 @@ mod tests {
         // Decoding: a placeholder, and not handed out again.
         assert!(cache.get(&jpeg).is_none());
         assert!(cache.request([&jpeg], false).is_empty());
-        // The PNG is no longer shown, so a pruning request that found new images dropped it.
+        // The PNG is no longer shown, so the pruning request dropped it, to
+        // be released from GPUI's cache.
         assert!(cache.get(&echoed).is_none());
+        assert_eq!(cache.evicted.len(), 1);
+        assert!(Arc::ptr_eq(&cache.evicted[0], &attachment.image));
 
         cache.finish(decode_all(jobs));
         assert_eq!(cache.get(&jpeg).unwrap().format, ImageFormat::Jpeg);
         assert!(cache.get(&junk).is_none());
         assert!(cache.request([&junk], false).is_empty());
+
+        // A conversation with no images forgets them all, though nothing is new.
+        assert!(cache.request([], true).is_empty());
+        assert!(cache.get(&jpeg).is_none());
+        assert_eq!(cache.evicted.len(), 2);
     }
 
     #[test]

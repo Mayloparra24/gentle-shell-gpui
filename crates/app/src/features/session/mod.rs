@@ -85,16 +85,14 @@ pub struct SessionView {
     /// The composer has the keyboard: its border takes the accent.
     composer_focused: bool,
     /// When the composer last took the keyboard: its pulse plays for
-    /// `PULSE` from then (see `composer_shell`), redrawn by `_pulse`.
+    /// `PULSE` from then (see `composer_shell`), a frame at a time.
     composer_pulse: Option<std::time::Instant>,
-    _pulse: Task<()>,
     /// Pixel kisses floating up from the caret as you type: when each was
     /// blown, where, and its number (for its own drift and size).
     kisses: Vec<(std::time::Instant, Point<Pixels>, usize)>,
     kisses_blown: usize,
     /// The composer's text length last time, to tell typing from deleting.
     composer_len: usize,
-    _kisses: Task<()>,
     /// Images waiting to go with the next prompt; `[Image #N]` is the N-th.
     attachments: Vec<attachments::Attachment>,
     /// Decoded conversation images, by data hash.
@@ -161,6 +159,14 @@ impl SessionView {
         });
         let dialog_input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 8));
         let model_search = cx.new(|cx| InputState::new(window, cx).placeholder("Search models…"));
+        // GPUI keeps decoded images until told to drop them.
+        cx.on_release(|this, cx| {
+            this.image_cache.release_all(cx);
+            for attachment in this.attachments.drain(..) {
+                attachment.image.remove_asset(cx);
+            }
+        })
+        .detach();
         let weak = cx.entity().downgrade();
         let subscriptions = vec![
             cx.subscribe_in(
@@ -234,8 +240,6 @@ impl SessionView {
             kisses: Vec::new(),
             kisses_blown: 0,
             composer_len: 0,
-            _kisses: Task::ready(()),
-            _pulse: Task::ready(()),
             attachments: Vec::new(),
             image_cache: attachments::ImageCache::default(),
             extension: state::ExtensionUi::default(),

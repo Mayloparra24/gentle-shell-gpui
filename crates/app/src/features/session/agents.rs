@@ -4,8 +4,7 @@ use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Icon, Selectable as _, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{Icon, Selectable as _, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -184,9 +183,7 @@ impl SessionView {
                 )),
             )
             .when(summary.running > 0, |d| {
-                d.child(ui::pulse(
-                    "agents-live",
-                    div().flex_shrink_0().size(px(6.)).rounded_full().bg(ui::warning()),
+                d.child(ui::pulse(div().flex_shrink_0().size(px(6.)).rounded_full().bg(ui::warning()),
                 ))
             })
             .child(
@@ -417,11 +414,8 @@ impl SessionView {
                         .flex()
                         .justify_center()
                         .child(if s.status == "running" {
-                            ui::pulse(
-                                SharedString::from(format!("agent-dot-{}", s.id)),
-                                div().size(px(7.)).rounded_full().bg(color),
-                            )
-                            .into_any_element()
+                            ui::pulse(div().size(px(7.)).rounded_full().bg(color))
+                                .into_any_element()
                         } else {
                             div()
                                 .size(px(7.))
@@ -633,10 +627,7 @@ impl SessionView {
                         let key = (id.clone(), ix);
                         let open = self.agents_panel.expanded_tools.contains(&key);
                         let status: AnyElement = if *running {
-                            Spinner::new()
-                                .xsmall()
-                                .color(ui::accent())
-                                .into_any_element()
+                            ui::spinner(Size::XSmall, ui::accent()).into_any_element()
                         } else if *is_error {
                             Icon::new(IconName::X)
                                 .xsmall()

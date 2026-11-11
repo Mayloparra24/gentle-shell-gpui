@@ -219,6 +219,9 @@ impl Transcript {
             "agent_settled" => {
                 self.running = false;
                 self.close_stream();
+                // Pi ends every tool, even on abort; one left running would
+                // spin forever.
+                self.settle_tools();
                 effects.settled = true;
             }
             "message_start" => self.message_start(&event["message"]),
@@ -246,8 +249,11 @@ impl Transcript {
             "tool_execution_update" => {
                 let id = str_field(event, "toolCallId");
                 if let Some((ix, Item::Tool { output, .. })) = self.tool_mut(&id) {
-                    *output = content_text(&event["partialResult"]["content"]);
-                    self.touch(ix);
+                    let partial = content_text(&event["partialResult"]["content"]);
+                    if *output != partial {
+                        *output = partial;
+                        self.touch(ix);
+                    }
                 }
             }
             "tool_execution_end" => {
@@ -353,8 +359,45 @@ impl Transcript {
     pub fn shell_output(&mut self, index: usize, delta: &str) {
         if let Some(Item::Shell { output, .. }) = self.items.get_mut(index) {
             output.push_str(delta);
+            // Trim only past twice the cap so appends stay amortized O(chunk).
+            if output.len() > 2 * SHELL_OUTPUT_CAP {
+                trim_shell_output(output);
+            }
             self.touch(index);
         }
+    }
+
+    /// The backend went away mid-turn: nothing is streaming or running
+    /// anymore, so nothing should keep animating.
+    pub fn interrupt(&mut self) {
+        self.running = false;
+        self.close_stream();
+        self.settle_tools();
+        for ix in 0..self.items.len() {
+            if let Item::Shell { running, .. } = &mut self.items[ix]
+                && *running
+            {
+                *running = false;
+                self.touch(ix);
+            }
+        }
+        self.running_shells = 0;
+    }
+
+    /// Mark tools still running as failed.
+    fn settle_tools(&mut self) {
+        if self.running_tools == 0 {
+            return;
+        }
+        for ix in 0..self.items.len() {
+            if let Item::Tool { status, .. } = &mut self.items[ix]
+                && *status == ToolStatus::Running
+            {
+                *status = ToolStatus::Failed;
+                self.touch(ix);
+            }
+        }
+        self.running_tools = 0;
     }
 
     pub fn finish_shell(&mut self, index: usize, code: Option<i64>, final_output: Option<String>) {
@@ -587,6 +630,21 @@ fn parse_usage(usage: &Value) -> Option<Usage> {
         cache_write: usage["cacheWrite"].as_u64().unwrap_or(0),
         cost: usage["cost"]["total"].as_f64().unwrap_or(0.0),
     })
+}
+
+/// How much `!command` output a shell item keeps (its tail).
+const SHELL_OUTPUT_CAP: usize = 256 * 1024;
+/// First line of shell output whose head was dropped.
+const SHELL_TRIMMED: &str = "[earlier output trimmed]\n";
+
+/// Keep the last [`SHELL_OUTPUT_CAP`] bytes (on a char boundary), marked.
+fn trim_shell_output(output: &mut String) {
+    let body = output.strip_prefix(SHELL_TRIMMED).unwrap_or(output);
+    let mut cut = output.len() - body.len() + body.len().saturating_sub(SHELL_OUTPUT_CAP);
+    while !output.is_char_boundary(cut) {
+        cut += 1;
+    }
+    output.replace_range(..cut, SHELL_TRIMMED);
 }
 
 /// Concatenate the text blocks of a tool result or user message.
@@ -862,5 +920,81 @@ mod tests {
         t.finish_shell(shell, Some(0), None);
         t.finish_shell(shell, Some(0), None);
         assert!(!t.shells_running());
+    }
+
+    #[test]
+    fn interrupt_settles_stream_tools_and_shells() {
+        let mut t = Transcript::default();
+        apply_all(
+            &mut t,
+            &[
+                json!({"type":"agent_start"}),
+                json!({"type":"tool_execution_start","toolCallId":"a","toolName":"bash","args":{}}),
+                json!({"type":"message_start","message":{"role":"assistant","content":[]}}),
+            ],
+        );
+        let shell = t.start_shell("ls".into());
+        t.take_dirty();
+        t.interrupt();
+        assert!(!t.running);
+        assert_eq!(t.streaming_item(), None);
+        assert_eq!(t.running_tools(), 0);
+        assert!(!t.shells_running());
+        assert!(matches!(
+            t.items[0],
+            Item::Tool {
+                status: ToolStatus::Failed,
+                ..
+            }
+        ));
+        assert!(matches!(t.items[shell], Item::Shell { running: false, .. }));
+        assert_eq!(t.take_dirty().map(|d| d.from), Some(0));
+    }
+
+    #[test]
+    fn settled_turn_fails_tools_left_running() {
+        let mut t = Transcript::default();
+        t.apply(
+            &json!({"type":"tool_execution_start","toolCallId":"a","toolName":"bash","args":{}}),
+        );
+        t.apply(&json!({"type":"agent_settled","aborted":true}));
+        assert_eq!(t.running_tools(), 0);
+        assert!(matches!(
+            t.items[0],
+            Item::Tool {
+                status: ToolStatus::Failed,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn shell_output_keeps_a_bounded_tail_on_a_char_boundary() {
+        let mut t = Transcript::default();
+        let shell = t.start_shell("yes".into());
+        let chunk = "é".repeat(1000) + "x";
+        for _ in 0..1000 {
+            t.shell_output(shell, &chunk);
+        }
+        t.shell_output(shell, "end");
+        let Item::Shell { output, .. } = &t.items[shell] else {
+            panic!()
+        };
+        assert!(output.len() <= 2 * SHELL_OUTPUT_CAP + SHELL_TRIMMED.len());
+        assert!(output.starts_with(SHELL_TRIMMED));
+        assert!(output.ends_with("xend"));
+    }
+
+    #[test]
+    fn unchanged_partial_update_is_not_dirty() {
+        let mut t = Transcript::default();
+        let update = json!({"type":"tool_execution_update","toolCallId":"a","partialResult":{"content":[{"type":"text","text":"out"}]}});
+        t.apply(
+            &json!({"type":"tool_execution_start","toolCallId":"a","toolName":"bash","args":{}}),
+        );
+        t.apply(&update);
+        t.take_dirty();
+        t.apply(&update);
+        assert_eq!(t.take_dirty(), None);
     }
 }

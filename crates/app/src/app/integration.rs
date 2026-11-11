@@ -82,7 +82,7 @@ pub fn register(cx: &mut App) {
 }
 
 /// The Files | Changes | Branches sidebar for `workspace`, re-rooted when the shown
-/// workspace changes. The subscriptions live as long as the window.
+/// workspace changes. The subscriptions live as long as the workspace.
 pub fn attach_sidebar(
     workspace: &Entity<crate::features::workspace::Workspace>,
     window: &mut Window,
@@ -91,12 +91,14 @@ pub fn attach_sidebar(
     use crate::features::files::{FileTreeEvent, FileTreeView};
     use crate::features::workspace::WorkspaceEvent;
 
+    /// A tree for `root` in the sidebar; the returned subscription keeps it
+    /// following the sidebar's visibility.
     fn mount(
         workspace: &Entity<crate::features::workspace::Workspace>,
         root: PathBuf,
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Subscription {
         let tree = cx.new(|cx| FileTreeView::new(root, window, cx));
         let shown = workspace.read(cx).sidebar_visible();
         tree.update(cx, |tree, cx| tree.set_visible(shown, cx));
@@ -127,26 +129,29 @@ pub fn attach_sidebar(
             })
             .detach();
         let visible = tree.downgrade();
-        window
-            .subscribe(workspace, cx, move |_, event: &WorkspaceEvent, _, cx| {
-                if let WorkspaceEvent::SidebarToggled(shown) = event {
-                    let _ = visible.update(cx, |tree, cx| tree.set_visible(*shown, cx));
-                }
-            })
-            .detach();
+        let toggled = window.subscribe(workspace, cx, move |_, event: &WorkspaceEvent, _, cx| {
+            if let WorkspaceEvent::SidebarToggled(shown) = event {
+                let _ = visible.update(cx, |tree, cx| tree.set_visible(*shown, cx));
+            }
+        });
         workspace.update(cx, |workspace, cx| workspace.set_sidebar(tree.into(), cx));
+        toggled
     }
 
     let root = workspace.read(cx).root().to_path_buf();
-    mount(workspace, root, window, cx);
-    let owner = workspace.clone();
+    // Replaced (and so dropped) with the tree, so re-rooting doesn't pile up
+    // subscriptions.
+    let mut _toggled = mount(workspace, root, window, cx);
+    // The handler gets the workspace as the emitter: holding it here would
+    // keep it alive forever.
     window
         .subscribe(
             workspace,
             cx,
-            move |_, event: &WorkspaceEvent, window, cx| match event {
-                WorkspaceEvent::RootChanged(root) => mount(&owner, root.clone(), window, cx),
-                WorkspaceEvent::SidebarToggled(_) => {}
+            move |owner, event: &WorkspaceEvent, window, cx| {
+                if let WorkspaceEvent::RootChanged(root) = event {
+                    _toggled = mount(&owner, root.clone(), window, cx);
+                }
             },
         )
         .detach();

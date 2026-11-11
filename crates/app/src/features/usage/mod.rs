@@ -6,6 +6,7 @@
 //! header; they are never stored in view state, logged, or rendered.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use gpui_kit::*;
@@ -19,7 +20,7 @@ mod view;
 
 use credentials::{ProviderCard, discover, read_auth};
 use fetch::run_fetch;
-use stats::{MAX_SESSION_BYTES, StatsData, load_sessions, local_offset_secs};
+use stats::{MAX_SESSION_BYTES, StatsData, forget_sessions, load_sessions, local_offset_secs};
 
 pub enum UsageEvent {
     Close,
@@ -64,6 +65,8 @@ pub struct UsageView {
     metric: Metric,
     _usage_task: Task<()>,
     _stats_task: Task<()>,
+    /// Set when the view drops, so a load still running frees what it read.
+    closed: Arc<AtomicBool>,
 }
 
 impl EventEmitter<UsageEvent> for UsageView {}
@@ -84,6 +87,7 @@ impl UsageView {
             metric: Metric::Tokens,
             _usage_task: Task::ready(()),
             _stats_task: Task::ready(()),
+            closed: Arc::default(),
         };
         this.refresh_usage(cx);
         this
@@ -157,12 +161,16 @@ impl UsageView {
         cx.notify();
         let root = pi_rpc::resolve_homes().agent.join("sessions");
         let range = self.range;
+        let closed = self.closed.clone();
         self._stats_task = cx.spawn(async move |this, cx| {
             let (data, offset, summary) = cx
                 .background_executor()
                 .spawn(async move {
                     let offset = local_offset_secs();
                     let data = load_sessions(&root, MAX_SESSION_BYTES);
+                    if closed.load(Ordering::SeqCst) {
+                        forget_sessions();
+                    }
                     let summary = aggregate_stats(&data.sessions, range, now_ms(), offset);
                     (Arc::new(data), offset, summary)
                 })
@@ -215,5 +223,13 @@ impl UsageView {
             Tab::Usage => self.refresh_usage(cx),
             Tab::Stats => self.refresh_stats(cx),
         }
+    }
+}
+
+/// The parsed sessions are only worth keeping while Usage is open.
+impl Drop for UsageView {
+    fn drop(&mut self) {
+        self.closed.store(true, Ordering::SeqCst);
+        forget_sessions();
     }
 }

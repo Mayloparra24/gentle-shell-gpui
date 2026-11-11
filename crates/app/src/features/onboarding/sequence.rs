@@ -343,7 +343,6 @@ fn node(index: usize, step: Step) -> AnyElement {
             .relative()
             .size(px(NODE))
             .child(ui::pulse(
-                ("sequence-halo", index),
                 div()
                     .absolute()
                     .inset(px(-6.))

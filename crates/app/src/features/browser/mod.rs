@@ -47,8 +47,11 @@ mod native;
 #[path = "windows.rs"]
 mod native;
 
-/// How often GTK's loop is pumped while a native view exists (Linux).
-const PUMP_EVERY: Duration = Duration::from_millis(8);
+/// How often GTK's loop is pumped while a native view exists (Linux): about
+/// a display frame while the app is in front, and only enough to keep pages
+/// alive while it is in the background.
+const PUMP_EVERY: Duration = Duration::from_millis(16);
+const PUMP_IDLE: Duration = Duration::from_millis(100);
 
 /// `bounds` (window coordinates) as `wry` takes them.
 #[cfg(any(target_os = "linux", target_os = "macos"))]

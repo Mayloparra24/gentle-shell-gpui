@@ -219,7 +219,10 @@ impl LoginHelper {
 impl Drop for LoginHelper {
     fn drop(&mut self) {
         self.stdin.lock().unwrap().take();
-        let _ = self.child.lock().unwrap().kill();
+        let mut child = self.child.lock().unwrap();
+        let _ = child.kill();
+        // Reaped, or it stays a zombie until the app exits.
+        let _ = child.wait();
     }
 }
 

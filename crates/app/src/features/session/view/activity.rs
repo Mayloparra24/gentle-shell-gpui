@@ -68,40 +68,39 @@ impl SessionView {
             .overflow_hidden()
             .whitespace_nowrap()
             .when(busy, |this| {
-                this.child(ui::pulse(
-                    "activity-dot",
-                    div().size(px(6.)).rounded_full().bg(ui::petal()),
-                ))
-                .when_some(since, |this, since| {
-                    this.child(
-                        div()
-                            .font_family(ui::MONO)
-                            .text_color(ui::muted())
-                            .child(clock(since.elapsed())),
-                    )
-                })
-                .child(div().h(px(10.)).w(px(1.)).bg(ui::border_strong()))
-                .map(|this| match (waiting, self.activity.phase) {
-                    (Some(_), _) => this.child(
-                        div()
-                            .text_color(ui::petal())
-                            .child(format!("✿ waiting for {provider}…")),
-                    ),
-                    (None, Some(phase)) => {
-                        this.child(div().text_color(ui::petal()).child(format!("✿ {phase}…")))
-                    }
-                    (None, None) => this.child(div().text_color(ui::petal()).child("✿ working…")),
-                })
-                .when_some(current_tool, |this, tool| {
-                    this.child(
-                        div()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .text_color(ui::muted())
-                            .child(tool),
-                    )
-                })
+                this.child(ui::pulse(div().size(px(6.)).rounded_full().bg(ui::petal())))
+                    .when_some(since, |this, since| {
+                        this.child(
+                            div()
+                                .font_family(ui::MONO)
+                                .text_color(ui::muted())
+                                .child(clock(since.elapsed())),
+                        )
+                    })
+                    .child(div().h(px(10.)).w(px(1.)).bg(ui::border_strong()))
+                    .map(|this| match (waiting, self.activity.phase) {
+                        (Some(_), _) => this.child(
+                            div()
+                                .text_color(ui::petal())
+                                .child(format!("✿ waiting for {provider}…")),
+                        ),
+                        (None, Some(phase)) => {
+                            this.child(div().text_color(ui::petal()).child(format!("✿ {phase}…")))
+                        }
+                        (None, None) => {
+                            this.child(div().text_color(ui::petal()).child("✿ working…"))
+                        }
+                    })
+                    .when_some(current_tool, |this, tool| {
+                        this.child(
+                            div()
+                                .min_w_0()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .text_color(ui::muted())
+                                .child(tool),
+                        )
+                    })
             });
 
         let width = self.pane_width.get();

@@ -1,8 +1,9 @@
 //! The in-app browser on Linux: WebKitGTK as a child of the app's X11 window.
 //! GPUI hands out an XCB handle and `wry` takes an Xlib one; both name the
-//! same X window. GTK must be initialized once and its loop pumped while the
-//! card is open (the card's task calls `pump`). Wayland has no child windows,
-//! so there the canvas stays in the browser Gentle Shell opened.
+//! same X window. GTK must be initialized once and its loop pumped while a
+//! web view exists (one task shared by every view calls `pump`). Wayland has
+//! no child windows, so there the canvas stays in the browser Gentle Shell
+//! opened.
 
 use std::ffi::c_ulong;
 use std::sync::LazyLock;
@@ -16,7 +17,7 @@ use raw_window_handle::{
 pub(super) const NEEDS_PUMP: bool = true;
 
 /// Run GTK's pending events (WebKitGTK's drawing and input). Only called on
-/// the main thread while the card is open.
+/// the main thread while a web view exists.
 pub(super) fn pump() {
     if GTK.is_ok() {
         while gtk::events_pending() {

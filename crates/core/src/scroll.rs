@@ -61,8 +61,10 @@ pub fn item_weight(item: &Item) -> f32 {
     }
 }
 
-/// The scroll position in estimated pixels.
-#[derive(Debug, Clone, PartialEq)]
+/// The scroll position in estimated pixels. Kept between frames: the row
+/// tops are re-laid ([`Estimate::measure`]) only when weights or measured
+/// heights change, the offset ([`Estimate::scroll_to`]) on every scroll.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Estimate {
     /// The top of every row.
     pub tops: Vec<f32>,
@@ -72,42 +74,87 @@ pub struct Estimate {
     pub offset: f32,
 }
 
-/// Estimate row tops, total height and offset. `weights` has one entry per
-/// row, `known` the measured heights by row, and the pane's top is
-/// `offset_in_row` px into `top_row` (`top_row == weights.len()` is the
-/// end). Unmeasured rows count as their weight times the measured rows'
-/// pixels per weight.
-pub fn estimate(
-    weights: &[f32],
-    known: &HashMap<usize, f32>,
-    top_row: usize,
-    offset_in_row: f32,
-    viewport: f32,
-) -> Estimate {
-    let (measured, measured_weight) = known
-        .iter()
-        .filter_map(|(row, height)| Some((*height, *weights.get(*row)?)))
-        .fold((0., 0.), |(h, w), (height, weight)| {
-            (h + height, w + weight)
-        });
-    let scale = if measured_weight > 0. {
-        measured / measured_weight
-    } else {
-        DEFAULT_SCALE
+impl Estimate {
+    /// Lay out row tops and the total height. `weights` has one entry per
+    /// row and `known` the measured heights by row; unmeasured rows count as
+    /// their weight times the measured rows' pixels per weight. Reuses the
+    /// tops' allocation.
+    pub fn measure(&mut self, weights: &[f32], known: &HashMap<usize, f32>) {
+        let (measured, measured_weight) = known
+            .iter()
+            .filter_map(|(row, height)| Some((*height, *weights.get(*row)?)))
+            .fold((0., 0.), |(h, w), (height, weight)| {
+                (h + height, w + weight)
+            });
+        let scale = if measured_weight > 0. {
+            measured / measured_weight
+        } else {
+            DEFAULT_SCALE
+        };
+        self.tops.clear();
+        let mut y = 0.;
+        for (row, weight) in weights.iter().enumerate() {
+            self.tops.push(y);
+            y += known.get(&row).copied().unwrap_or(weight * scale);
+        }
+        self.content = y;
+    }
+
+    /// Place the pane's top `offset_in_row` px into `top_row`
+    /// (`top_row == tops.len()` is the end).
+    pub fn scroll_to(&mut self, top_row: usize, offset_in_row: f32, viewport: f32) {
+        let content = self.content;
+        self.offset = (self.tops.get(top_row).copied().unwrap_or(content) + offset_in_row)
+            .min((content - viewport).max(0.));
+    }
+
+    /// The row at `y` px from the top and how far into it `y` is.
+    pub fn row_at(&self, y: f32) -> (usize, f32) {
+        let row = self.tops.partition_point(|top| *top <= y).saturating_sub(1);
+        (row, y - self.tops.get(row).copied().unwrap_or(0.))
+    }
+}
+
+/// Rail marks closer than this many pixels draw as one.
+pub const MARK_GAP: f32 = 2.;
+
+/// A mark on the scroll rail: where it sits and the marks it stands for
+/// (`first..=last`, by their position among all marks).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RailMark {
+    pub y: f32,
+    pub first: usize,
+    pub last: usize,
+}
+
+/// Lay out marks at `ys` (in order, never decreasing) into `out`: a mark
+/// closer than [`MARK_GAP`] to the one before joins it, so a long
+/// conversation draws at most one mark per couple of pixels.
+pub fn rail_marks(ys: impl IntoIterator<Item = f32>, out: &mut Vec<RailMark>) {
+    out.clear();
+    for (ix, y) in ys.into_iter().enumerate() {
+        match out.last_mut().filter(|mark| y - mark.y < MARK_GAP) {
+            Some(mark) => mark.last = ix,
+            None => out.push(RailMark {
+                y,
+                first: ix,
+                last: ix,
+            }),
+        }
+    }
+}
+
+/// The mark in `marks` ([`rail_marks`]) nearest to `y`, if within `reach`.
+pub fn nearest_mark(marks: &[RailMark], y: f32, reach: f32) -> Option<usize> {
+    let after = marks.partition_point(|mark| mark.y < y);
+    let distance = |ix: usize| (marks[ix].y - y).abs();
+    let nearest = match (after.checked_sub(1), (after < marks.len()).then_some(after)) {
+        (Some(before), Some(after)) if distance(after) <= distance(before) => after,
+        (Some(before), _) => before,
+        (None, Some(after)) => after,
+        (None, None) => return None,
     };
-    let mut tops = Vec::with_capacity(weights.len());
-    let mut y = 0.;
-    for (row, weight) in weights.iter().enumerate() {
-        tops.push(y);
-        y += known.get(&row).copied().unwrap_or(weight * scale);
-    }
-    let offset =
-        (tops.get(top_row).copied().unwrap_or(y) + offset_in_row).min((y - viewport).max(0.));
-    Estimate {
-        tops,
-        content: y,
-        offset,
-    }
+    (distance(nearest) <= reach).then_some(nearest)
 }
 
 /// The thumb's top for this frame. A row measured taller or shorter than
@@ -148,6 +195,19 @@ pub fn steady_thumb(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn estimate(
+        weights: &[f32],
+        known: &HashMap<usize, f32>,
+        top_row: usize,
+        offset_in_row: f32,
+        viewport: f32,
+    ) -> Estimate {
+        let mut e = Estimate::default();
+        e.measure(weights, known);
+        e.scroll_to(top_row, offset_in_row, viewport);
+        e
+    }
 
     /// A conversation's rows: short questions and answers of very different
     /// lengths, tool cards between them; real heights deviate from the
@@ -268,5 +328,38 @@ mod tests {
         assert!(item_weight(&user("hola")) < item_weight(&user(&"x".repeat(400))));
         let long = (0..40).map(|_| "una línea").collect::<Vec<_>>().join("\n");
         assert!(item_weight(&answer(&long)) > 10. * item_weight(&answer("ok")));
+    }
+
+    #[test]
+    fn close_marks_draw_as_one() {
+        let mut marks = Vec::new();
+        rail_marks([0., 1., 1.9, 5., 6.5, 30.], &mut marks);
+        let mark = |y, first, last| RailMark { y, first, last };
+        // A run joins its first mark, so close marks can't chain down the rail.
+        assert_eq!(marks, vec![mark(0., 0, 2), mark(5., 3, 4), mark(30., 5, 5)]);
+        rail_marks([], &mut marks);
+        assert!(marks.is_empty());
+    }
+
+    #[test]
+    fn the_nearest_mark_is_found_within_reach() {
+        let mut marks = Vec::new();
+        rail_marks([10., 20., 40.], &mut marks);
+        assert_eq!(nearest_mark(&marks, 12., 4.5), Some(0));
+        assert_eq!(nearest_mark(&marks, 18., 4.5), Some(1));
+        // Halfway: the later one, drawn on top.
+        assert_eq!(nearest_mark(&marks, 15., 5.), Some(1));
+        assert_eq!(nearest_mark(&marks, 30., 4.5), None);
+        assert_eq!(nearest_mark(&marks, 43., 4.5), Some(2));
+        assert_eq!(nearest_mark(&marks, 5.5, 4.5), Some(0));
+        assert_eq!(nearest_mark(&[], 5., 4.5), None);
+    }
+
+    #[test]
+    fn rows_are_found_by_offset() {
+        let e = estimate(&[2., 10., 4.], &HashMap::from([(0, 40.)]), 0, 0., 100.);
+        assert_eq!(e.row_at(0.), (0, 0.));
+        assert_eq!(e.row_at(50.), (1, 10.));
+        assert_eq!(e.row_at(400.), (2, 160.));
     }
 }

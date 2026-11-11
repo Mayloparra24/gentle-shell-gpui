@@ -133,7 +133,7 @@ Any feature that reads Gentle Shell configuration starts from `pi_rpc::resolve_h
 
 When stdout closes, pending requests are flushed (their callers get the error "gentle-shell exited before answering") and `Incoming::Exited(code)` arrives.
 
-`request(command)` assigns `id` = `gs-<n>`, writes one line and waits for the response; `success: false` becomes `Err(error)`. `respond_ui(id, UiAnswer)` answers dialogs with `extension_ui_response` (`value`, `confirmed` or `cancelled: true`). `shutdown(grace)` closes stdin and kills the child if it is still alive after `grace`; `Drop` calls `shutdown(3 s)`.
+`request(command)` assigns `id` = `gs-<n>` and writes one line at once; the returned future holds only the response channel (`success: false` becomes `Err(error)`), so a pending request never keeps the process alive. `respond_ui(id, UiAnswer)` answers dialogs with `extension_ui_response` (`value`, `confirmed` or `cancelled: true`). `shutdown(grace)` is idempotent and returns at once: on Unix it sends SIGTERM to the launcher (forwarded to Pi, whose handler stops its agents' detached children; stdin stays open until then, because Pi drops that handler on stdin EOF), elsewhere it closes stdin; when the backend exits or after `grace`, it kills the backend's process group (Unix, spawned with `process_group(0)`) or tree (`taskkill /T /F`, Windows) and reaps it. `Drop` calls `shutdown(3 s)`; app quit calls it for every tab (`Workspace` `on_app_quit` → `SessionView::shutdown_backend`).
 
 ### Tab lifecycle (`features/session/lifecycle.rs`)
 

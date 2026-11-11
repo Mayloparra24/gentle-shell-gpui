@@ -17,7 +17,8 @@ mod instructions;
 mod panel;
 mod sdk;
 
-use std::time::Duration;
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 
 use gentle_core::devices::{Device, State};
 use gpui_kit::*;
@@ -26,6 +27,12 @@ use crate::features::setup::devices as setup;
 pub use instructions::agent_instructions;
 pub use panel::{DevicePanel, DevicePanelEvent, Mode};
 pub(crate) use sdk::{android_sdk, android_tool_dirs, simctl_path, xcode_developer_dir};
+
+/// The longest quitting waits on devices: the app's quit handlers block.
+const QUIT_WAIT: Duration = Duration::from_secs(2);
+/// How long the hub keeps serving the shutdowns sent on quit before it's
+/// stopped; a device takes longer to stop than quitting may wait.
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(1500);
 
 /// What the hub is doing.
 #[derive(Clone, Debug, PartialEq)]
@@ -233,6 +240,8 @@ impl Hub {
 
     /// "Use devices" turned off: stop the hub (devices keep running).
     pub fn stop(&mut self, cx: &mut Context<Self>) {
+        // A start in flight drops (and so stops) the hub it started.
+        self._start = Task::ready(());
         if let Some(process) = self.process.take() {
             // Stopping waits for the hub's helpers; not on the main thread.
             cx.background_executor()
@@ -247,6 +256,7 @@ impl Hub {
     /// Read the list now.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let Some(port) = self.port() else { return };
+        sdk::forget_avds();
         cx.spawn(async move |this, cx| {
             let listed = cx
                 .background_executor()
@@ -267,6 +277,7 @@ impl Hub {
             return;
         }
         self.booting.push(device.key());
+        sdk::forget_avds();
         self.last_error = None;
         if !self.booted_here.iter().any(|d| d.key() == device.key()) {
             self.booted_here.push(device.clone());
@@ -307,23 +318,53 @@ impl Hub {
     }
 
     /// The app is quitting: shut down what it booted, stop agent-device's
-    /// daemon (when agents can drive devices), then stop the hub.
+    /// daemon (when agents can drive devices), then stop the hub. All at
+    /// once and for at most [`QUIT_WAIT`]; whatever is left finishes on its
+    /// own (the daemon's stop, the hub's exit after SIGTERM).
     fn quit(&mut self) {
+        let deadline = Instant::now() + QUIT_WAIT;
+        // A start in flight drops (and so stops) the hub it started.
+        self._start = Task::ready(());
+        // Each job holds a sender: the channel closes once all are done.
+        let (done, all_done) = mpsc::channel::<()>();
         if self.prefs.enabled && self.prefs.agents {
-            hub::stop_agent_daemon();
+            let done = done.clone();
+            std::thread::spawn(move || {
+                hub::stop_agent_daemon();
+                drop(done);
+            });
         }
-        if let Some(port) = self.port() {
-            for device in self.booted_here.drain(..) {
-                let current = self
-                    .devices
-                    .iter()
-                    .find(|d| d.key() == device.key())
-                    .cloned()
-                    .unwrap_or(device);
-                let _ = hub::shutdown(port, &current);
-            }
+        if let Some(process) = self.process.take() {
+            let port = process.port();
+            let devices: Vec<Device> = self
+                .booted_here
+                .drain(..)
+                .map(|device| {
+                    self.devices
+                        .iter()
+                        .find(|d| d.key() == device.key())
+                        .cloned()
+                        .unwrap_or(device)
+                })
+                .collect();
+            let done = done.clone();
+            std::thread::spawn(move || {
+                let (sent, all_sent) = mpsc::channel::<()>();
+                for device in devices {
+                    let sent = sent.clone();
+                    std::thread::spawn(move || {
+                        let _ = hub::shutdown(port, &device);
+                        drop(sent);
+                    });
+                }
+                drop(sent);
+                let _ = all_sent.recv_timeout(SHUTDOWN_GRACE);
+                drop(process);
+                drop(done);
+            });
         }
-        self.process = None;
+        drop(done);
+        let _ = all_done.recv_timeout(deadline.saturating_duration_since(Instant::now()));
     }
 
     /// The device `query` names; see [`find_device`].

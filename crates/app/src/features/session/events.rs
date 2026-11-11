@@ -63,7 +63,7 @@ impl SessionView {
             }
             Incoming::Exited(code) => {
                 self.backend.status = BackendStatus::Exited(code);
-                self.transcript.running = false;
+                self.transcript.interrupt();
                 self.extension.dialogs.clear();
             }
         }

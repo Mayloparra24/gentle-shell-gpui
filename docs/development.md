@@ -192,6 +192,19 @@ They are in [`architecture.md`](architecture.md); the essentials:
 - Behavior-preserving refactors, kept separate from behavior changes ([ADR-0003](adr/0003-behavior-preserving-refactors.md)); the history marks them with `(no behavior change)`.
 - Modular monolith ([ADR-0001](adr/0001-modular-monolith.md)).
 
+## Performance
+
+The app must idle at ~0 % CPU and stay cheap during a long agent turn on any machine. What GPUI does, and the rules that follow:
+
+- **A frame re-renders every ancestor.** `request_animation_frame` (which every repeating `with_animation`, `ui::pulse` and `Spinner` calls) notifies the view it sits in, and a dirty view dirties all its ancestors. A pulsing dot in a conversation therefore re-renders the whole `SessionView` (and the `Workspace`) on every frame of a turn. Moving the dot into its own view doesn't help; making that render cheap does.
+- **`render` does no O(transcript) work.** Anything derived from all items (scroll estimate, rail marks, card text, line counts) is computed when the transcript changes (`sync_view` → `TranscriptList::prepare`) and cached; `render` reads the cache. Draw many marks in one `canvas` with one hitbox, not one interactive element each (`session/view/rail.rs`).
+- **No copies of long text per frame.** Keep bodies as `SharedString`s built in `prepare` and clone those; find tails from the end (`rfind`), never by scanning from the start.
+- **Animations stop.** Looping indicators only while something truly runs: a backend that exits mid-turn settles its stream and tools (`Transcript::interrupt`). One-shot animations run on their own clock and request frames only while they last, and skip when `cx.reduce_motion()` is set.
+- **Polls notify only on change** and back off when the window is inactive or the thing they watch isn't on screen (music, file viewer, git, devices).
+- **Every process the app starts has an owner that stops it**, on close and on quit, with a bound on how long quitting waits: backends get SIGTERM first (the launcher forwards it to Pi, which stops its agents' detached jobs), then a kill of their process group; the device hub reclaims a hub orphaned by a crash; `agent-device`'s daemon stops on quit. Always `wait()` after `kill()`.
+
+To measure, run the release build in an isolated `HOME` and sample it: `ps -o %cpu=,rss= -p <pid>` every couple of seconds for CPU and memory, `sample <pid> 10` (macOS) for where the main thread spends its time. A long conversation can be loaded by a temporary scaffold that calls `Transcript::load_messages` with synthetic messages and leaves a turn running; remove it before committing.
+
 ## Commits and pull requests
 
 Prefixes used in `git log`:

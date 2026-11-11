@@ -1,14 +1,18 @@
 //! Filas, mediciones y cachés de presentación de la lista virtualizada.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::*;
 
-use super::{CardSpec, card_spec, line_count};
+use super::rail::preview;
+use super::{BubbleText, CardSpec, card_spec, line_count};
 use crate::shared::ui;
-use gentle_core::transcript::{Dirty, Item};
+use gentle_core::scroll::{self, Estimate, RailMark};
+use gentle_core::transcript::{Block, Dirty, Item};
 
 /// Rows after the transcript items.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +102,11 @@ pub(super) enum Prepared {
     Card(CardSpec),
     /// A custom message's line count.
     Lines(usize),
+    /// A message you sent as its bubble shows it, cut when first shown.
+    Bubble(OnceCell<BubbleText>),
+    /// An answer's thinking blocks by block index, trimmed when first shown
+    /// open (empty for other blocks).
+    Thoughts(Vec<OnceCell<SharedString>>),
 }
 
 /// How long after it first shows a row still fades in.
@@ -121,6 +130,18 @@ pub(in crate::features::session) struct TranscriptList {
     /// Each item's size from its content (`gentle_core::scroll::item_weight`),
     /// by transcript index: how the rail sizes rows it hasn't seen.
     weights: Vec<f32>,
+    /// Every row's weight, in row order: the estimate's input.
+    row_weights: Vec<f32>,
+    /// Where the pane is along the whole conversation; its row tops are
+    /// re-laid only while `stale` (weights, rows or heights changed).
+    estimate: Estimate,
+    stale: bool,
+    /// Your messages, for the rail: transcript index and tooltip text.
+    marks: Vec<(usize, SharedString)>,
+    /// The marks laid out on a rail `rail_for` px tall (close ones merged);
+    /// shared with the frame that paints them.
+    rail: Rc<Vec<RailMark>>,
+    rail_for: Option<f32>,
 }
 
 /// Header, tail and footer rows, in the same "lines" as item weights.
@@ -139,6 +160,12 @@ impl TranscriptList {
             born: HashMap::new(),
             heights: HashMap::new(),
             weights: Vec::new(),
+            row_weights: Vec::new(),
+            estimate: Estimate::default(),
+            stale: true,
+            marks: Vec::new(),
+            rail: Rc::default(),
+            rail_for: None,
         }
     }
 
@@ -148,6 +175,8 @@ impl TranscriptList {
         self.born.clear();
         self.heights.clear();
         self.weights.clear();
+        self.marks.clear();
+        self.stale = true;
     }
 
     /// Note the heights of the rows on screen. Only those: a row laid out in
@@ -163,46 +192,100 @@ impl TranscriptList {
             if bounds.top() >= viewport.bottom() {
                 break;
             }
-            self.heights.insert(row, f32::from(bounds.size.height));
+            let height = f32::from(bounds.size.height);
+            if self.heights.insert(row, height) != Some(height) {
+                self.stale = true;
+            }
             row += 1;
         }
     }
 
     /// Row tops, total height and scroll offset: rows never laid out count
     /// by their content, scaled by what the laid-out rows measured. Also
-    /// the pane's height.
-    pub(super) fn estimate(&self) -> (gentle_core::scroll::Estimate, f32) {
-        let mut weights = Vec::with_capacity(self.shape.len());
-        weights.push(HEADER_WEIGHT);
-        weights.extend(
-            (0..self.shape.items).map(|ix| self.weights.get(ix).copied().unwrap_or(TAIL_WEIGHT)),
-        );
-        weights.extend(self.shape.tail.iter().map(|_| TAIL_WEIGHT));
-        weights.push(FOOTER_WEIGHT);
+    /// the pane's height. The tops are re-laid only when something they
+    /// depend on changed; the offset is placed on every call.
+    pub(super) fn estimate(&mut self) -> (&Estimate, f32) {
+        if self.stale {
+            self.stale = false;
+            self.rail_for = None;
+            self.row_weights.clear();
+            self.row_weights.push(HEADER_WEIGHT);
+            self.row_weights.extend(
+                (0..self.shape.items)
+                    .map(|ix| self.weights.get(ix).copied().unwrap_or(TAIL_WEIGHT)),
+            );
+            self.row_weights
+                .extend(self.shape.tail.iter().map(|_| TAIL_WEIGHT));
+            self.row_weights.push(FOOTER_WEIGHT);
+            self.estimate.measure(&self.row_weights, &self.heights);
+        }
         let top = self.state.logical_scroll_top();
         let viewport = f32::from(self.state.viewport_bounds().size.height);
-        let estimate = gentle_core::scroll::estimate(
-            &weights,
-            &self.heights,
-            top.item_ix,
-            f32::from(top.offset_in_item),
-            viewport,
-        );
-        (estimate, viewport)
+        self.estimate
+            .scroll_to(top.item_ix, f32::from(top.offset_in_item), viewport);
+        (&self.estimate, viewport)
+    }
+
+    /// Lay out the marks of your messages on a rail `rail` px tall, at the
+    /// same scale as the thumb, unless they already are. Call after
+    /// [`Self::estimate`].
+    pub(super) fn lay_rail(&mut self, rail: f32) {
+        if self.rail_for == Some(rail) {
+            return;
+        }
+        self.rail_for = Some(rail);
+        let Estimate { tops, content, .. } = &self.estimate;
+        let scale = rail / content.max(1.);
+        let ys = self
+            .marks
+            .iter()
+            .map(|(ix, _)| (tops.get(ix + 1).copied().unwrap_or(*content) * scale).clamp(0., rail));
+        scroll::rail_marks(ys, Rc::make_mut(&mut self.rail));
+    }
+
+    /// The last estimate ([`Self::estimate`]).
+    pub(super) fn last_estimate(&self) -> &Estimate {
+        &self.estimate
+    }
+
+    /// Your messages: transcript index and preview, in order.
+    pub(super) fn marks(&self) -> &[(usize, SharedString)] {
+        &self.marks
+    }
+
+    /// The rail's marks as last laid out ([`Self::lay_rail`]).
+    pub(super) fn rail(&self) -> &Rc<Vec<RailMark>> {
+        &self.rail
     }
 
     /// Derive display data for items `from..`.
     pub(super) fn prepare(&mut self, items: &[Item], from: usize) {
+        self.stale = true;
         self.weights.resize(from.min(items.len()), TAIL_WEIGHT);
+        let kept = self.marks.partition_point(|(ix, _)| *ix < from);
+        self.marks.truncate(kept);
         let changed = items.get(from..).unwrap_or_default();
         for (ix, item) in (from..).zip(changed) {
-            self.weights.push(gentle_core::scroll::item_weight(item));
+            self.weights.push(scroll::item_weight(item));
             let prepared = match item {
                 Item::Tool { .. } | Item::Shell { .. } => card_spec(item).map(Prepared::Card),
                 Item::Custom { text, .. } => Some(Prepared::Lines(line_count(text))),
                 Item::CommandOutput { notices, .. } => Some(Prepared::Lines(
                     notices.iter().map(|(_, text)| line_count(text)).sum(),
                 )),
+                Item::User { text, .. } => {
+                    if !text.trim().is_empty() {
+                        self.marks.push((ix, preview(text)));
+                    }
+                    Some(Prepared::Bubble(OnceCell::new()))
+                }
+                Item::Assistant { blocks, .. }
+                    if blocks.iter().any(|b| matches!(b, Block::Thinking(_))) =>
+                {
+                    Some(Prepared::Thoughts(
+                        blocks.iter().map(|_| OnceCell::new()).collect(),
+                    ))
+                }
                 _ => None,
             };
             match prepared {
@@ -225,6 +308,9 @@ impl TranscriptList {
         dirty: Option<Dirty>,
     ) {
         let shape = Shape { items, tail };
+        if dirty.is_some() || self.header != Some(header) || self.shape != shape {
+            self.stale = true;
+        }
         if dirty.is_some_and(|d| d.reset) {
             self.state.reset(shape.len());
             self.heights.clear();
@@ -253,7 +339,7 @@ impl TranscriptList {
     pub(super) fn remeasure_item(&mut self, ix: usize) {
         let row = ix + 1;
         if row < self.shape.len() {
-            self.heights.remove(&row);
+            self.stale |= self.heights.remove(&row).is_some();
             self.state.remeasure_items(row..row + 1);
         }
     }
