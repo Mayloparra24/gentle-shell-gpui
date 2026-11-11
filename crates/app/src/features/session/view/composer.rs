@@ -181,16 +181,10 @@ impl SessionView {
         Some(h_flex().w_full().flex_wrap().gap_2().children(tiles))
     }
 
-    /// The text field. While it's empty, focusing it opens it up from one
-    /// line to about two and a half with a soft spring, and blurring closes
-    /// it again; with text, its own auto-grow sets the height. A click in
-    /// the extra room focuses the field too.
-    fn render_text_field(&self, empty: bool, ready: bool, cx: &mut Context<Self>) -> AnyElement {
-        /// One line, and the opened height.
-        const REST: f32 = 20.;
-        const OPEN: f32 = 52.;
+    /// The text field; a click anywhere in it focuses the text area.
+    fn render_text_field(&self, ready: bool, cx: &mut Context<Self>) -> Div {
         let weak = cx.entity().downgrade();
-        let field = div()
+        div()
             .min_w_0()
             .text_size(px(14.))
             .cursor_text()
@@ -209,53 +203,29 @@ impl SessionView {
                         weak.update(cx, |this, cx| this.paste_clipboard(item, window, cx))
                             .unwrap_or(false)
                     }),
-            );
-        let focused = self.composer_focused;
-        // Nothing to animate before the first focus change, or once text
-        // sizes the field.
-        if !empty || self.composer_moves == 0 {
-            return field
-                .when(empty && focused, |d| d.min_h(px(OPEN)))
-                .into_any_element();
-        }
-        let (from, to) = if focused { (REST, OPEN) } else { (OPEN, REST) };
-        let ease = ease_out_quint();
-        field
-            .with_animation(
-                ("composer-open", self.composer_moves as usize),
-                Animation::new(Duration::from_millis(if focused { 320 } else { 220 })),
-                move |el, t| {
-                    // Opening springs past a hair; closing just settles.
-                    let k = if focused { ui::spring(t) } else { ease(t) };
-                    el.min_h(px(from + (to - from) * k))
-                },
             )
-            .into_any_element()
     }
 
-    /// The composer box widens outward when it takes the keyboard (the side
-    /// margins it keeps at rest go to zero), with the field's spring, so
-    /// the whole box seems to expand; it settles back on blur.
-    fn expand_on_focus(&self, composer_box: Div) -> AnyElement {
-        /// The side margin at rest.
-        const INSET: f32 = 8.;
-        let focused = self.composer_focused;
-        if self.composer_moves == 0 {
-            return composer_box
-                .mx(px(if focused { 0. } else { INSET }))
-                .into_any_element();
+    /// A small pulse when the composer takes the keyboard: the box swells
+    /// outward on every side and settles back, inside a margin it keeps for
+    /// that, so nothing around it moves. Only emphasis: nothing stays bigger.
+    fn pulse_on_focus(&self, composer_box: Div) -> AnyElement {
+        /// The room the pulse grows into, on every side.
+        const ROOM: f32 = 6.;
+        let frame = div().p(px(ROOM));
+        if self.composer_pulses == 0 {
+            return frame.child(composer_box).into_any_element();
         }
-        let (from, to) = if focused { (INSET, 0.) } else { (0., INSET) };
-        let ease = ease_out_quint();
-        composer_box
-            .with_animation(
-                ("composer-expand", self.composer_moves as usize),
-                Animation::new(Duration::from_millis(if focused { 320 } else { 220 })),
+        frame
+            .child(composer_box.with_animation(
+                ("composer-pulse", self.composer_pulses as usize),
+                Animation::new(Duration::from_millis(460)),
                 move |el, t| {
-                    let k = if focused { ui::spring(t) } else { ease(t) };
-                    el.mx(px(from + (to - from) * k))
+                    // Out and back along one smooth arc.
+                    let grow = ROOM * (std::f32::consts::PI * ease_in_out(t)).sin();
+                    el.m(px(-grow))
                 },
-            )
+            ))
             .into_any_element()
     }
 
@@ -414,9 +384,9 @@ impl SessionView {
             .bg(ui::surface())
             .shadow_lg()
             .children(self.render_attachments(cx))
-            .child(self.render_text_field(empty, ready, cx))
+            .child(self.render_text_field(ready, cx))
             .child(bottom);
-        let composer_box = self.expand_on_focus(composer_box);
+        let composer_box = self.pulse_on_focus(composer_box);
 
         v_flex()
             .w_full()
