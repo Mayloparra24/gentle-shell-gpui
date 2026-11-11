@@ -55,6 +55,13 @@ pub(in crate::features::session) struct Live {
     pub(super) rail_scrolling: bool,
     /// Hides the thumb a moment after the last scroll.
     pub(super) rail_hide: Option<Task<()>>,
+    /// The thumb is being dragged.
+    pub(super) rail_drag: Option<super::rail::RailDrag>,
+    /// When each answer finished streaming: its petal line fades from the
+    /// accent to a faint rose over `ANSWER_FADE` from then.
+    pub(in crate::features::session) answer_done: HashMap<usize, Instant>,
+    /// Redraws while an answer's petal line fades.
+    pub(in crate::features::session) answer_fade: Option<Task<()>>,
 }
 
 /// How often live timers are re-checked.

@@ -1,5 +1,10 @@
 //! The composer: context line, attachments, text area and its bottom bar.
 
+use std::time::{Duration, Instant};
+
+/// The focus pulse's length.
+const PULSE: Duration = Duration::from_millis(460);
+
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Textarea;
@@ -179,6 +184,89 @@ impl SessionView {
         Some(h_flex().w_full().flex_wrap().gap_2().children(tiles))
     }
 
+    /// The text field; a click anywhere in it focuses the text area.
+    fn render_text_field(&self, ready: bool, cx: &mut Context<Self>) -> Div {
+        let weak = cx.entity().downgrade();
+        div()
+            .min_w_0()
+            .text_size(px(14.))
+            .cursor_text()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.composer
+                        .update(cx, |state, cx| state.focus(window, cx));
+                }),
+            )
+            .child(
+                Textarea::new(&self.composer)
+                    .appearance(false)
+                    .disabled(!ready)
+                    .on_paste(move |item, window, cx| {
+                        weak.update(cx, |this, cx| this.paste_clipboard(item, window, cx))
+                            .unwrap_or(false)
+                    }),
+            )
+    }
+
+    /// Play the focus pulse: redraw every frame until it's over. Timed
+    /// from `composer_pulse` rather than `with_animation`, whose progress
+    /// is lost when the session view is reused from cache, which would
+    /// replay the pulse on every later redraw.
+    pub(in crate::features::session) fn start_composer_pulse(&mut self, cx: &mut Context<Self>) {
+        self.composer_pulse = Some(Instant::now());
+        self._pulse = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
+                let Ok(going) = this.update(cx, |this, cx| {
+                    cx.notify();
+                    let going = this.composer_pulse.is_some_and(|at| at.elapsed() < PULSE);
+                    if !going {
+                        this.composer_pulse = None;
+                    }
+                    going
+                }) else {
+                    return;
+                };
+                if !going {
+                    return;
+                }
+            }
+        });
+    }
+
+    /// The composer's box (background, border, shadow), drawn as a layer
+    /// behind its content. During the focus pulse it swells outward on
+    /// every side and settles back along one smooth arc. Only this layer
+    /// moves (it's absolute), so the text, the buttons and everything
+    /// around stay put, and nothing stays bigger.
+    fn composer_shell(&self) -> Div {
+        /// How far the pulse reaches past the box, on every side.
+        const REACH: f32 = 6.;
+        let t = self
+            .composer_pulse
+            .map(|at| (at.elapsed().as_secs_f32() / PULSE.as_secs_f32()).min(1.))
+            .unwrap_or(1.);
+        let out = px(-REACH * (std::f32::consts::PI * ease_in_out(t)).sin());
+        div()
+            .absolute()
+            .top(out)
+            .bottom(out)
+            .left(out)
+            .right(out)
+            .rounded_2xl()
+            .border_1()
+            .border_color(if self.composer_focused {
+                ui::petal().opacity(0.45)
+            } else {
+                ui::border_strong()
+            })
+            .bg(ui::surface())
+            .shadow_lg()
+    }
+
     pub(super) fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (prefix, leaf) = ui::split_path(&self.cwd);
         let empty = self.composer.read(cx).value().trim().is_empty() && self.attachments.is_empty();
@@ -316,7 +404,8 @@ impl SessionView {
             })
             .child(div().flex_shrink_0().child(action_button));
 
-        let composer_box = v_flex()
+        let content = v_flex()
+            .relative()
             .w_full()
             .min_w_0()
             .overflow_hidden()
@@ -324,25 +413,15 @@ impl SessionView {
             .map(|d| if narrow { d.px_3() } else { d.px_4() })
             .pt_3()
             .pb_2()
-            .rounded_2xl()
-            .border_1()
-            .border_color(ui::border_strong())
-            .bg(ui::surface())
-            .shadow_lg()
             .children(self.render_attachments(cx))
-            .child({
-                let weak = cx.entity().downgrade();
-                div().min_w_0().text_size(px(14.)).child(
-                    Textarea::new(&self.composer)
-                        .appearance(false)
-                        .disabled(!ready)
-                        .on_paste(move |item, window, cx| {
-                            weak.update(cx, |this, cx| this.paste_clipboard(item, window, cx))
-                                .unwrap_or(false)
-                        }),
-                )
-            })
+            .child(self.render_text_field(ready, cx))
             .child(bottom);
+        let composer_box = div()
+            .relative()
+            .w_full()
+            .min_w_0()
+            .child(self.composer_shell())
+            .child(content);
 
         v_flex()
             .w_full()
