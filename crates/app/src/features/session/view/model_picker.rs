@@ -4,8 +4,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Input;
 use gpui_kit::component::popover::Popover;
-use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -137,7 +136,7 @@ impl SessionView {
             .text_color(ui::info())
             .tooltip("Choose model")
             .child(if busy {
-                Spinner::new().xsmall().color(ui::info()).into_any_element()
+                ui::spinner(Size::XSmall, ui::info()).into_any_element()
             } else {
                 div().size(px(7.)).rounded_full().bg(dot).into_any_element()
             })

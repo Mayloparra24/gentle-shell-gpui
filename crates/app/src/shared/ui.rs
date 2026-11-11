@@ -8,10 +8,12 @@
 use std::time::Duration;
 
 use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::Sizable as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Animation, AnimationElement, AnimationExt as _, App, BoxShadow, Div, ElementId, FontWeight,
-    Hsla, ParentElement as _, SharedString, Stateful, Styled, div, ease_out_quint, point, px, rgb,
+    Animation, AnimationElement, AnimationExt as _, App, BoxShadow, Div, ElementId, EntityId,
+    FontWeight, Hsla, IntoElement, ParentElement as _, SharedString, Stateful, Styled, Window,
+    canvas, div, ease_out_quint, point, px, rgb,
 };
 
 use crate::shared::themes::{self, Theme, mix};
@@ -590,15 +592,118 @@ pub fn scrim(id: impl Into<ElementId>) -> AnimationElement<Div> {
     )
 }
 
-/// A soft breathing pulse for live indicators.
-pub fn pulse(id: impl Into<ElementId>, element: Div) -> AnimationElement<Div> {
-    element.with_animation(
-        id,
-        Animation::new(Duration::from_millis(1400))
-            .repeat()
-            .with_easing(gpui_kit::pulsating_between(0.35, 1.0)),
-        |el, t| el.opacity(t),
+// ── Live indicators ────────────────────────────────────────────────────────
+//
+// Pulses, spinners and shimmers run for a whole agent turn. A `with_animation`
+// asks for a frame at the display's rate (120 Hz on ProMotion), and every frame
+// re-renders the view it sits in and its ancestors, the whole conversation
+// included. These draw from one app clock instead and ask their view for the
+// next frame after `SLOW_FRAME`: ~30 fps, smooth for slow motion, a quarter of
+// the work.
+
+/// How often live indicators redraw.
+const SLOW_FRAME: Duration = Duration::from_millis(33);
+
+/// Seconds since the first live indicator drew; every indicator shares it.
+fn live_clock() -> f32 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_secs_f32()
+}
+
+/// Where a loop of `period` seconds is now, 0..1.
+fn live_phase(period: f32) -> f32 {
+    (live_clock() / period).fract()
+}
+
+/// Redraw the view being drawn after [`SLOW_FRAME`], once however many
+/// indicators it holds. Nothing with reduced motion.
+fn request_slow_frame(window: &mut Window, cx: &mut App) {
+    thread_local! {
+        static PENDING: std::cell::RefCell<std::collections::HashSet<EntityId>> =
+            Default::default();
+    }
+    if cx.reduce_motion() {
+        return;
+    }
+    let view = window.current_view();
+    if !PENDING.with(|pending| pending.borrow_mut().insert(view)) {
+        return;
+    }
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(SLOW_FRAME).await;
+        PENDING.with(|pending| pending.borrow_mut().remove(&view));
+        cx.update(|cx| cx.notify(view));
+    })
+    .detach();
+}
+
+/// A zero-size element that keeps its view redrawing at the slow rate while
+/// it's on screen.
+fn slow_frames() -> impl IntoElement {
+    canvas(
+        |_, window, cx| request_slow_frame(window, cx),
+        |_, _, _, _| {},
     )
+    .size_0()
+}
+
+/// A soft breathing pulse for live indicators.
+pub fn pulse(element: Div) -> Div {
+    let breath = gpui_kit::pulsating_between(0.35, 1.0)(live_phase(1.4));
+    element.opacity(breath).child(slow_frames())
+}
+
+/// A loading spinner (the Loader icon turning), for rows that stay on screen
+/// while work runs.
+pub fn spinner(size: impl Into<gpui_kit::component::Size>, color: Hsla) -> Div {
+    div()
+        .flex_none()
+        .child(
+            gpui_kit::component::Icon::new(gpui_kit::component::IconName::Loader)
+                .with_size(size)
+                .text_color(color)
+                .transform(gpui_kit::Transformation::rotate(gpui_kit::percentage(
+                    live_phase(0.8),
+                ))),
+        )
+        .child(slow_frames())
+}
+
+/// `text` with a soft highlight sweeping across it, from `base` to
+/// `highlight` and back.
+pub fn shimmer(text: impl Into<SharedString>, base: Hsla, highlight: Hsla) -> Div {
+    const SPREAD: f32 = 0.3;
+    let text: SharedString = text.into();
+    let count = text.chars().count().max(1) as f32;
+    // The band enters from the left edge and leaves past the right one.
+    let center = -SPREAD + live_phase(2.0) * (1. + 2. * SPREAD);
+    let mut runs = Vec::new();
+    for (i, (at, ch)) in text.char_indices().enumerate() {
+        let x = (i as f32 + 0.5) / count;
+        let glow = (1. - ((x - center) / SPREAD).abs()).max(0.);
+        let glow = glow * glow * (3. - 2. * glow);
+        let color = Hsla {
+            h: if glow > 0.5 { highlight.h } else { base.h },
+            s: base.s + (highlight.s - base.s) * glow,
+            l: base.l + (highlight.l - base.l) * glow,
+            a: base.a + (highlight.a - base.a) * glow,
+        };
+        runs.push((
+            at..at + ch.len_utf8(),
+            gpui_kit::HighlightStyle {
+                color: Some(color),
+                ..Default::default()
+            },
+        ));
+    }
+    div()
+        .min_w_0()
+        .text_color(base)
+        .child(gpui_kit::StyledText::new(text).with_highlights(runs))
+        .child(slow_frames())
 }
 
 /// `~/a/b/leaf` split into a muted prefix and the leaf, for path labels.

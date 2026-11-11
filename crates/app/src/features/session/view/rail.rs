@@ -14,7 +14,6 @@ use gpui_kit::*;
 use super::SessionView;
 use crate::shared::ui;
 use gentle_core::scroll;
-use gentle_core::transcript::Item;
 
 /// Where a glide goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -40,6 +39,9 @@ const EASE: f32 = 0.24;
 const CRUISE: f32 = 420.;
 /// How long the scroll thumb stays after the last scroll.
 const THUMB_LINGER: Duration = Duration::from_millis(1200);
+/// How far above or below a mark's bar the mouse still points at it: the
+/// bar centered in a 9 px tall target.
+const MARK_REACH: f32 = 4.5;
 
 /// A thumb drag: where the mouse and the thumb were when it began.
 #[derive(Clone, Copy)]
@@ -49,19 +51,19 @@ pub(super) struct RailDrag {
 }
 
 /// The rail's layout for one frame.
+#[derive(Clone, Copy)]
 pub(super) struct RailGeometry {
-    estimate: scroll::Estimate,
+    content: f32,
+    offset: f32,
     viewport: f32,
     rail: f32,
-    /// Rail pixels per content pixel.
-    scale: f32,
     thumb_top: f32,
     thumb_size: f32,
 }
 
 /// The message to show in a mark's tooltip: its first line, shortened.
-fn preview(text: &str) -> String {
-    gentle_core::text::first_line(text.trim(), 90)
+pub(super) fn preview(text: &str) -> SharedString {
+    gentle_core::text::first_line(text.trim(), 90).into()
 }
 
 impl SessionView {
@@ -176,11 +178,9 @@ impl SessionView {
         let geometry = self.scroll_estimate();
         let track = (geometry.rail - geometry.thumb_size).max(1.);
         let top = (drag.thumb_top + mouse_y - drag.mouse_y).clamp(0., track);
-        let max_offset = (geometry.estimate.content - geometry.viewport).max(0.);
+        let max_offset = (geometry.content - geometry.viewport).max(0.);
         let target = top / track * max_offset;
-        let tops = &geometry.estimate.tops;
-        let row = tops.partition_point(|t| *t <= target).saturating_sub(1);
-        let within = target - tops.get(row).copied().unwrap_or(0.);
+        let (row, within) = self.list.last_estimate().row_at(target);
         self.list.state().scroll_to(ListOffset {
             item_ix: row,
             offset_in_item: px(within.max(0.)),
@@ -199,28 +199,31 @@ impl SessionView {
     }
 
     /// Note the heights the pane shows, estimate where it is along the whole
-    /// conversation and place the thumb (see `gentle_core::scroll`).
+    /// conversation, place the thumb and lay out the marks (see
+    /// `gentle_core::scroll`).
     pub(super) fn scroll_estimate(&mut self) -> RailGeometry {
         self.list.record_heights();
         let (estimate, viewport) = self.list.estimate();
+        let (content, offset) = (estimate.content, estimate.offset);
         // The rail is the pane less its 10 px top and 16 px bottom insets.
         let rail = (viewport - 26.).max(1.);
-        let scale = rail / estimate.content.max(1.);
+        self.list.lay_rail(rail);
+        let scale = rail / content.max(1.);
         let thumb_size = (viewport * scale).clamp(24_f32.min(rail), rail);
         let thumb_top = scroll::steady_thumb(
             self.live.rail_thumb,
-            estimate.offset,
-            estimate.offset * scale,
+            offset,
+            offset * scale,
             scale,
-            (estimate.content - viewport).max(0.),
+            (content - viewport).max(0.),
             rail - thumb_size,
         );
-        self.live.rail_thumb = Some((estimate.offset, thumb_top));
+        self.live.rail_thumb = Some((offset, thumb_top));
         RailGeometry {
-            estimate,
+            content,
+            offset,
             viewport,
             rail,
-            scale,
             thumb_top,
             thumb_size,
         }
@@ -229,23 +232,22 @@ impl SessionView {
     /// The marks for your messages and, while you scroll (or point at the
     /// rail), the scroll thumb. Both come from the same estimate, so a mark
     /// sits where the thumb is when that message is at the top. Nothing
-    /// while everything fits in the pane.
+    /// while everything fits in the pane. The marks are painted in one
+    /// canvas with one hitbox; only the mark under the mouse is an element
+    /// (its tooltip and click).
     pub(super) fn render_rail(
         &self,
         geometry: &RailGeometry,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let RailGeometry {
-            estimate,
+            content,
+            offset,
             viewport,
-            rail,
-            scale,
+            rail: _,
             thumb_top,
-            thumb_size: size,
-        } = geometry;
-        let (tops, content, offset) = (&estimate.tops, estimate.content, estimate.offset);
-        let (viewport, rail, scale, thumb_top, size) =
-            (*viewport, *rail, *scale, *thumb_top, *size);
+            thumb_size,
+        } = *geometry;
         if content <= viewport + 1. {
             return None;
         }
@@ -256,7 +258,7 @@ impl SessionView {
             .right(px(2.))
             .w(px(10.))
             .top(px(thumb_top))
-            .h(px(size))
+            .h(px(thumb_size))
             .rounded_full()
             .cursor_grab()
             .bg(ui::fg().opacity(if dragging { 0.2 } else { 0.08 }))
@@ -296,25 +298,97 @@ impl SessionView {
             .absolute()
             .size_0()
         });
-        let marks: Vec<(usize, String)> = self
-            .transcript
-            .items
-            .iter()
-            .enumerate()
-            .filter_map(|(ix, item)| match item {
-                Item::User { text, .. } if !text.trim().is_empty() => Some((ix, preview(text))),
-                _ => None,
-            })
-            .collect();
+        let marks = self.list.marks();
+        let tops = &self.list.last_estimate().tops;
+        let rail_marks = self.list.rail().clone();
         // The message you are reading: the last one that starts above the
-        // pane's upper third.
+        // pane's upper third (by its position among the marks).
         let reading = offset + viewport / 3.;
-        let current = marks
-            .iter()
-            .rev()
-            .find(|(ix, _)| tops.get(ix + 1).is_some_and(|top| *top <= reading))
-            .or(marks.first())
-            .map(|(ix, _)| *ix);
+        let read =
+            marks.partition_point(|(ix, _)| tops.get(ix + 1).is_some_and(|top| *top <= reading));
+        let current = read.checked_sub(1).or((!marks.is_empty()).then_some(0));
+        // The drawn mark standing for message `mark`.
+        let drawn = |mark: usize| {
+            let at = rail_marks.partition_point(|m| m.last < mark);
+            rail_marks.get(at).filter(|m| m.first <= mark).map(|_| at)
+        };
+        let active = current.and_then(drawn);
+        let hovered = self.live.rail_hover.and_then(drawn);
+        let hover_now = self.live.rail_hover;
+        let entity = cx.entity();
+        let (accent, faint) = (ui::accent(), ui::faint());
+        let painted_marks = rail_marks.clone();
+        let painted = canvas(
+            |bounds, window, _| window.insert_hitbox(bounds, HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _| {
+                for (at, mark) in painted_marks.iter().enumerate() {
+                    // The element over it draws the one under the mouse.
+                    if Some(at) == hovered {
+                        continue;
+                    }
+                    let is_active = Some(at) == active;
+                    let width = px(if is_active { 12. } else { 9. });
+                    let origin = point(bounds.right() - width, bounds.top() + px(mark.y - 1.));
+                    let color = if is_active { accent } else { faint };
+                    window.paint_quad(
+                        fill(Bounds::new(origin, size(width, px(3.))), color).corner_radii(px(1.5)),
+                    );
+                }
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if phase != DispatchPhase::Bubble {
+                        return;
+                    }
+                    // Bars sit half a pixel below their mark's y.
+                    let y = f32::from(event.position.y - bounds.top()) - 0.5;
+                    let mark = hitbox
+                        .is_hovered(window)
+                        .then(|| scroll::nearest_mark(&painted_marks, y, MARK_REACH))
+                        .flatten()
+                        .map(|at| painted_marks[at].last);
+                    if mark != hover_now {
+                        entity.update(cx, |this, cx| {
+                            if this.live.rail_hover != mark {
+                                this.live.rail_hover = mark;
+                                cx.notify();
+                            }
+                        });
+                    }
+                });
+            },
+        )
+        .absolute()
+        .top_0()
+        .bottom_0()
+        .right(px(2.))
+        .w(px(16.));
+        let pointed = hovered.and_then(|at| {
+            let mark = rail_marks[at];
+            let (ix, text) = marks.get(mark.last)?.clone();
+            let is_active = Some(at) == active;
+            Some(
+                div()
+                    .id(("rail-mark", ix))
+                    .absolute()
+                    .top(px(mark.y))
+                    .right(px(2.))
+                    .w(px(16.))
+                    .h(px(9.))
+                    .mt(px(-4.))
+                    .flex()
+                    .items_center()
+                    .justify_end()
+                    .cursor_pointer()
+                    .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
+                    .on_click(cx.listener(move |this, _, _, cx| this.glide_to_item(ix, cx)))
+                    .child(
+                        div()
+                            .h(px(3.))
+                            .w(px(if is_active { 12. } else { 9. }))
+                            .rounded_full()
+                            .bg(if is_active { ui::accent() } else { ui::fg() }),
+                    ),
+            )
+        });
         Some(
             div()
                 .group("rail")
@@ -325,33 +399,8 @@ impl SessionView {
                 .w(px(16.))
                 .child(thumb)
                 .children(follow)
-                .children(marks.into_iter().map(|(ix, text)| {
-                    let at = tops.get(ix + 1).copied().unwrap_or(content) * scale;
-                    let active = Some(ix) == current;
-                    div()
-                        .id(("rail-mark", ix))
-                        .absolute()
-                        .top(px(at.clamp(0., rail)))
-                        .right(px(2.))
-                        .w(px(16.))
-                        .h(px(9.))
-                        .mt(px(-4.))
-                        .flex()
-                        .items_center()
-                        .justify_end()
-                        .group("rail-mark")
-                        .cursor_pointer()
-                        .tooltip(move |window, cx| Tooltip::new(text.clone()).build(window, cx))
-                        .on_click(cx.listener(move |this, _, _, cx| this.glide_to_item(ix, cx)))
-                        .child(
-                            div()
-                                .h(px(3.))
-                                .w(px(if active { 12. } else { 9. }))
-                                .rounded_full()
-                                .bg(if active { ui::accent() } else { ui::faint() })
-                                .when(!active, |d| d.group_hover("rail-mark", |s| s.bg(ui::fg()))),
-                        )
-                }))
+                .child(painted)
+                .children(pointed)
                 .into_any_element(),
         )
     }

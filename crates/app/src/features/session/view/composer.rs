@@ -216,11 +216,12 @@ impl SessionView {
 
     /// The text grew (you typed): blow a small kiss from the caret. At most
     /// one every `KISS_GAP` and `KISSES_MAX` alive, so it stays a sprinkle.
+    /// None with reduced motion.
     pub(in crate::features::session) fn blow_kiss(&mut self, cx: &mut Context<Self>) {
         let len = self.composer.read(cx).value().len();
         let typed = len > self.composer_len;
         self.composer_len = len;
-        if !typed {
+        if !typed || cx.reduce_motion() {
             return;
         }
         self.kisses.retain(|(at, _, _)| at.elapsed() < KISS_LIFE);
@@ -238,26 +239,16 @@ impl SessionView {
         let at = point(bounds.origin.x, bounds.origin.y);
         self.kisses.push((Instant::now(), at, self.kisses_blown));
         self.kisses_blown += 1;
-        if self.kisses.len() == 1 {
-            // Redraw every frame while any kiss is in the air.
-            self._kisses = cx.spawn(async move |this, cx| {
-                loop {
-                    cx.background_executor()
-                        .timer(Duration::from_millis(16))
-                        .await;
-                    let Ok(alive) = this.update(cx, |this, cx| {
-                        this.kisses.retain(|(at, _, _)| at.elapsed() < KISS_LIFE);
-                        cx.notify();
-                        !this.kisses.is_empty()
-                    }) else {
-                        return;
-                    };
-                    if !alive {
-                        return;
-                    }
-                }
-            });
+    }
+
+    /// Drop the kisses that landed and end a finished focus pulse; whether
+    /// either still plays (the view then asks for the next frame).
+    pub(super) fn composer_animating(&mut self) -> bool {
+        self.kisses.retain(|(at, _, _)| at.elapsed() < KISS_LIFE);
+        if self.composer_pulse.is_some_and(|at| at.elapsed() >= PULSE) {
+            self.composer_pulse = None;
         }
+        !self.kisses.is_empty() || self.composer_pulse.is_some()
     }
 
     /// The kisses in the air: each rises from where it was blown, swaying,
@@ -314,32 +305,15 @@ impl SessionView {
         )
     }
 
-    /// Play the focus pulse: redraw every frame until it's over. Timed
-    /// from `composer_pulse` rather than `with_animation`, whose progress
-    /// is lost when the session view is reused from cache, which would
-    /// replay the pulse on every later redraw.
+    /// Play the focus pulse (none with reduced motion): frames are asked
+    /// for until it's over ([`Self::composer_animating`]). Timed from
+    /// `composer_pulse` rather than `with_animation`, whose progress is
+    /// lost when the session view is reused from cache, which would replay
+    /// the pulse on every later redraw.
     pub(in crate::features::session) fn start_composer_pulse(&mut self, cx: &mut Context<Self>) {
-        self.composer_pulse = Some(Instant::now());
-        self._pulse = cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let Ok(going) = this.update(cx, |this, cx| {
-                    cx.notify();
-                    let going = this.composer_pulse.is_some_and(|at| at.elapsed() < PULSE);
-                    if !going {
-                        this.composer_pulse = None;
-                    }
-                    going
-                }) else {
-                    return;
-                };
-                if !going {
-                    return;
-                }
-            }
-        });
+        if !cx.reduce_motion() {
+            self.composer_pulse = Some(Instant::now());
+        }
     }
 
     /// The composer's box (background, border, shadow), drawn as a layer

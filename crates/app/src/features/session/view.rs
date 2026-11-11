@@ -2,16 +2,16 @@
 //! conversation's items (tool cards, thinking, messages, notices). The
 //! composer, its pickers, dialogs and overlays live in the child modules.
 
+use std::cell::OnceCell;
 use std::collections::HashMap;
+use std::ops::Range;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::shimmer::ShimmerText;
-use gpui_kit::component::spinner::Spinner;
 use gpui_kit::component::text::{TextView, TextViewState};
-use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, Size, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -63,31 +63,41 @@ const NARROW: f32 = 520.;
 const TINY: f32 = 420.;
 
 /// Bring the Markdown rendered for `key` up to `text`, appending when it
-/// only grew (streaming).
+/// only grew (streaming). Blocks not drawn yet have no state: it is made
+/// when they first show ([`ensure_markdown_block`]).
 fn sync_markdown_block(
     markdown: &mut HashMap<(usize, usize), (Entity<TextViewState>, usize)>,
     key: (usize, usize),
     text: &str,
     cx: &mut Context<SessionView>,
 ) {
-    match markdown.get_mut(&key) {
-        Some((state, pushed)) if *pushed != text.len() => {
-            let appended = text.is_char_boundary(*pushed) && *pushed < text.len();
-            state.update(cx, |state, cx| {
-                if appended {
-                    state.push_str(&text[*pushed..], cx);
-                } else {
-                    state.set_text(text, cx);
-                }
-            });
-            *pushed = text.len();
-        }
-        Some(_) => {}
-        None => {
-            let state = cx.new(|cx| TextViewState::markdown(text, cx));
-            markdown.insert(key, (state, text.len()));
-        }
+    let Some((state, pushed)) = markdown.get_mut(&key) else {
+        return;
+    };
+    if *pushed == text.len() {
+        return;
     }
+    let appended = text.is_char_boundary(*pushed) && *pushed < text.len();
+    state.update(cx, |state, cx| {
+        if appended {
+            state.push_str(&text[*pushed..], cx);
+        } else {
+            state.set_text(text, cx);
+        }
+    });
+    *pushed = text.len();
+}
+
+/// The Markdown for `key`, made from `text` the first time it shows.
+fn ensure_markdown_block(
+    markdown: &mut HashMap<(usize, usize), (Entity<TextViewState>, usize)>,
+    key: (usize, usize),
+    text: &str,
+    cx: &mut Context<SessionView>,
+) {
+    markdown
+        .entry(key)
+        .or_insert_with(|| (cx.new(|cx| TextViewState::markdown(text, cx)), text.len()));
 }
 
 impl SessionView {
@@ -110,6 +120,12 @@ impl SessionView {
             if dirty.reset {
                 self.markdown.clear();
                 self.list.forget_items();
+                // Keyed by item index: they would time or fade other items.
+                self.live.tools.clear();
+                self.live.thinking.clear();
+                self.live.open_spans = 0;
+                self.live.answer_done.clear();
+                self.live.rail_hover = None;
             }
             let from = dirty.from.min(self.transcript.items.len());
             self.sync_markdown(from, cx);
@@ -135,6 +151,9 @@ impl SessionView {
     /// Bring the rendered Markdown up to date for items `from..` (earlier
     /// items have not changed since the last sync).
     fn sync_markdown(&mut self, from: usize, cx: &mut Context<Self>) {
+        if self.markdown.is_empty() {
+            return;
+        }
         let items = self.transcript.items.get(from..).unwrap_or_default();
         for (item_ix, item) in (from..).zip(items) {
             match item {
@@ -151,6 +170,23 @@ impl SessionView {
                 }
                 _ => {}
             }
+        }
+    }
+
+    /// Make the Markdown of item `ix` the first time it shows.
+    fn ensure_markdown(&mut self, ix: usize, cx: &mut Context<Self>) {
+        match self.transcript.items.get(ix) {
+            Some(Item::Assistant { blocks, .. }) => {
+                for (block_ix, block) in blocks.iter().enumerate() {
+                    if let Block::Text(text) = block {
+                        ensure_markdown_block(&mut self.markdown, (ix, block_ix), text, cx);
+                    }
+                }
+            }
+            Some(Item::Custom { kind, text, .. }) if markdown_custom(kind) => {
+                ensure_markdown_block(&mut self.markdown, (ix, 0), text, cx);
+            }
+            _ => {}
         }
     }
 
@@ -288,6 +324,7 @@ impl SessionView {
             })
             .flatten();
         let jobs = self.image_cache.request(shown, prune);
+        self.image_cache.release_evicted(cx);
         if jobs.is_empty() {
             return;
         }
@@ -435,8 +472,8 @@ impl SessionView {
                         .justify_center()
                         .text_size(px(13.))
                         .text_color(ui::muted())
-                        .child(Spinner::new().small().color(ui::accent()))
-                        .child(ShimmerText::new("Starting gentle-shell…").highlight_color(ui::fg()))
+                        .child(ui::spinner(Size::Small, ui::accent()))
+                        .child(ui::shimmer("Starting gentle-shell…", ui::muted(), ui::fg()))
                         .into_any_element(),
                 );
             }
@@ -500,7 +537,15 @@ impl SessionView {
         match item {
             Item::User { text, images } => {
                 let images = images.iter().map(|i| self.image_cache.get(i)).collect();
-                let bubble = user_bubble(text, images);
+                let computed;
+                let shown = match self.list.prepared(ix) {
+                    Some(Prepared::Bubble(cell)) => cell.get_or_init(|| BubbleText::new(text)),
+                    _ => {
+                        computed = BubbleText::new(text);
+                        &computed
+                    }
+                };
+                let bubble = user_bubble(shown, images);
                 if text.trim().is_empty() {
                     return bubble.into_any_element();
                 }
@@ -544,7 +589,7 @@ impl SessionView {
                 }
                 if *streaming && !has_text && !thinking_live {
                     let since = self.live.turn.map(|t| t.elapsed());
-                    column = column.child(working_indicator(("working", ix), "Working…", since));
+                    column = column.child(working_indicator("Working…", since));
                 }
                 if let Some(error) = error {
                     column = column.child(notice_card(NoticeLevel::Error, error));
@@ -555,10 +600,8 @@ impl SessionView {
                 if has_text {
                     match settle {
                         Some(_) if *streaming => {
-                            column = column.child(ui::pulse(
-                                ("answer-cursor", ix),
-                                div().size(px(7.)).rounded_full().bg(ui::petal()),
-                            ))
+                            column = column
+                                .child(ui::pulse(div().size(px(7.)).rounded_full().bg(ui::petal())))
                         }
                         Some(k) if k < 1. => {
                             column = column.child(
@@ -660,32 +703,27 @@ impl SessionView {
         )
     }
 
-    /// Answer `ix` just finished: fade its petal line, redrawing until done.
+    /// Answer `ix` just finished: fade its petal line (frames are asked
+    /// for while it fades, see [`Self::fade_answers`]). With reduced
+    /// motion it just goes.
     pub(in crate::features::session) fn answer_finished(
         &mut self,
         ix: usize,
         cx: &mut Context<Self>,
     ) {
+        if cx.reduce_motion() {
+            return;
+        }
         self.live.answer_done.insert(ix, Instant::now());
-        self.live.answer_fade = Some(cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(Duration::from_millis(16))
-                    .await;
-                let Ok(going) = this.update(cx, |this, cx| {
-                    cx.notify();
-                    this.live
-                        .answer_done
-                        .values()
-                        .any(|at| at.elapsed() < ANSWER_FADE)
-                }) else {
-                    return;
-                };
-                if !going {
-                    return;
-                }
-            }
-        }));
+        cx.notify();
+    }
+
+    /// Forget answers that finished fading; whether any still fades.
+    fn fade_answers(&mut self) -> bool {
+        self.live
+            .answer_done
+            .retain(|_, at| at.elapsed() < ANSWER_FADE);
+        !self.live.answer_done.is_empty()
     }
 
     fn render_thinking(
@@ -717,7 +755,7 @@ impl SessionView {
                     .hover(|s| s.text_color(ui::fg()))
                     .on_click(cx.listener(move |this, _, _, cx| this.toggle(key, cx)))
                     .child(if live {
-                        ui::pulse(("thinking-star", key), star).into_any_element()
+                        ui::pulse(star).into_any_element()
                     } else {
                         star.into_any_element()
                     })
@@ -742,6 +780,13 @@ impl SessionView {
                     ),
             )
             .when(open, |this| {
+                // Trimmed once per change of the item, not per frame.
+                let shown = match self.list.prepared(ix) {
+                    Some(Prepared::Thoughts(cells)) => cells.get(block_ix),
+                    _ => None,
+                }
+                .map(|cell| cell.get_or_init(|| text.trim().to_string().into()).clone())
+                .unwrap_or_else(|| text.trim().to_string().into());
                 this.child(
                     div()
                         .ml(px(5.))
@@ -751,7 +796,7 @@ impl SessionView {
                         .text_size(px(13.))
                         .italic()
                         .text_color(ui::muted())
-                        .child(text.trim().to_string()),
+                        .child(shown),
                 )
             })
     }
@@ -1016,12 +1061,19 @@ impl SessionView {
                         text,
                         lines,
                         diff,
+                        &spec.input_rows,
                         cx,
                     )))
                 },
             )
             .when(show_output, |this| {
-                this.child(self.output_block(out_key, output, spec.output_lines, cx))
+                this.child(self.output_block(
+                    out_key,
+                    output,
+                    spec.output_lines,
+                    &spec.output_rows,
+                    cx,
+                ))
             })
             .child(status_footer(spec.status, duration))
             .into_any_element()
@@ -1034,28 +1086,41 @@ impl SessionView {
         text: &str,
         lines: usize,
         diff: bool,
+        rows: &BodyLines,
         cx: &mut Context<Self>,
     ) -> Div {
         let max = if diff { DIFF_LINES } else { INPUT_LINES };
         let open = self.expanded.contains(&key);
-        let (shown, hidden) = head_slice(text, lines, if open { 400 } else { max });
+        let shown_max = if open { 400 } else { max };
+        let hidden = lines.saturating_sub(shown_max);
+        let shown = rows.get(open, || {
+            let (shown, _) = head_slice(text, lines, shown_max);
+            shown
+                .lines()
+                .map(|line| {
+                    if diff {
+                        CodeLine::diff(line)
+                    } else {
+                        CodeLine::plain(line)
+                    }
+                })
+                .collect()
+        });
         let more = lines.saturating_sub(max);
         let clipped = !open && hidden > 0;
         let lines = v_flex()
             .relative()
             .py_2()
             .overflow_hidden()
-            .children(shown.lines().map(|line| {
+            .children(shown.iter().map(|line| {
                 if diff {
                     diff_row(line)
                 } else {
-                    div().px_3().whitespace_nowrap().text_color(ui::fg()).child(
-                        if line.is_empty() {
-                            " ".to_string()
-                        } else {
-                            line.to_string()
-                        },
-                    )
+                    div()
+                        .px_3()
+                        .whitespace_nowrap()
+                        .text_color(ui::fg())
+                        .child(line.text.clone())
                 }
             }))
             .when(clipped, |this| {
@@ -1101,9 +1166,21 @@ impl SessionView {
     }
 
     /// Command output (`lines` long), clipped from the top so the latest lines show.
-    fn output_block(&self, key: usize, body: &str, lines: usize, cx: &mut Context<Self>) -> Div {
+    fn output_block(
+        &self,
+        key: usize,
+        body: &str,
+        lines: usize,
+        rows: &BodyLines,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let open = self.expanded.contains(&key);
-        let (shown, hidden) = tail_slice(body, lines, if open { 200 } else { OUTPUT_LINES });
+        let shown_max = if open { 200 } else { OUTPUT_LINES };
+        let hidden = lines.saturating_sub(shown_max);
+        let shown = rows.get(open, || {
+            let (shown, _) = tail_slice(body, lines, shown_max);
+            shown.lines().map(CodeLine::plain).collect()
+        });
         let more = lines.saturating_sub(OUTPUT_LINES);
         v_flex()
             .w_full()
@@ -1137,13 +1214,11 @@ impl SessionView {
                                 .child(format!("… {hidden} earlier lines not shown")),
                         )
                     })
-                    .children(shown.lines().map(|line| {
-                        div().whitespace_nowrap().child(if line.is_empty() {
-                            " ".to_string()
-                        } else {
-                            line.to_string()
-                        })
-                    })),
+                    .children(
+                        shown
+                            .iter()
+                            .map(|line| div().whitespace_nowrap().child(line.text.clone())),
+                    ),
             )
     }
 
@@ -1207,6 +1282,7 @@ impl SessionView {
                     .into_any_element()
             }
             Row::Item(i) => {
+                self.ensure_markdown(i, cx);
                 let Some(item) = self.transcript.items.get(i) else {
                     return div().into_any_element();
                 };
@@ -1220,7 +1296,7 @@ impl SessionView {
                     return div().into_any_element();
                 };
                 let bubble = user_bubble(
-                    &pending.text,
+                    &BubbleText::new(&pending.text),
                     pending.images.iter().cloned().map(Some).collect(),
                 );
                 self.list
@@ -1228,13 +1304,13 @@ impl SessionView {
             }
             Row::Tail(Tail::Pending(base)) => {
                 let since = self.live.pending.as_ref().map(|p| p.since.elapsed());
-                let indicator = working_indicator(("pending-petal", base), "Thinking…", since);
+                let indicator = working_indicator("Thinking…", since);
                 self.list
                     .appear(("pending", base), now, div().w_full().child(indicator))
             }
             Row::Tail(Tail::Between(count)) => {
                 let since = self.live.turn.map(|t| t.elapsed());
-                let indicator = working_indicator(("between-petal", count), "Working…", since);
+                let indicator = working_indicator("Working…", since);
                 self.list
                     .appear(("between", count), now, div().w_full().child(indicator))
             }
@@ -1266,6 +1342,12 @@ impl Render for SessionView {
         self.ensure_started(window, cx);
         self.sync_view(cx);
         self.step_glide(window);
+        // Timed effects (the composer's, answers fading) ask for each next
+        // frame only while they play.
+        let composing = self.composer_animating();
+        if self.fade_answers() || composing {
+            window.request_animation_frame();
+        }
         let scroll = self.scroll_estimate();
         let width = self.pane_width.clone();
         let view = cx.entity_id();
@@ -1358,6 +1440,81 @@ struct CardSpec {
     /// Output is the point of the tool (commands): show it without a click.
     always_output: bool,
     status: ToolStatus,
+    /// The code well's and the output's lines as drawn.
+    input_rows: BodyLines,
+    output_rows: BodyLines,
+}
+
+/// A card body's shown lines, folded and open, cut from its item the first
+/// time each is drawn and kept until the item changes (its [`CardSpec`] is
+/// rebuilt then).
+#[derive(Default)]
+struct BodyLines {
+    folded: OnceCell<Vec<CodeLine>>,
+    open: OnceCell<Vec<CodeLine>>,
+}
+
+impl BodyLines {
+    fn get(&self, open: bool, cut: impl FnOnce() -> Vec<CodeLine>) -> &[CodeLine] {
+        if open {
+            self.open.get_or_init(cut)
+        } else {
+            self.folded.get_or_init(cut)
+        }
+    }
+}
+
+/// One drawn line of a card body: a diff row's sign, line number and text
+/// ([`parse_diff_line`]), or plain text.
+struct CodeLine {
+    sign: char,
+    number: SharedString,
+    text: SharedString,
+}
+
+impl CodeLine {
+    /// Empty lines hold a space so they keep their height.
+    fn shown(text: &str) -> SharedString {
+        if text.is_empty() {
+            " ".into()
+        } else {
+            text.to_string().into()
+        }
+    }
+
+    fn plain(line: &str) -> Self {
+        Self {
+            sign: ' ',
+            number: SharedString::default(),
+            text: Self::shown(line),
+        }
+    }
+
+    fn diff(line: &str) -> Self {
+        let (sign, number, text) = parse_diff_line(line);
+        Self {
+            sign,
+            number: number.to_string().into(),
+            text: Self::shown(text),
+        }
+    }
+}
+
+/// A message's text as its bubble shows it: image tokens as `🖼 #N` chips,
+/// with their ranges.
+struct BubbleText {
+    text: SharedString,
+    chips: Vec<Range<usize>>,
+}
+
+impl BubbleText {
+    fn new(text: &str) -> Self {
+        let (shown, chips) = attachments::chip_text(text);
+        Self {
+            text: shown.into(),
+            chips,
+        }
+    }
 }
 
 /// The card data of a tool or shell item.
@@ -1411,6 +1568,8 @@ fn card_spec(item: &Item) -> Option<CardSpec> {
                 has_output,
                 always_output: command_like,
                 status: *status,
+                input_rows: BodyLines::default(),
+                output_rows: BodyLines::default(),
             })
         }
         Item::Shell {
@@ -1434,6 +1593,8 @@ fn card_spec(item: &Item) -> Option<CardSpec> {
                 (false, Some(0)) => ToolStatus::Done,
                 _ => ToolStatus::Failed,
             },
+            input_rows: BodyLines::default(),
+            output_rows: BodyLines::default(),
         }),
         _ => None,
     }
@@ -1562,8 +1723,8 @@ fn parse_diff_line(line: &str) -> (char, &str, &str) {
     )
 }
 
-fn diff_row(line: &str) -> Div {
-    let (sign, number, text) = parse_diff_line(line);
+fn diff_row(line: &CodeLine) -> Div {
+    let sign = line.sign;
     let (color, bg, glyph) = match sign {
         '+' => (ui::success(), Some(ui::success().opacity(0.08)), "+"),
         '-' => (ui::danger(), Some(ui::danger().opacity(0.08)), "−"),
@@ -1581,7 +1742,7 @@ fn diff_row(line: &str) -> Div {
                 .flex_shrink_0()
                 .text_right()
                 .text_color(ui::faint())
-                .child(number.to_string()),
+                .child(line.number.clone()),
         )
         .child(
             div()
@@ -1593,11 +1754,7 @@ fn diff_row(line: &str) -> Div {
         .child(
             div()
                 .text_color(if sign == ' ' { ui::muted() } else { ui::fg() })
-                .child(if text.is_empty() {
-                    " ".to_string()
-                } else {
-                    text.to_string()
-                }),
+                .child(line.text.clone()),
         )
 }
 
@@ -1640,10 +1797,11 @@ fn tail_slice(text: &str, lines: usize, max: usize) -> (&str, usize) {
     if max == 0 {
         return ("", hidden);
     }
+    // From the end: the output can be long and only its tail shows.
     let start = text
-        .match_indices('\n')
-        .nth(hidden - 1)
-        .map_or(text.len(), |(at, _)| at + 1);
+        .rmatch_indices('\n')
+        .nth(max - 1)
+        .map_or(0, |(at, _)| at + 1);
     (&text[start..], hidden)
 }
 
@@ -1672,7 +1830,7 @@ fn status_footer(status: ToolStatus, duration: Option<Duration>) -> Div {
         .text_color(color)
         .map(|this| match icon {
             Some(icon) => this.child(Icon::new(icon).xsmall()),
-            None => this.child(Spinner::new().xsmall().color(ui::info())),
+            None => this.child(ui::spinner(Size::XSmall, ui::info())),
         })
         .child(label)
         .when_some(duration, |this, d| {
@@ -1689,8 +1847,7 @@ fn status_footer(status: ToolStatus, duration: Option<Duration>) -> Div {
 /// A user message: its images (numbered like their `[Image #N]` tokens)
 /// over the text, tokens shown as `🖼 #N` chips. `None` is an image that
 /// could not be decoded.
-fn user_bubble(text: &str, images: Vec<Option<Arc<Image>>>) -> Div {
-    let (shown, chips) = attachments::chip_text(text);
+fn user_bubble(shown: &BubbleText, images: Vec<Option<Arc<Image>>>) -> Div {
     let chip = HighlightStyle {
         color: Some(ui::info()),
         font_weight: Some(FontWeight::SEMIBOLD),
@@ -1719,9 +1876,10 @@ fn user_bubble(text: &str, images: Vec<Option<Arc<Image>>>) -> Div {
                     }),
                 ))
             })
-            .when(!shown.trim().is_empty(), |this| {
+            .when(!shown.text.trim().is_empty(), |this| {
                 this.child(
-                    StyledText::new(shown).with_highlights(chips.into_iter().map(|r| (r, chip))),
+                    StyledText::new(shown.text.clone())
+                        .with_highlights(shown.chips.iter().map(|r| (r.clone(), chip))),
                 )
             }),
     )
@@ -1806,24 +1964,17 @@ fn notice_card(level: NoticeLevel, text: &str) -> Div {
 }
 
 /// The petal-and-shimmer "agent is on it" row.
-fn working_indicator(
-    id: impl Into<ElementId>,
-    label: &'static str,
-    elapsed: Option<Duration>,
-) -> Div {
+fn working_indicator(label: &'static str, elapsed: Option<Duration>) -> Div {
     h_flex()
         .gap_2()
         .items_center()
         .child(ui::pulse(
-            id,
             div().text_size(px(15.)).text_color(ui::petal()).child("✿"),
         ))
         .child(
-            ShimmerText::new(label)
-                .highlight_color(ui::fg())
+            ui::shimmer(label, ui::muted(), ui::fg())
                 .text_size(px(13.))
-                .italic()
-                .text_color(ui::muted()),
+                .italic(),
         )
         .when_some(elapsed, |this, d| {
             this.child(

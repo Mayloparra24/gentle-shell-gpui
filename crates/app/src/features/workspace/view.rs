@@ -142,11 +142,8 @@ impl Workspace {
                             .items_center()
                             .justify_center()
                             .child(if running {
-                                ui::pulse(
-                                    ("tab-live", tab.id),
-                                    div().size(px(7.)).rounded_full().bg(ui::accent()),
-                                )
-                                .into_any_element()
+                                ui::pulse(div().size(px(7.)).rounded_full().bg(ui::accent()))
+                                    .into_any_element()
                             } else if kind == PaneKind::Agent {
                                 div()
                                     .text_size(px(13.))
