@@ -21,7 +21,7 @@ How Gentle Shell GPUI connects to Gentle Shell (the `gentle-shell --mode rpc` ba
 | Git | `features/git/` | `git` process |
 | Gentle Design canvas | `features/browser/` | System web view |
 | Web apps (`gentle-open`, `/web`, dev-server URLs) | `features/browser/`, `gentle_core::web` | Single-instance request, system web view |
-| Devices (Android emulators, iOS simulators) | `features/devices/`, `gentle_core::devices` | `adb`, `emulator` and `simctl` processes |
+| Devices (Android emulators, iOS simulators) | `features/devices/`, `features/settings/devices.rs`, `features/setup/devices.rs`, `gentle_core::devices` | Expo's device hub (Node child, loopback HTTP and its web viewer), `agent-device`, `gentle-device` |
 
 Common rule: every child process is created with `pi_rpc::command` (never `std::process::Command::new` directly) and, if it needs to find the user's tools, it gets `pi_rpc::child_path()` as `PATH`.
 
@@ -196,65 +196,30 @@ Gentle Shell writes them. The app only reads them:
 
 ## Devices: Android emulators and iOS simulators
 
-`features/devices/` shows each emulator or simulator in its own floating card, and `gentle_core::devices` holds the parsers and plans. `Workspace` keeps these cards and the web cards in one stage list and tiles them. Nothing is written to Gentle Shell's configuration: the panel only runs the SDK tools.
+Configuration → Devices has two switches, saved in the app's `settings.json` under `devices` (`enabled`, `agents`):
 
-### Discovery
+- **Use devices** installs Expo's device hub (`expo-device-hub` 0.22.1, the version T3 Code pins: serve-sim for iOS, serve-emu for Android) with npm into `toolchain/devices/expo-device-hub-0.22.1`, and shows the device panel's button in the title bar.
+- **Agents can use devices** installs Callstack's `agent-device` 0.21.36 the same way (its `node_modules/.bin` joins the agents' PATH) and adds the device instructions to new agent sessions.
 
-| Platform | Commands | Parsed by |
-| --- | --- | --- |
-| Android AVDs | `emulator -list-avds` | `parse_avd_list` |
-| Running Android | `adb devices -l`, then `adb -s <serial> emu avd name` and `getprop sys.boot_completed` | `parse_adb_devices`, `android_devices` |
-| iOS | `simctl list devices available --json` | `parse_simctl_devices` |
+Both need Node 22.12 or newer. iOS streaming needs Apple silicon and Xcode (`simctl`); Android needs the SDK, and emulator video needs `ffmpeg` with libx264 (the section offers the install command in a terminal tab). All of this is `setup/devices.rs`.
 
-`Tools::detect` looks for `adb` and `emulator` on `pi_rpc::child_path()` first, then under `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `~/Library/Android/sdk`, `~/Android/Sdk` and `%LOCALAPPDATA%\Android\Sdk`. On macOS, `simctl` is resolved directly from Xcode's developer folder (`DEVELOPER_DIR`, `/Applications/Xcode.app/…`, then `xcode-select -p`) because `xcode-select` often points at the Command Line Tools, which have no `simctl`; the result is cached for the process. Every child is created with `pi_rpc::command` and gets `pi_rpc::child_path()` as `PATH`.
+### The hub (`features/devices/hub.rs`)
 
-### Launch and stop
+One process per app, started on first use (the panel shows, or `gentle-device` asks): `node <entry> --port <free port> --host 127.0.0.1 --hide-sidebar --hide-boot-device`, plus `--platform android` off Apple-silicon macOS, with `ANDROID_HOME` and `DEVELOPER_DIR` (when `xcode-select` points at the Command Line Tools) set, output in `<data>/gentle-shell-gpui/devices/hub.log`. Ready when `GET /readyz` answers; its port and pid go in `devices/hub.json` for `gentle-device`. It stops with SIGTERM (helpers first) when "Use devices" goes off or the app quits; devices the app booted are shut down first.
 
-Android boots headless and cheap through `emulator`:
+API used: `GET /api/devices` (`gentle_core::devices::hub_devices` reads it and adds AVDs from `emulator -list-avds` the hub doesn't list yet), `POST /api/devices/boot` and `/api/devices/shutdown` with `{platform, id, name}`; booting is headless (no Simulator.app, no emulator window). The list is polled every 3 s while a panel shows and every second while a device boots; not at all otherwise.
 
-```text
--avd <name> -port <even port> -no-window -no-audio -no-boot-anim
--no-snapshot-save -gpu swiftshader_indirect
--camera-back none -camera-front none -no-metrics
-```
+### The panel (`features/devices/panel.rs`)
 
-The port comes from `next_emulator_port` (5554, 5556, …), skipping serials adb already reports and ports that cannot be bound. `wait_android` polls `getprop sys.boot_completed`; on timeout or cancellation it kills the process instead of leaving it running. iOS uses `simctl boot <udid>` and `simctl bootstatus <udid> -b`, and `simctl shutdown <udid>` to stop. Android stops with `adb -s <serial> emu kill` (or by killing the process the panel owns). Devices the panel started are stopped on app quit.
+One `DevicePanel` per window: a tab per device, docked as a 400 px column at the right of the panes (default) or floating as a card (`shared/floating.rs`); a header button switches. Each tab is the hub's own viewer page (`/`, live stream with touch, keyboard and hardware buttons) in a `browser::WebSurface`, pinned to its device by an initialization script that sets `window.__EXPO_DEVICE_HUB_SINGLE_DEVICE__` (what the hub's `--single-device` does). Only the active tab has a web view; hiding the panel drops it, and a screen over the window hides it. The + button lists every device (running first) and opens one, booting it when it's off. ⌘K → Devices shows the panel.
 
-### Stages and the instance tray
+### Agents
 
-`workspace/stages.rs`: `Workspace` holds a `Vec<Stage>` of `Web` and `Device` cards, each shown (floating) or hidden in the title bar's instance tray. What an agent opens starts hidden: `SessionEvent::Device`, `AgentWeb` (a loopback URL a tool printed), `DesignCanvas` and `--open-url` (`gentle-open`). What the user opens shows at once: `/web` (`SessionEvent::OpenWeb`) and ⌘K → Devices. The card's own button (−) only hides it; the tray's row opens it, its eye toggles it, ⏻ stops the device (`DevicesPanel::stop_all`, also for one an agent started) and × closes a page. Each stage remembers the agent pane that opened it and the last `gentle_core::devices::device_command` that pane ran on a device of the same platform (`adb`, `emulator`, `[xcrun] simctl`, `maestro`, `appium`, `detox`); a card opened from the palette is adopted by the first agent that drives its platform. The window observes each panel but only redraws when the tray's title or status for it changed, so a card's frames don't redraw the window. Opening the tray runs `refresh_if_stale` on the device cards, since a hidden card stops polling once its device booted. Showing or hiding a card re-docks the shown ones (`floating::docked`): they sit side by side at the window's bottom-right at their natural size (phone 400×760, page 560×380), shrink together, keeping their proportions, when they don't fit in the part of the window they may take (62% of a wide window, up to 720 px of a narrow one), and wrap into more rows when shrinking would take them below the card minimum, so the conversation stays usable beside them. Two or more cards re-dock when the window resizes; each card stays draggable and resizable afterwards. A device intent reuses the card already following that device and adds a new stage for a different one, so an Android emulator and an iOS simulator can run side by side. A hidden web card drops its native view (and the web process behind it); showing it again builds a fresh view on its URL, so in-page navigation is not kept. On Linux the GTK pump only runs while a view exists. The design canvas is another card with its own label, so it coexists with web and device stages; its `Stopped` notice closes only the design card.
+- **`gentle-device`** (`devices/cli.rs`): a shim in `toolchain/bin` that runs the app binary with `--device`. `list` asks the app to start the hub (`OpenRequest.device`, through the single-instance server; the window doesn't come forward), waits for `hub.json` and prints the list. `open <name|id>` asks the app to open the device (it boots it and shows its tab), waits until it runs and prints `agent-device --platform ios --udid <id> …` / `--platform android --serial <serial> …` calls. `close <name|id> [--shutdown]` closes the tab (and turns it off).
+- **Instructions** (`devices/instructions.rs`): `<data>/gentle-shell-gpui/agent-instructions.md`, appended to every new RPC session's system prompt with `--append-system-prompt <file>` (`pi_rpc::set_system_prompt`; a file because Windows' `.cmd` launcher mangles quotes and newlines in arguments). Pages always: `gentle-open <url>`, never an outside browser. With both switches on, devices too: `gentle-device` to open, `agent-device` for every launch, tap, text and screenshot, never `simctl boot`, `open -a Simulator`, `emulator -avd` or `adb shell input`.
+- **Commands agents run anyway**: `SessionView` reads each `bash`/`bash_background`/`monitor` command. `gentle_core::devices::launch_intent` recognizes `emulator -avd <name>`, `emulator @<name>`, `[xcrun] simctl boot …` and the Windows forms (`start "" …emulator.exe`, `cmd /c start`, `Start-Process emulator -ArgumentList …`); the panel then opens that device's tab once it runs (for 3 minutes). `device_command` names the last `adb`/`simctl`/`maestro`/… command, shown under the tabs.
 
-### Preview
-
-| Platform | Capture | Frame |
-| --- | --- | --- |
-| Android | `adb -s <serial> exec-out screencap` (raw, no PNG encoding on the device) | `parse_screencap` reads the 12/16-byte header and the panel samples it down |
-| iOS | `simctl io <udid> screenshot --type=png --display=primary <temp file>` | PNG decoded and sampled down |
-
-The texture is captured at the card's real pixel width (the preview box in points × `scale_factor`, adjusted for the phone aspect ratio) and rebuilt as a GPUI `RenderImage` with a CatmullRom downscale; it is not a full-resolution video stream. A single capture loop per card takes at most one frame every 1.5 s (2 s while booting), only while the card is shown, no screen covers it and the app window is active. Hiding the card, opening a screen over it or switching away from the app stops the screenshots; the device keeps running. The loop then ends instead of sleeping, and the card's next render that wants frames starts it again, so hidden cards cost no timer wake-ups.
-
-### Agent-triggered devices
-
-`SessionView` reads the `command` of a `bash`/`bash_background`/`monitor` tool call at `tool_execution_start`. `gentle_core::devices::launch_intent` recognizes `[<path>/]emulator … -avd <name>`, `emulator @<name>` and `[xcrun] simctl boot [<udid>|booted]`, and the window follows that device from the instance tray (`DevicesPanel::follow`) without opening a card. It does not launch a second copy: it polls discovery until the agent's device appears (`WATCH_EVERY`, at most 3 minutes), also while the card is hidden, so the tray shows its state. A different device gets a different stage. Ordinary commands such as `adb devices`, `emulator -list-avds` or `simctl list` start nothing; they only update the tray's last command. Simple `NAME=value` assignments in the same command are resolved (`UDID=…`, `AVD=…`), so `xcrun simctl boot "$UDID"` follows that exact device; an unresolved variable follows the first device of that platform.
-
-The agent keeps driving the device with its own tools (adb, simctl, Appium, Maestro, Detox, …). The cheapest Android start is the one the card itself uses:
-
-```bash
-emulator -avd "$AVD" -no-window -no-audio -no-boot-anim -no-snapshot-save \
-  -gpu swiftshader_indirect -camera-back none -camera-front none -no-metrics &
-adb wait-for-device
-until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do sleep 1; done
-```
-
-On iOS:
-
-```bash
-xcrun simctl boot "$UDID"
-xcrun simctl bootstatus "$UDID" -b
-xcrun simctl io "$UDID" screenshot --type=png --display=primary shot.png
-```
-
-The app follows either command by name; the panel never wraps or throttles the agent's own adb/simctl calls.
+The Android SDK's `emulator` and `platform-tools` are on the agents' PATH (`devices::android_tool_dirs`): Android Studio doesn't put them there.
 
 ## Web apps and the in-app browser
 
@@ -262,7 +227,7 @@ The app follows either command by name; the panel never wraps or throttles the a
 
 | Entry point | What happens |
 | --- | --- |
-| `gentle-open <url>` | A generated shim in `<data dir>/gentle-shell-gpui/toolchain/bin` (`.cmd` on Windows), written at startup. It runs `<app> --open-url <url>`, which forwards an `OpenRequest` with `url` through the single-instance server to the running window. The agent's shell PATH already contains that `toolchain/bin` via `pi_rpc::child_path()`. |
+| `gentle-open <url>` | A generated shim in `<data dir>/gentle-shell-gpui/toolchain/bin` (`.cmd` on Windows), written at startup by `platform/shims.rs` with `gentle-device`. It runs `<app> --open-url <url>`, which forwards an `OpenRequest` with `url` through the single-instance server to the running window. The agent's shell PATH already contains that `toolchain/bin` via `pi_rpc::child_path()`. |
 | `/web <url>` | A composer built-in. It emits `SessionEvent::OpenWeb` without sending a prompt to Gentle Shell; the card shows at once. |
 | A shell tool prints a URL | `gentle_core::web::loopback_url` scans the tool's command, result text and extension `notify` messages; only `localhost`, `127.0.0.1` and `[::1]` URLs count (`SessionEvent::AgentWeb`), so a dev server (`Vite`, `Next`, `python -m http.server`, …) appears in the instance tray without asking. Public URLs require the explicit tool. A URL that is already open reuses its card; a new URL adds another one, so the agent can keep a web build and a mobile build visible together. |
 

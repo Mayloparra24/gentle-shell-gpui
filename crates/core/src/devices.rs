@@ -1,7 +1,6 @@
-//! Emulators and simulators: what the machine has, how to boot one with the
-//! least resources, how to tell whether it finished booting, and how to read
-//! a raw Android frame. Pure data and parsers; the app resolves the tools,
-//! spawns the processes and draws the preview.
+//! Emulators and simulators: what the device hub lists, and the shell
+//! commands in an agent's tool calls that start or drive one. Pure data and
+//! parsers; the app runs the hub and shows the devices.
 
 use std::collections::HashMap;
 
@@ -68,21 +67,6 @@ impl Device {
     }
 }
 
-/// A line of `adb devices -l`, reduced to what the panel needs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AdbDevice {
-    pub serial: String,
-    /// `device`, `offline`, `unauthorized`, …
-    pub state: String,
-    pub model: Option<String>,
-}
-
-impl AdbDevice {
-    fn usable(&self) -> bool {
-        self.state == "device"
-    }
-}
-
 /// `emulator -list-avds`: one AVD name per line.
 pub fn parse_avd_list(text: &str) -> Vec<String> {
     text.lines()
@@ -95,87 +79,6 @@ pub fn parse_avd_list(text: &str) -> Vec<String> {
         })
         .map(str::to_string)
         .collect()
-}
-
-/// `adb devices -l`. The header line and blank lines are ignored.
-pub fn parse_adb_devices(text: &str) -> Vec<AdbDevice> {
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("List of devices") {
-                return None;
-            }
-            let mut fields = line.split_whitespace();
-            let serial = fields.next()?.to_string();
-            let state = fields.next()?.to_string();
-            let model = fields
-                .find_map(|field| field.strip_prefix("model:"))
-                .map(|model| model.replace('_', " "));
-            Some(AdbDevice {
-                serial,
-                state,
-                model,
-            })
-        })
-        .collect()
-}
-
-/// Running Android emulators as devices, plus every AVD that is not running
-/// as a shutdown target.
-///
-/// `avd_names` maps a serial to `adb -s <serial> emu avd name`; a serial
-/// missing from it falls back to the model or the serial. `booted` maps a
-/// serial to the answer of `getprop sys.boot_completed`; a serial missing
-/// from it is still booting.
-pub fn android_devices(
-    avds: &[String],
-    adb: &[AdbDevice],
-    avd_names: &[(String, String)],
-    booted: &[(String, bool)],
-) -> Vec<Device> {
-    let names: HashMap<&str, &str> = avd_names
-        .iter()
-        .map(|(serial, name)| (serial.as_str(), name.as_str()))
-        .collect();
-    let booted: HashMap<&str, bool> = booted
-        .iter()
-        .map(|(serial, done)| (serial.as_str(), *done))
-        .collect();
-    let mut out = Vec::new();
-    for device in adb.iter().filter(|d| is_emulator_serial(&d.serial)) {
-        let name = names
-            .get(device.serial.as_str())
-            .map(|name| (*name).to_string())
-            .or_else(|| device.model.clone())
-            .unwrap_or_else(|| device.serial.clone());
-        let state = if !device.usable() {
-            State::Booting
-        } else if booted.get(device.serial.as_str()).copied().unwrap_or(false) {
-            State::Ready
-        } else {
-            State::Booting
-        };
-        out.push(Device {
-            platform: Platform::Android,
-            id: device.serial.clone(),
-            name,
-            state,
-            os: None,
-        });
-    }
-    for avd in avds {
-        if !out.iter().any(|device| same_avd(&device.name, avd)) {
-            out.push(Device {
-                platform: Platform::Android,
-                id: avd.clone(),
-                name: avd.clone(),
-                state: State::Shutdown,
-                os: None,
-            });
-        }
-    }
-    sort_devices(&mut out);
-    out
 }
 
 /// AVD names use underscores where the emulator model uses spaces
@@ -191,58 +94,6 @@ fn same_avd(left: &str, right: &str) -> bool {
     normalize(left) == normalize(right)
 }
 
-/// `xcrun simctl list devices available --json`. Only available devices are
-/// listed; unavailable runtimes are skipped instead of shown as broken rows.
-pub fn parse_simctl_devices(json: &str) -> Result<Vec<Device>, String> {
-    let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|error| format!("simctl: {error}"))?;
-    let Some(devices) = value.get("devices").and_then(|d| d.as_object()) else {
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
-    for (runtime, list) in devices {
-        let os = runtime_label(runtime);
-        let Some(list) = list.as_array() else {
-            continue;
-        };
-        for device in list {
-            if device.get("isAvailable").and_then(|b| b.as_bool()) == Some(false) {
-                continue;
-            }
-            let (Some(id), Some(name)) = (
-                device.get("udid").and_then(|v| v.as_str()),
-                device.get("name").and_then(|v| v.as_str()),
-            ) else {
-                continue;
-            };
-            let state = match device.get("state").and_then(|v| v.as_str()) {
-                Some("Booted") => State::Ready,
-                Some("Shutdown") => State::Shutdown,
-                _ => State::Booting,
-            };
-            out.push(Device {
-                platform: Platform::Ios,
-                id: id.to_string(),
-                name: name.to_string(),
-                state,
-                os: os.clone(),
-            });
-        }
-    }
-    sort_devices(&mut out);
-    Ok(out)
-}
-
-/// `com.apple.CoreSimulator.SimRuntime.iOS-27-2` → `iOS 27.2`.
-fn runtime_label(runtime: &str) -> Option<String> {
-    let id = runtime.rsplit('.').next()?;
-    let (os, version) = id.split_once('-')?;
-    if version.is_empty() {
-        return None;
-    }
-    Some(format!("{os} {}", version.replace('-', ".")))
-}
-
 pub fn sort_devices(devices: &mut [Device]) {
     devices.sort_by(|a, b| {
         a.platform
@@ -254,89 +105,69 @@ pub fn sort_devices(devices: &mut [Device]) {
     });
 }
 
-/// The serial Android gives an emulator listening on `port`.
-pub fn serial_for_port(port: u16) -> String {
-    format!("emulator-{port}")
-}
-
-pub fn is_emulator_serial(serial: &str) -> bool {
-    serial.starts_with("emulator-")
-}
-
-/// The even console port of an adb serial, if it is an emulator.
-pub fn emulator_port(serial: &str) -> Option<u16> {
-    serial
-        .strip_prefix("emulator-")?
-        .parse::<u16>()
-        .ok()
-        .filter(|port| *port >= 5554)
-}
-
-/// The first free console port, skipping the ones already in use. Android
-/// uses an even console port and the next odd one for adb.
-pub fn next_emulator_port(used: &[u16]) -> u16 {
-    let used: Vec<u16> = used.to_vec();
-    (0..=64)
-        .map(|step| 5554 + step * 2)
-        .find(|port| !used.contains(port))
-        .unwrap_or(5554)
-}
-
-/// `emulator` arguments that boot headless and cheap: no window, no sound,
-/// no cameras, no boot animation and no snapshot write.
-pub fn android_launch_args(avd: &str, port: u16) -> Vec<String> {
-    [
-        "-avd",
-        avd,
-        "-port",
-        &port.to_string(),
-        "-no-window",
-        "-no-audio",
-        "-no-boot-anim",
-        "-no-snapshot-save",
-        "-gpu",
-        "swiftshader_indirect",
-        "-camera-back",
-        "none",
-        "-camera-front",
-        "none",
-        "-no-metrics",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
-}
-
-/// `simctl bootstatus -b` waits for the boot to finish; the app bounds it.
-pub fn ios_boot_args(udid: &str) -> Vec<String> {
-    vec!["boot".into(), udid.into()]
-}
-
-pub fn ios_bootstatus_args(udid: &str) -> Vec<String> {
-    vec!["bootstatus".into(), udid.into(), "-b".into()]
-}
-
-pub fn android_stop_args(serial: &str) -> Vec<String> {
-    vec!["-s".into(), serial.into(), "emu".into(), "kill".into()]
-}
-
-pub fn ios_stop_args(udid: &str) -> Vec<String> {
-    vec!["shutdown".into(), udid.into()]
-}
-
-/// `getprop sys.boot_completed` prints `1` once the framework is up.
-pub fn boot_completed(stdout: &str) -> bool {
-    stdout.trim() == "1"
-}
-
-/// `adb -s <serial> emu avd name` prints the AVD name, then `OK`. The name can
-/// itself contain spaces, so the first line is kept whole.
-pub fn parse_avd_name(stdout: &str) -> Option<String> {
-    stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty() && *line != "OK")
-        .map(str::to_string)
+/// The device hub's `GET /api/devices` (`{simulators, emulators, errors}`),
+/// plus the AVDs `emulator -list-avds` knows that the hub doesn't list (it
+/// only lists emulators that are running or were used before). Physical
+/// devices are left out. Booted devices are `Ready`: the hub reports no boot
+/// progress. The second list is what the hub couldn't read (no Xcode, …).
+pub fn hub_devices(json: &str, avds: &[String]) -> Result<(Vec<Device>, Vec<String>), String> {
+    let value: serde_json::Value = serde_json::from_str(json)
+        .map_err(|e| format!("The device hub's list is unreadable: {e}"))?;
+    let mut devices = Vec::new();
+    for (key, platform) in [
+        ("simulators", Platform::Ios),
+        ("emulators", Platform::Android),
+    ] {
+        for device in value[key].as_array().into_iter().flatten() {
+            if device["physical"] == true {
+                continue;
+            }
+            let (Some(id), Some(name)) = (device["id"].as_str(), device["name"].as_str()) else {
+                continue;
+            };
+            devices.push(Device {
+                platform,
+                id: id.to_string(),
+                name: name.to_string(),
+                state: if device["booted"] == true {
+                    State::Ready
+                } else {
+                    State::Shutdown
+                },
+                os: device["version"]
+                    .as_str()
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_string),
+            });
+        }
+    }
+    for avd in avds {
+        let listed = devices
+            .iter()
+            .any(|d| d.platform == Platform::Android && same_avd(&d.name, avd));
+        if !listed {
+            devices.push(Device {
+                platform: Platform::Android,
+                id: avd.clone(),
+                name: avd.clone(),
+                state: State::Shutdown,
+                os: None,
+            });
+        }
+    }
+    sort_devices(&mut devices);
+    let errors = value["errors"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|error| {
+            error
+                .as_str()
+                .or_else(|| error["message"].as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    Ok((devices, errors))
 }
 
 /// What a shell command in a tool call asked the machine to start.
@@ -618,73 +449,40 @@ fn shell_segments(command: &str) -> Vec<Vec<String>> {
     segments
 }
 
-/// A raw `screencap` frame: width, height, pixel format and the pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Screencap<'a> {
-    pub width: usize,
-    pub height: usize,
-    /// `1` RGBA_8888, `2` RGBX_8888, `3` RGB_888, `4` RGB_565, `5` BGRA_8888.
-    pub format: u32,
-    pub pixels: &'a [u8],
-}
-
-impl Screencap<'_> {
-    pub fn bytes_per_pixel(&self) -> usize {
-        match self.format {
-            3 => 3,
-            4 => 2,
-            _ => 4,
-        }
-    }
-}
-
-/// `adb exec-out screencap` writes a little-endian header (three words, or
-/// four with the color space) followed by the pixels. The color-space word
-/// only exists on newer Androids, so both header sizes are tried and the one
-/// that matches the payload length wins.
-pub fn parse_screencap(bytes: &[u8]) -> Option<Screencap<'_>> {
-    // `screencap -p` writes a PNG with no raw header; this parser is only for
-    // the raw form.
-    if bytes.starts_with(b"\x89PNG") {
-        return None;
-    }
-    let word = |at: usize| -> Option<u32> {
-        bytes
-            .get(at..at + 4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-    };
-    for header in [16usize, 12] {
-        let (Some(width), Some(height), Some(format)) = (word(0), word(4), word(8)) else {
-            continue;
-        };
-        let width = width as usize;
-        let height = height as usize;
-        if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
-            continue;
-        }
-        let bpp = match format {
-            1 | 2 | 5 => 4,
-            3 => 3,
-            4 => 2,
-            _ => continue,
-        };
-        let len = header + width * height * bpp;
-        if bytes.len() < len {
-            continue;
-        }
-        return Some(Screencap {
-            width,
-            height,
-            format,
-            pixels: &bytes[header..len],
-        });
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hub_list_adds_unlisted_avds_and_skips_physical_devices() {
+        let json = r#"{"simulators": [
+              {"id": "U1", "name": "iPhone 17", "version": "iOS 27.2", "platform": "ios", "booted": true, "physical": false},
+              {"id": "U2", "name": "iPad Air", "version": "iOS 27.2", "platform": "ios", "booted": false, "physical": false}],
+            "emulators": [
+              {"id": "emulator-5554", "name": "Pixel_7", "version": "Android 15.0", "platform": "android", "booted": true, "physical": false},
+              {"id": "R58M", "name": "Galaxy", "platform": "android", "booted": true, "physical": true}],
+            "errors": [{"message": "xcrun: unable to find simctl"}]}"#;
+        let (devices, errors) =
+            hub_devices(json, &["Pixel 7".into(), "Tablet_API_35".into()]).unwrap();
+        let rows: Vec<(&str, &str, State)> = devices
+            .iter()
+            .map(|d| (d.id.as_str(), d.name.as_str(), d.state))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                // Android first, running before stopped; the running Pixel_7
+                // isn't listed twice under its `-list-avds` spelling.
+                ("emulator-5554", "Pixel_7", State::Ready),
+                ("Tablet_API_35", "Tablet_API_35", State::Shutdown),
+                ("U1", "iPhone 17", State::Ready),
+                ("U2", "iPad Air", State::Shutdown),
+            ]
+        );
+        assert_eq!(devices[2].os.as_deref(), Some("iOS 27.2"));
+        assert_eq!(errors, vec!["xcrun: unable to find simctl".to_string()]);
+        assert!(hub_devices("<html>", &[]).is_err());
+    }
 
     #[test]
     fn avds_are_trimmed_and_blank_lines_dropped() {
@@ -692,155 +490,6 @@ mod tests {
             parse_avd_list(" Pixel_7 \n\nPixel_Tablet\r\n# comment\nINFO    | Storing crashdata\n"),
             vec!["Pixel_7", "Pixel_Tablet"]
         );
-    }
-
-    #[test]
-    fn adb_devices_reads_serial_state_and_model() {
-        let devices = parse_adb_devices(
-            "List of devices attached\n\
-             emulator-5554\tdevice product:sdk model:Pixel_7 device:emu64a transport_id:1\n\
-             emulator-5556\toffline\n",
-        );
-        assert_eq!(
-            devices,
-            vec![
-                AdbDevice {
-                    serial: "emulator-5554".into(),
-                    state: "device".into(),
-                    model: Some("Pixel 7".into())
-                },
-                AdbDevice {
-                    serial: "emulator-5556".into(),
-                    state: "offline".into(),
-                    model: None
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn android_running_and_stopped_avds_merge_without_duplicates() {
-        let avds = vec!["Pixel_7".into(), "Pixel_Tablet".into()];
-        let adb = parse_adb_devices(
-            "List of devices attached\n\
-             emulator-5554\tdevice model:Pixel_7\n",
-        );
-        let devices = android_devices(
-            &avds,
-            &adb,
-            &[("emulator-5554".into(), "Pixel_7".into())],
-            &[("emulator-5554".into(), true)],
-        );
-        assert_eq!(
-            devices,
-            vec![
-                Device {
-                    platform: Platform::Android,
-                    id: "emulator-5554".into(),
-                    name: "Pixel_7".into(),
-                    state: State::Ready,
-                    os: None
-                },
-                Device {
-                    platform: Platform::Android,
-                    id: "Pixel_Tablet".into(),
-                    name: "Pixel_Tablet".into(),
-                    state: State::Shutdown,
-                    os: None
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn a_running_model_name_does_not_duplicate_its_avd() {
-        let adb = parse_adb_devices("emulator-5554\tdevice model:Pixel_7\n");
-        let devices = android_devices(
-            &["Pixel_7".into()],
-            &adb,
-            &[],
-            &[("emulator-5554".into(), true)],
-        );
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].name, "Pixel 7");
-        assert_eq!(devices[0].state, State::Ready);
-    }
-
-    #[test]
-    fn an_adb_device_that_has_not_booted_is_booting() {
-        let adb = parse_adb_devices("emulator-5554\tdevice\n");
-        let devices = android_devices(&[], &adb, &[], &[]);
-        assert_eq!(devices[0].state, State::Booting);
-        assert_eq!(devices[0].name, "emulator-5554");
-    }
-
-    #[test]
-    fn simctl_json_lists_available_devices_with_their_runtime() {
-        let json = r#"{
-            "devices": {
-                "com.apple.CoreSimulator.SimRuntime.iOS-27-2": [
-                    {"udid": "A", "name": "iPhone 18", "state": "Booted", "isAvailable": true},
-                    {"udid": "B", "name": "iPhone 17", "state": "Shutdown", "isAvailable": true},
-                    {"udid": "C", "name": "Old", "state": "Shutdown", "isAvailable": false}
-                ],
-                "com.apple.CoreSimulator.SimRuntime.tvOS-27-0": [
-                    {"udid": "D", "name": "Apple TV", "state": "Shutdown", "isAvailable": true}
-                ]
-            }
-        }"#;
-        let devices = parse_simctl_devices(json).unwrap();
-        assert_eq!(devices.len(), 3);
-        assert_eq!(devices[0].id, "A");
-        assert_eq!(devices[0].state, State::Ready);
-        assert_eq!(devices[0].os.as_deref(), Some("iOS 27.2"));
-        assert!(
-            devices
-                .iter()
-                .any(|d| d.id == "D" && d.os.as_deref() == Some("tvOS 27.0"))
-        );
-        assert!(!devices.iter().any(|d| d.id == "C"));
-    }
-
-    #[test]
-    fn simctl_json_rejects_garbage() {
-        assert!(parse_simctl_devices("not json").is_err());
-        assert!(parse_simctl_devices("{}").unwrap().is_empty());
-    }
-
-    #[test]
-    fn launch_plans_are_headless_and_cheap() {
-        let args = android_launch_args("Pixel_7", 5554);
-        assert!(args.contains(&"-no-window".into()));
-        assert!(args.contains(&"-no-audio".into()));
-        assert!(args.contains(&"-no-boot-anim".into()));
-        assert!(args.contains(&"-no-snapshot-save".into()));
-        assert!(args.contains(&"5554".into()));
-        assert_eq!(ios_boot_args("U"), vec!["boot", "U"]);
-        assert_eq!(ios_bootstatus_args("U"), vec!["bootstatus", "U", "-b"]);
-        assert_eq!(
-            android_stop_args("emulator-5554"),
-            vec!["-s", "emulator-5554", "emu", "kill"]
-        );
-        assert_eq!(ios_stop_args("U"), vec!["shutdown", "U"]);
-    }
-
-    #[test]
-    fn emulator_ports_skip_the_ones_in_use() {
-        assert_eq!(next_emulator_port(&[]), 5554);
-        assert_eq!(next_emulator_port(&[5554, 5556]), 5558);
-        assert_eq!(serial_for_port(5558), "emulator-5558");
-        assert_eq!(emulator_port("emulator-5558"), Some(5558));
-        assert_eq!(emulator_port("R58M"), None);
-        assert_eq!(emulator_port("emulator-123"), None);
-    }
-
-    #[test]
-    fn boot_completed_and_avd_name_parse() {
-        assert!(boot_completed("1\r\n"));
-        assert!(!boot_completed("0"));
-        assert!(!boot_completed(""));
-        assert_eq!(parse_avd_name("Pixel 7\nOK\n"), Some("Pixel 7".into()));
-        assert_eq!(parse_avd_name("OK\n"), None);
     }
 
     #[test]
@@ -979,36 +628,5 @@ mod tests {
         assert_eq!(device_command("xcrun clang main.c"), None);
         assert_eq!(device_command("echo 'adb shell ls'"), None);
         assert_eq!(device_command("npm run build"), None);
-    }
-
-    #[test]
-    fn screencap_reads_three_and_four_word_headers() {
-        let mut bytes = Vec::new();
-        for word in [2u32, 1, 1] {
-            bytes.extend_from_slice(&word.to_le_bytes());
-        }
-        bytes.extend_from_slice(&[1, 2, 3, 4, 5, 6, 7, 8]);
-        let frame = parse_screencap(&bytes).unwrap();
-        assert_eq!((frame.width, frame.height, frame.format), (2, 1, 1));
-        assert_eq!(frame.pixels, &[1, 2, 3, 4, 5, 6, 7, 8]);
-
-        let mut bytes = Vec::new();
-        for word in [1u32, 1, 4] {
-            bytes.extend_from_slice(&word.to_le_bytes());
-        }
-        bytes.extend_from_slice(&[0, 0]);
-        // The 12-byte header matches exactly; a 16-byte one would not.
-        assert!(parse_screencap(&bytes).is_some());
-
-        let mut bytes = Vec::new();
-        for word in [1u32, 1, 1, 0] {
-            bytes.extend_from_slice(&word.to_le_bytes());
-        }
-        bytes.extend_from_slice(&[1, 2, 3, 4]);
-        let frame = parse_screencap(&bytes).unwrap();
-        assert_eq!(frame.pixels.len(), 4);
-
-        assert!(parse_screencap(b"\x89PNG\r\n\x1a\n").is_none());
-        assert!(parse_screencap(&[]).is_none());
     }
 }

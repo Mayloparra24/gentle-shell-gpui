@@ -59,6 +59,17 @@ pub fn resolve_backend(cwd: &Path) -> Result<LaunchSpec> {
     // Launcher options such as `--link` or `--home <dir>` go before the Pi args.
     let mut args = extra_args();
     args.extend(["--mode".to_string(), "rpc".to_string()]);
+    // The host's own instructions (how to open pages and devices in the
+    // app), as a file: arguments through Windows' `.cmd` launcher mangle
+    // quotes, `%` and newlines.
+    if let Some(file) = SYSTEM_PROMPT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+    {
+        args.push("--append-system-prompt".to_string());
+        args.push(file.to_string_lossy().into_owned());
+    }
     Ok(LaunchSpec {
         program,
         args,
@@ -214,6 +225,15 @@ pub fn child_path() -> OsString {
 /// into folders it owns). Replaces the previous list.
 pub fn set_extra_path(dirs: Vec<PathBuf>) {
     *EXTRA_PATH.lock().unwrap_or_else(|e| e.into_inner()) = dirs;
+}
+
+static SYSTEM_PROMPT: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// A file Pi appends to every new RPC session's system prompt
+/// (`--append-system-prompt`), or `None`. Sessions already running keep
+/// what they started with.
+pub fn set_system_prompt(file: Option<PathBuf>) {
+    *SYSTEM_PROMPT.lock().unwrap_or_else(|e| e.into_inner()) = file;
 }
 
 /// Forget everything resolved from the environment: cached `--version`

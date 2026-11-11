@@ -25,9 +25,7 @@ use crate::shared::floating::{self, CardState, DragKind};
 use crate::shared::ui;
 
 mod surface;
-mod tool;
 pub use surface::WebSurface;
-pub use tool::install_open_tool;
 
 // The native web view, one module per system with the same interface:
 // `host` (the window to build in, taken during a frame), `NativeView::{new,

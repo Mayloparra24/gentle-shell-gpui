@@ -18,6 +18,7 @@ use crate::{features::app_update, shared::themes, shared::ui};
 mod app;
 mod background;
 mod claude;
+mod devices;
 mod layout;
 mod maestro;
 mod models;
@@ -45,6 +46,8 @@ pub enum SettingsEvent {
     BackendUpdated,
     /// gentle-stream was installed or removed: the title bar's ♪ follows.
     MusicChanged,
+    /// Configuration → Devices' switches changed.
+    DevicesChanged(crate::features::setup::devices::Prefs),
     /// An action from the Setup & requirements checklist (sign in, a
     /// terminal command, an install that finished) for the window to carry out.
     Setup(crate::features::onboarding::OnboardingEvent),
@@ -83,6 +86,8 @@ pub struct SettingsView {
     maestro: maestro::Maestro,
     /// Music (gentle-stream): what was found, the job running and its log.
     music: music::Music,
+    /// Devices: the switches, what this machine has, an install running.
+    devices: devices::Devices,
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -148,10 +153,12 @@ impl SettingsView {
             _setup: setup_sub,
             maestro: maestro::Maestro::default(),
             music: music::Music::default(),
+            devices: devices::Devices::default(),
         };
         this.reload(cx);
         this.refresh_maestro(cx);
         this.refresh_music(cx);
+        this.refresh_devices(cx);
         this
     }
 
@@ -261,6 +268,7 @@ impl Render for SettingsView {
                         section(IconName::CircleCheck, "Setup & requirements")
                             .child(self.setup.clone()),
                     )
+                    .child(self.devices_section(cx))
                     .child(self.maestro_section(cx))
                     .child(self.music_section(cx))
                     .child(theme::theme_section(&self.transparency, cx))

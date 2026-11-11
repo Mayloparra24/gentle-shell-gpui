@@ -20,6 +20,9 @@ pub struct OpenRequest {
     /// A page to show in the in-app browser (`gentle-open`).
     #[serde(default)]
     pub url: Option<String>,
+    /// `gentle-device`'s arguments, for the device panel.
+    #[serde(default)]
+    pub device: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -63,6 +66,12 @@ pub fn claim(request: &OpenRequest) -> Role {
         // Never block the user from opening the app over the guard itself.
         Err(_) => Role::Primary(async_channel::unbounded().1),
     }
+}
+
+/// Hand `request` to the running app; false when none answers. Commands
+/// (`gentle-device`) use it: they never become the app themselves.
+pub fn send(request: &OpenRequest) -> bool {
+    record_path().is_some_and(|path| forward(&path, request))
 }
 
 fn forward(path: &Path, request: &OpenRequest) -> bool {
@@ -175,6 +184,7 @@ mod tests {
             folder: Some("/tmp".into()),
             prompt: Some("hola".into()),
             url: None,
+            device: None,
         };
         assert!(forward(&path, &request), "a live primary accepts");
         assert_eq!(rx.recv_blocking().unwrap(), request);

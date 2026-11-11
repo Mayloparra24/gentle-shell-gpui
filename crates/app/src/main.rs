@@ -10,6 +10,11 @@ use features::setup;
 use platform::instance;
 
 fn main() {
+    // `gentle-device …` (the agents' command) runs here and exits.
+    let mut args = std::env::args().skip(1);
+    if args.next().as_deref() == Some("--device") {
+        std::process::exit(features::devices::cli::run(args.collect()));
+    }
     // An explicit folder selects (or creates) the workspace rooted there;
     // without one the last workspace is restored.
     let cli = cli::parse_cli();
@@ -30,14 +35,19 @@ fn main() {
         folder: folder.clone(),
         prompt: prompt.clone(),
         url: url.clone(),
+        device: None,
     };
     let requests = match instance::claim(&request) {
         instance::Role::Forwarded => return,
         instance::Role::Primary(requests) => requests,
     };
-    // `gentle-open` lives in the toolchain folder the agents get on PATH;
-    // create it before that PATH is computed.
-    features::browser::install_open_tool();
+    // `gentle-open` and `gentle-device` live in the toolchain folder the
+    // agents get on PATH; create them before that PATH is computed.
+    platform::shims::install();
+    // What every agent is told about opening pages and devices in the app.
+    pi_rpc::set_system_prompt(features::devices::agent_instructions(
+        setup::devices::prefs(),
+    ));
     // Toolchains onboarding installed into the app's own folders.
     setup::apply_toolchain_path();
     // Gentle Shell 4.7's own install moved its config folder without copying

@@ -16,7 +16,7 @@ pub use login::{AuthEvent, AuthPrompt, LoginHelper, LoginMessage, PromptOption, 
 
 pub use launch::{
     LaunchSpec, backend_version, child_path, command, find_program, forget_cached, forget_versions,
-    resolve_backend, resolve_node, set_extra_path, version_output,
+    resolve_backend, resolve_node, set_extra_path, set_system_prompt, version_output,
 };
 pub use record::{Record, Response, UiMethod, UiRequest, parse_record};
 
