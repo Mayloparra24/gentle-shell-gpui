@@ -133,6 +133,24 @@ impl HubProcess {
     }
 }
 
+/// Stop agent-device's daemon and everything under it (the iOS runner's
+/// xcodebuild, the runner app on the simulator). An agent that never closed
+/// its session keeps them alive after the app quits; they idle-stop only
+/// once no session is open.
+pub fn stop_agent_daemon() {
+    let Some((node, entry)) = setup::agent_command() else {
+        return;
+    };
+    let _ = pi_rpc::command(&node)
+        .arg(&entry)
+        .args(["daemon", "stop", "--clean"])
+        .env("PATH", pi_rpc::child_path())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 impl Drop for HubProcess {
     fn drop(&mut self) {
         if let Some(path) = state_path() {
