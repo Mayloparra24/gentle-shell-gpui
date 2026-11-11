@@ -306,8 +306,12 @@ impl Hub {
         .detach();
     }
 
-    /// The app is quitting: shut down what it booted, then stop the hub.
+    /// The app is quitting: shut down what it booted, stop agent-device's
+    /// daemon (when agents can drive devices), then stop the hub.
     fn quit(&mut self) {
+        if self.prefs.enabled && self.prefs.agents {
+            hub::stop_agent_daemon();
+        }
         if let Some(port) = self.port() {
             for device in self.booted_here.drain(..) {
                 let current = self

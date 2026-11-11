@@ -217,6 +217,11 @@ pub fn agent_device_prefix(ios: bool, id: &str) -> String {
     )
 }
 
+/// The node binary and agent-device's script.
+pub fn agent_command() -> Option<(PathBuf, PathBuf)> {
+    Some((node()?, AGENT.entry()?))
+}
+
 /// The node binary and script that run the hub.
 pub fn hub_command() -> Option<(PathBuf, PathBuf)> {
     Some((node()?, HUB.entry()?))
