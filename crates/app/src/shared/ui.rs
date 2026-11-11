@@ -71,7 +71,7 @@ impl Palette {
         let tint = mix(t.fg, t.accent, 0.6);
         let glass = |amount: f32, alpha: f32| color(mix(t.bg, tint, amount), alpha);
         let accent_deep = mix(t.accent, t.bg, 0.2);
-        Self {
+        let palette = Self {
             light: t.light,
             window_bg: color(
                 mix(t.bg, t.fg, 0.03),
@@ -113,6 +113,26 @@ impl Palette {
             screen: glass(0.055, 1.),
             scrollbar_hover: solid(mix(t.border, t.fg, 0.2)),
             backdrop: color(0x000000, if t.light { 0.25 } else { 0.44 }),
+        };
+        if !t.oled {
+            return palette;
+        }
+        // OLED: every large surface is true black and opaque whatever the
+        // transparency (blur or a tint would light pixels that should be off).
+        // Cards and menus sit just above black so they still read as layers.
+        let black = solid(0x000000);
+        Self {
+            window_bg: black,
+            panel: black,
+            surface: solid(mix(t.bg, t.raised, 0.5)),
+            surface_hover: solid(t.raised),
+            raised: solid(t.raised),
+            well: black,
+            border: solid(mix(t.bg, t.border, 0.6)),
+            popover: solid(mix(t.bg, t.raised, 0.4)),
+            screen: black,
+            backdrop: color(0x000000, 0.75),
+            ..palette
         }
     }
 }
@@ -669,5 +689,23 @@ mod tests {
         assert_eq!(clear.screen.a, 1.);
         // Out-of-range values clamp instead of going negative.
         assert_eq!(Palette::new(cute, 3.), clear);
+    }
+
+    #[test]
+    fn oled_surfaces_stay_true_black_at_any_transparency() {
+        let catalog = crate::shared::themes::load_catalog(Vec::new(), Vec::new());
+        let oled = catalog
+            .iter()
+            .find(|t| t.name == crate::shared::themes::OLED_THEME)
+            .unwrap();
+        let black = Hsla::from(rgb(0x000000));
+        for clear in [0., 0.6, 1.] {
+            let p = Palette::new(oled, clear);
+            for surface in [p.window_bg, p.panel, p.well, p.screen] {
+                assert_eq!(surface, black, "at transparency {clear}");
+            }
+            // Layers above black stay opaque too, so nothing behind them glows.
+            assert_eq!((p.surface.a, p.popover.a, p.raised.a), (1., 1., 1.));
+        }
     }
 }
