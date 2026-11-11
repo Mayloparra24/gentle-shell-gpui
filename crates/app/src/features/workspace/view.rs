@@ -100,6 +100,8 @@ impl Workspace {
                 let count = tab.tree.len();
                 let icon_color = if active { ui::petal() } else { ui::faint() };
                 let item = h_flex()
+                    .min_w_0()
+                    .overflow_hidden()
                     .id(("tab", tab.id))
                     .group("tab")
                     .h(px(TITLE_ITEM))
@@ -175,6 +177,7 @@ impl Workspace {
                                 .child(Input::new(&rename.input).appearance(false).xsmall())
                                 .into_any_element(),
                             None => div()
+                                .min_w_0()
                                 .max_w(px(180.))
                                 .overflow_hidden()
                                 .text_ellipsis()
@@ -219,10 +222,13 @@ impl Workspace {
                             }))
                             .child(Icon::new(IconName::X).xsmall()),
                     );
-                ui::appear(("tab-in", tab.id), div().child(item))
+                // Tabs shrink (titles end in …) so the title bar's buttons
+                // keep their place in a narrow window.
+                ui::appear(("tab-in", tab.id), div().flex().min_w_0().child(item))
             }))
             .child(
                 div()
+                    .flex_none()
                     .ml(px(2.))
                     .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
@@ -596,7 +602,8 @@ pub(super) fn avatar_color(name: &str) -> Hsla {
     hsla((hash % 360) as f32 / 360., 0.55, 0.65, 1.)
 }
 
-/// A two-line menu entry: icon, label, muted description, shortcut.
+/// A two-line menu entry: icon, label, muted description, shortcut (none
+/// when `keys` is empty).
 pub(super) fn menu_row(
     icon: IconName,
     label: &'static str,
@@ -628,7 +635,7 @@ pub(super) fn menu_row(
                 .child(div().text_sm().text_color(ui::fg()).child(label))
                 .child(div().text_xs().text_color(ui::muted()).child(detail)),
         )
-        .child(ui::kbd(keys))
+        .when(!keys.is_empty(), |d| d.child(ui::kbd(keys)))
 }
 
 /// Where a dragged pane would land on the pane under the pointer: that half

@@ -20,11 +20,9 @@ impl Render for Workspace {
         let has_sidebar = self.sidebar.is_some();
         // Below this the screen buttons fold into one overflow menu.
         let narrow = window.viewport_size().width < px(900.);
-        // The browser's native view would cover a screen opened over it.
-        if let Some((browser, _)) = &self.browser {
-            let covered = self.overlay.is_some();
-            browser.update(cx, |browser, cx| browser.set_covered(covered, cx));
-        }
+        // Native web views would cover a screen opened over them; device
+        // cards stop capturing while covered.
+        self.set_stages_covered(self.overlay.is_some(), cx);
         // While the surge plays, the window shakes before the rose hatches:
         // the root moves in place and asks for the next frame, so the element
         // tree (and every element's state) stays the same.
@@ -67,7 +65,12 @@ impl Render for Workspace {
                     .bg(gpui_kit::transparent_black())
                     .child(
                         h_flex()
-                            .w_full()
+                            // Fill gpui-component's bar without counting toward
+                            // its width: `w_full` there resolves against the
+                            // content and pushed the buttons out of the window.
+                            .flex_1()
+                            .w_0()
+                            .min_w_0()
                             .pr_2()
                             .gap_3()
                             .justify_between()
@@ -75,6 +78,8 @@ impl Render for Workspace {
                                 h_flex()
                                     .gap_2()
                                     .flex_1()
+                                    // Width 0: the tabs take what the buttons leave.
+                                    .w_0()
                                     .min_w_0()
                                     .overflow_hidden()
                                     .child(self.render_workspace_chip(cx))
@@ -155,6 +160,7 @@ impl Render for Workspace {
                                             )
                                         },
                                     )
+                                    .children(self.render_tray(cx))
                                     .child({
                                         let weak = cx.entity().downgrade();
                                         div()
@@ -376,7 +382,7 @@ impl Render for Workspace {
                             .child(self.render_body(window, cx)),
                     ),
             )
-            .children(self.browser.as_ref().map(|(browser, _)| browser.clone()))
+            .children(self.stages.iter().filter_map(Stage::element))
             .children(self.overlay.as_ref().map(|(overlay, _)| match overlay {
                 Overlay::Providers(view) => view.clone().into_any_element(),
                 Overlay::Sessions(view) => view.clone().into_any_element(),
