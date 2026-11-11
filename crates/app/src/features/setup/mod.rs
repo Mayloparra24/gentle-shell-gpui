@@ -11,6 +11,7 @@ mod extras;
 mod fetch;
 mod gentle;
 pub mod maestro;
+pub mod music;
 mod probe;
 
 use std::path::{Path, PathBuf};
@@ -103,7 +104,8 @@ fn prefix_bin(prefix: &Path, windows: bool) -> PathBuf {
 }
 
 /// The app-owned toolchain folders that exist: managed Node, the user npm
-/// prefix, loose binaries (Engram), the Maestro CLI and its Java.
+/// prefix, loose binaries (Engram), the Maestro CLI and its Java, and the
+/// music player.
 fn managed_dirs() -> Vec<PathBuf> {
     let Some(toolchain) = toolchain_dir() else {
         return Vec::new();
@@ -115,6 +117,8 @@ fn managed_dirs() -> Vec<PathBuf> {
         toolchain.join("bin"),
         maestro::toolchain_bin(&toolchain),
         maestro::toolchain_java_bin(&toolchain),
+        // gentle-stream, so `/gentle:music` in a terminal tab finds it too.
+        toolchain.join("music").join("bin"),
     ]
     .into_iter()
     .filter(|dir| dir.is_dir())

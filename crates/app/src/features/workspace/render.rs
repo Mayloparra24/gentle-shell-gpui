@@ -160,6 +160,7 @@ impl Render for Workspace {
                                             )
                                         },
                                     )
+                                    .children(crate::features::music::title_button(&self.music, cx))
                                     .children(self.render_tray(cx))
                                     .child({
                                         let weak = cx.entity().downgrade();
