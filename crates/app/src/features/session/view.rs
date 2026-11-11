@@ -30,6 +30,7 @@ mod effort;
 mod live;
 mod model_picker;
 mod permissions;
+mod rail;
 mod slash_menu;
 mod todo_island;
 mod transcript_list;
@@ -496,7 +497,16 @@ impl SessionView {
         match item {
             Item::User { text, images } => {
                 let images = images.iter().map(|i| self.image_cache.get(i)).collect();
-                user_bubble(text, images).into_any_element()
+                let bubble = user_bubble(text, images);
+                if text.trim().is_empty() {
+                    return bubble.into_any_element();
+                }
+                v_flex()
+                    .w_full()
+                    .group("user")
+                    .child(bubble)
+                    .child(self.render_message_actions(ix, cx))
+                    .into_any_element()
             }
             Item::Assistant {
                 blocks,
@@ -788,6 +798,30 @@ impl SessionView {
                             .collect::<Vec<_>>()
                             .join("\n\n");
                         this.copy_text(text, cx);
+                    })),
+            )
+    }
+
+    /// Under a message you sent, shown on hover: copy its text.
+    fn render_message_actions(&self, ix: usize, cx: &mut Context<Self>) -> Div {
+        h_flex()
+            .w_full()
+            .justify_end()
+            .h(px(20.))
+            .mt(px(2.))
+            .invisible()
+            .group_hover("user", |s| s.visible())
+            .child(
+                Button::new(("copy-message", ix))
+                    .ghost()
+                    .xsmall()
+                    .text_color(ui::faint())
+                    .icon(Icon::new(IconName::Copy))
+                    .tooltip("Copy message")
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if let Some(Item::User { text, .. }) = this.transcript.items.get(ix) {
+                            this.copy_text(text.trim().to_string(), cx);
+                        }
                     })),
             )
     }
@@ -1137,6 +1171,8 @@ impl Render for SessionView {
         // A tab starts its backend once shown.
         self.ensure_started(window, cx);
         self.sync_view(cx);
+        self.step_glide(window);
+        let scroll = self.scroll_estimate();
         let width = self.pane_width.clone();
         let view = cx.entity_id();
         let narrow = self.pane_width.get() < NARROW;
@@ -1164,13 +1200,23 @@ impl Render for SessionView {
                 .size_full(),
             )
             .child(
-                div().id("transcript").flex_1().min_h_0().child(
-                    list(
-                        self.list.state(),
-                        cx.processor(|this, ix, window, cx| this.render_row(ix, window, cx)),
+                div()
+                    .id("transcript")
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    // A wheel or trackpad scroll takes over from a glide and
+                    // shows the rail's thumb.
+                    .on_scroll(cx.listener(|this, _, _, cx| this.on_user_scroll(cx)))
+                    .child(
+                        list(
+                            self.list.state(),
+                            cx.processor(|this, ix, window, cx| this.render_row(ix, window, cx)),
+                        )
+                        .size_full(),
                     )
-                    .size_full(),
-                ),
+                    .children(self.render_rail(&scroll, cx))
+                    .children(self.render_jump_down(cx)),
             )
             .child(
                 h_flex()

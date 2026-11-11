@@ -18,6 +18,10 @@ pub(super) const BUILTINS: &[(&str, &str)] = &[
     ("copy", "Copy the last answer to the clipboard"),
     ("export", "Export the conversation as an HTML file"),
     ("reload", "Restart Gentle Shell, keeping the conversation"),
+    (
+        "web",
+        "Open a URL in the in-app browser: /web http://localhost:3000",
+    ),
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +34,8 @@ pub(super) enum Builtin {
     /// `/export [path]`; no path asks with a save dialog.
     Export(Option<String>),
     Reload,
+    /// `/web <url>`; opens the in-app browser on any http(s) page.
+    Web(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +63,7 @@ pub(super) fn parse_builtin(text: &str) -> Option<Builtin> {
         "copy" => Builtin::Copy,
         "export" => Builtin::Export(args_opt),
         "reload" => Builtin::Reload,
+        "web" => Builtin::Web(args.to_string()),
         _ => return None,
     })
 }
@@ -136,6 +143,10 @@ mod tests {
         );
         assert_eq!(parse_builtin("/name"), Some(Builtin::Name(String::new())));
         assert_eq!(parse_builtin("/compact"), Some(Builtin::Compact(None)));
+        assert_eq!(
+            parse_builtin("/web http://localhost:3000"),
+            Some(Builtin::Web("http://localhost:3000".into()))
+        );
         assert_eq!(
             parse_builtin("  /compact   keep the API notes "),
             Some(Builtin::Compact(Some("keep the API notes".into())))

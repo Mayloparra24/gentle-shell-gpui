@@ -42,6 +42,9 @@ pub struct Theme {
     pub name: String,
     pub source: Source,
     pub light: bool,
+    /// True black that stays opaque at any transparency, so an OLED panel
+    /// turns those pixels off (`ui::Palette::new` keeps every large surface black).
+    pub oled: bool,
     pub bg: u32,
     pub fg: u32,
     pub muted: u32,
@@ -206,6 +209,7 @@ pub fn parse_pi_theme(text: &str, source: Source) -> Option<Theme> {
         name: name.to_string(),
         source,
         light,
+        oled: false,
         bg,
         fg,
         muted,
@@ -387,6 +391,7 @@ fn from_scheme(s: &Scheme) -> Theme {
         name: s.name.to_string(),
         source: Source::Builtin,
         light: s.light,
+        oled: false,
         bg: s.bg,
         fg: s.fg,
         muted: mix(s.fg, s.bg, 0.35),
@@ -406,8 +411,46 @@ fn from_scheme(s: &Scheme) -> Theme {
     }
 }
 
+/// OLED Black: Gentleman-Cute's rose on true black. Large surfaces are
+/// `#000000` (pixels off), text is a soft pearl rather than pure white
+/// (less glare and burn-in), and the accents are the brand's, unchanged.
+pub const OLED_THEME: &str = "OLED Black";
+
+fn oled_black() -> Theme {
+    #[rustfmt::skip]
+    let ansi = [
+        0x1c171a, 0xff718f, 0xb4e7c7, 0xf2b86d, 0xa9c7ee, 0xf095c8, 0x9cd7d1, 0xd2cbd0,
+        0x5c5058, 0xff8fa6, 0xc8f0d6, 0xf7cb8f, 0xc4daf6, 0xffb1dd, 0xb8e6e1, 0xf0e9ed,
+    ];
+    Theme {
+        name: OLED_THEME.to_string(),
+        source: Source::Builtin,
+        light: false,
+        oled: true,
+        bg: 0x000000,
+        fg: 0xdcd4d9,
+        muted: 0x958590,
+        faint: 0x62555d,
+        accent: 0xf095c8,
+        accent_active: 0xffb1dd,
+        raised: 0x1a0d15,
+        border: 0x3a2230,
+        heading: 0xe0c27a,
+        info: 0xa9c7ee,
+        success: 0xb4e7c7,
+        danger: 0xff718f,
+        warning: 0xf2b86d,
+        cursor: 0xf095c8,
+        selection: 0x28121e,
+        ansi,
+    }
+}
+
+/// OLED Black first, then the popular schemes.
 pub fn builtin_themes() -> Vec<Theme> {
-    SCHEMES.iter().map(from_scheme).collect()
+    std::iter::once(oled_black())
+        .chain(SCHEMES.iter().map(from_scheme))
+        .collect()
 }
 
 // ── Catalog and selection ──────────────────────────────────────────────────
@@ -829,13 +872,13 @@ mod tests {
                 .source,
             Source::Pi
         );
-        // 17 dark + 2 light, minus the Dracula the user's file shadows.
+        // OLED Black, 17 dark + 2 light, minus the Dracula the user's file shadows.
         assert_eq!(
             catalog
                 .iter()
                 .filter(|t| t.source == Source::Builtin)
                 .count(),
-            18
+            19
         );
         assert!(catalog.iter().filter(|t| t.light).count() >= 2);
     }

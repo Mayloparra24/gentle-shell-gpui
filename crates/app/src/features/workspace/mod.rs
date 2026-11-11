@@ -44,10 +44,12 @@ mod panes;
 mod persistence;
 mod render;
 mod spaces;
+mod stages;
 mod tabs;
 mod view;
 
 use layout::*;
+use stages::Stage;
 use view::*;
 
 actions!(
@@ -246,8 +248,10 @@ pub struct Workspace {
     surge: Option<(u64, std::time::Instant)>,
     surge_runs: u64,
     _surge_end: Option<Task<()>>,
-    /// The in-app browser showing Gentle Design's canvas, if open.
-    browser: Option<(Entity<crate::features::browser::BrowserPanel>, Subscription)>,
+    /// Web and device stages, in creation order: shown ones float and tile,
+    /// the rest wait in the title bar's instance tray.
+    stages: Vec<Stage>,
+    next_stage: u64,
     /// The welcome screen, kept while its "Sign in" shows Providers so closing
     /// Providers returns to it.
     resume_welcome: Option<Entity<WelcomeView>>,
@@ -265,6 +269,7 @@ impl Workspace {
     pub fn new(
         folder: Option<PathBuf>,
         prompt: Option<String>,
+        url: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -283,12 +288,20 @@ impl Workspace {
             .collect();
         let lifecycle = vec![
             cx.on_app_quit(|this, cx| {
+                this.shutdown_stages(cx);
                 this.save_now(cx);
                 async {}
             }),
             cx.on_release(|this, cx| this.save_now(cx)),
             // The title-bar update pill follows this app's own update state.
             cx.observe_global::<crate::features::app_update::AppUpdate>(|_, cx| cx.notify()),
+            // Keep a multi-stage grid filling the window as it resizes. A
+            // lone card keeps whatever size the user gave it.
+            cx.observe_window_bounds(window, |this, window, cx| {
+                if this.shown_stages() >= 2 {
+                    this.tile_stages(window, cx);
+                }
+            }),
         ];
         let mut this = Self {
             current: saved.current.min(spaces.len().saturating_sub(1)),
@@ -303,7 +316,8 @@ impl Workspace {
             renaming: None,
             surge: None,
             surge_runs: 0,
-            browser: None,
+            stages: Vec::new(),
+            next_stage: 1,
             resume_welcome: None,
             drop_hint: None,
             _surge_end: None,
@@ -330,6 +344,9 @@ impl Workspace {
         if let Some(prompt) = prompt {
             let root = this.space().root.clone();
             this.open_tab(PaneKind::Agent, root, Some(prompt), None, window, cx);
+        }
+        if let Some(url) = url {
+            this.open_web(url, None, false, window, cx);
         }
         this.space_mut().last_active = workspaces::now();
         this.focus_active(window, cx);
@@ -366,6 +383,7 @@ impl Workspace {
         &mut self,
         folder: Option<PathBuf>,
         prompt: Option<String>,
+        url: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -379,6 +397,9 @@ impl Workspace {
         if let Some(prompt) = prompt {
             let root = self.space().root.clone();
             self.open_tab(PaneKind::Agent, root, Some(prompt), None, window, cx);
+        }
+        if let Some(url) = url {
+            self.open_web(url, None, false, window, cx);
         }
         cx.notify();
     }

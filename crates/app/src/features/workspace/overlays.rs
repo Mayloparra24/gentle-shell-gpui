@@ -1,5 +1,6 @@
 //! Screens drawn over the workspace: palette, settings, providers, sessions,
-//! usage, memory, profiles, onboarding; browser canvas and surge.
+//! usage, memory, profiles, onboarding; and the surge. Floating web and
+//! device cards live in `stages.rs`.
 
 use super::*;
 
@@ -77,6 +78,7 @@ impl Workspace {
             PaletteAction::Profiles => self.open_profiles(window, cx),
             PaletteAction::Usage => self.open_usage(window, cx),
             PaletteAction::Memory => self.open_memory(window, cx),
+            PaletteAction::Devices => self.show_devices(window, cx),
             PaletteAction::Settings => self.open_settings(window, cx),
             PaletteAction::Setup => self.open_onboarding(None, window, cx),
             PaletteAction::Welcome => self.open_welcome(None, window, cx),
@@ -126,33 +128,6 @@ impl Workspace {
             PaletteAction::OpenFile(path) => self.open_file(path, window, cx),
             PaletteAction::SwitchBranch(branch) => self.confirm_switch_branch(branch, window, cx),
         }
-    }
-
-    /// Show Gentle Design's canvas in the in-app browser, reload it when the
-    /// canvas refreshes, and close it when the canvas stops.
-    pub(super) fn show_design_canvas(
-        &mut self,
-        canvas: crate::features::browser::CanvasNotice,
-        cx: &mut Context<Self>,
-    ) {
-        use crate::features::browser::{BrowserEvent, BrowserPanel, CanvasNotice};
-        match canvas {
-            CanvasNotice::Stopped => self.browser = None,
-            CanvasNotice::Open { url, .. } => match &self.browser {
-                Some((browser, _)) => browser.update(cx, |browser, cx| browser.navigate(url, cx)),
-                None => {
-                    let browser = cx.new(|cx| BrowserPanel::new(url, cx));
-                    let subscription = cx.subscribe(&browser, |this, _, event, cx| match event {
-                        BrowserEvent::Close => {
-                            this.browser = None;
-                            cx.notify();
-                        }
-                    });
-                    self.browser = Some((browser, subscription));
-                }
-            },
-        }
-        cx.notify();
     }
 
     /// Play the max-effort surge over the window; choosing max again

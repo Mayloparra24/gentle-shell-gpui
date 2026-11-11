@@ -49,6 +49,12 @@ pub(super) fn screen_rows() -> Vec<Row> {
             PaletteAction::Memory,
         ),
         row(
+            IconName::Smartphone,
+            "Devices",
+            "Launch an Android emulator or iOS simulator and watch it",
+            PaletteAction::Devices,
+        ),
+        row(
             IconName::Gauge,
             "Usage & stats",
             "Subscription windows and local token/cost stats",

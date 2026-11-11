@@ -115,7 +115,18 @@ pub(in crate::features::session) struct TranscriptList {
     /// When each animated row first rendered: it animates in only then, not
     /// each time it scrolls back into view.
     born: HashMap<(&'static str, usize), Instant>,
+    /// Row heights seen on screen, by row. The list only knows the heights of
+    /// rows it has laid out; the rail estimates the rest from these.
+    heights: HashMap<usize, f32>,
+    /// Each item's size from its content (`gentle_core::scroll::item_weight`),
+    /// by transcript index: how the rail sizes rows it hasn't seen.
+    weights: Vec<f32>,
 }
+
+/// Header, tail and footer rows, in the same "lines" as item weights.
+const HEADER_WEIGHT: f32 = 4.;
+const TAIL_WEIGHT: f32 = 2.5;
+const FOOTER_WEIGHT: f32 = 1.4;
 
 impl TranscriptList {
     pub(in crate::features::session) fn new() -> Self {
@@ -126,6 +137,8 @@ impl TranscriptList {
             header: None,
             prepared: HashMap::new(),
             born: HashMap::new(),
+            heights: HashMap::new(),
+            weights: Vec::new(),
         }
     }
 
@@ -133,12 +146,57 @@ impl TranscriptList {
     pub(super) fn forget_items(&mut self) {
         self.prepared.clear();
         self.born.clear();
+        self.heights.clear();
+        self.weights.clear();
+    }
+
+    /// Note the heights of the rows on screen. Only those: a row laid out in
+    /// the overdraw below can still be growing (its Markdown parses in the
+    /// background) and its size isn't updated until it scrolls in.
+    pub(super) fn record_heights(&mut self) {
+        let viewport = self.state.viewport_bounds();
+        let mut row = self.state.logical_scroll_top().item_ix;
+        while row < self.shape.len() {
+            let Some(bounds) = self.state.bounds_for_item(row) else {
+                break;
+            };
+            if bounds.top() >= viewport.bottom() {
+                break;
+            }
+            self.heights.insert(row, f32::from(bounds.size.height));
+            row += 1;
+        }
+    }
+
+    /// Row tops, total height and scroll offset: rows never laid out count
+    /// by their content, scaled by what the laid-out rows measured. Also
+    /// the pane's height.
+    pub(super) fn estimate(&self) -> (gentle_core::scroll::Estimate, f32) {
+        let mut weights = Vec::with_capacity(self.shape.len());
+        weights.push(HEADER_WEIGHT);
+        weights.extend(
+            (0..self.shape.items).map(|ix| self.weights.get(ix).copied().unwrap_or(TAIL_WEIGHT)),
+        );
+        weights.extend(self.shape.tail.iter().map(|_| TAIL_WEIGHT));
+        weights.push(FOOTER_WEIGHT);
+        let top = self.state.logical_scroll_top();
+        let viewport = f32::from(self.state.viewport_bounds().size.height);
+        let estimate = gentle_core::scroll::estimate(
+            &weights,
+            &self.heights,
+            top.item_ix,
+            f32::from(top.offset_in_item),
+            viewport,
+        );
+        (estimate, viewport)
     }
 
     /// Derive display data for items `from..`.
     pub(super) fn prepare(&mut self, items: &[Item], from: usize) {
+        self.weights.resize(from.min(items.len()), TAIL_WEIGHT);
         let changed = items.get(from..).unwrap_or_default();
         for (ix, item) in (from..).zip(changed) {
+            self.weights.push(gentle_core::scroll::item_weight(item));
             let prepared = match item {
                 Item::Tool { .. } | Item::Shell { .. } => card_spec(item).map(Prepared::Card),
                 Item::Custom { text, .. } => Some(Prepared::Lines(line_count(text))),
@@ -169,15 +227,21 @@ impl TranscriptList {
         let shape = Shape { items, tail };
         if dirty.is_some_and(|d| d.reset) {
             self.state.reset(shape.len());
+            self.heights.clear();
         } else {
             if self.header.is_some_and(|old| old != header) {
                 self.state.remeasure_items(0..self.shape.len().min(2));
+                self.heights.retain(|row, _| *row >= 2);
             }
             let update = list_update(&self.shape, &shape, dirty.map(|d| d.from));
             if !update.remeasure.is_empty() {
+                self.heights
+                    .retain(|row, _| !update.remeasure.contains(row));
                 self.state.remeasure_items(update.remeasure);
             }
             if let Some((range, count)) = update.splice {
+                // Rows from the splice on now name other rows.
+                self.heights.retain(|row, _| *row < range.start);
                 self.state.splice(range, count);
             }
         }
@@ -186,9 +250,10 @@ impl TranscriptList {
     }
 
     /// Item `ix` changed height (a fold toggled).
-    pub(super) fn remeasure_item(&self, ix: usize) {
+    pub(super) fn remeasure_item(&mut self, ix: usize) {
         let row = ix + 1;
         if row < self.shape.len() {
+            self.heights.remove(&row);
             self.state.remeasure_items(row..row + 1);
         }
     }

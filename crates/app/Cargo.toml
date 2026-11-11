@@ -13,6 +13,8 @@ anyhow.workspace = true
 async-channel.workspace = true
 base64 = "0.22"
 dunce = "1"
+# Device previews: PNG decoding for iOS screenshots and raw-frame construction.
+image = { version = "0.25", default-features = false, features = ["png"] }
 serde.workspace = true
 serde_json.workspace = true
 gentle-core = { path = "../core" }
@@ -35,7 +37,6 @@ tar = "0.4"
 # for the Gentle Design canvas: WebKitGTK as a child of the X11 window (GTK's
 # loop is pumped while it is open; Wayland has no child windows).
 [target.'cfg(target_os = "linux")'.dependencies]
-image = { version = "0.25", default-features = false, features = ["png"] }
 wry = { version = "0.57", default-features = false, features = ["os-webview", "x11"] }
 gtk = "0.18"
 raw-window-handle = "0.6"

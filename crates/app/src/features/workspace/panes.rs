@@ -145,7 +145,19 @@ impl Workspace {
                     this.open_screen(*screen, Some(session.clone()), window, cx)
                 }
                 SessionEvent::MaxEffort => this.play_surge(cx),
-                SessionEvent::DesignCanvas(canvas) => this.show_design_canvas(canvas.clone(), cx),
+                SessionEvent::DesignCanvas(canvas) => {
+                    this.show_design_canvas(canvas.clone(), id, window, cx)
+                }
+                SessionEvent::Device(intent) => this.follow_device(intent.clone(), id, window, cx),
+                SessionEvent::DeviceCommand(command) => {
+                    this.device_activity(id, command.clone(), cx)
+                }
+                SessionEvent::OpenWeb(url) => {
+                    this.open_web(url.clone(), Some(id), true, window, cx)
+                }
+                SessionEvent::AgentWeb(url) => {
+                    this.open_web(url.clone(), Some(id), false, window, cx)
+                }
                 SessionEvent::Notice { level, message } => {
                     let source = this.pane_title(id);
                     let (level, message) = (*level, message.clone());

@@ -77,7 +77,11 @@ gpui_kit::assets::icon_assets!(
         BrainCircuit,
         // In-app browser panel.
         Maximize2,
-        Minimize2
+        Minimize2,
+        // Device cards and the instance tray.
+        Smartphone,
+        MonitorSmartphone,
+        Power
     ]
 );
 

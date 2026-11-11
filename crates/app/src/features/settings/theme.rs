@@ -48,7 +48,16 @@ pub(super) fn theme_section(transparency: &Entity<SliderState>, cx: &App) -> Div
                     .text_color(ui::fg())
                     .child(format!("{percent:.0}%")),
             ),
-    );
+    )
+    .when(state.active_theme().oled, |d| {
+        d.child(
+            div()
+                .pb_2()
+                .text_xs()
+                .text_color(ui::muted())
+                .child("OLED Black stays solid black at any transparency, so an OLED screen keeps those pixels off."),
+        )
+    });
     for (source, label) in groups {
         let cards: Vec<_> = state
             .catalog

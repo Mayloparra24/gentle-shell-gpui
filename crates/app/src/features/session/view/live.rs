@@ -46,6 +46,15 @@ pub(in crate::features::session) struct Live {
     /// Ticks so far, and the timer text they last painted.
     pub(super) ticks: u64,
     pub(super) stamp: Option<LabelStamp>,
+    /// A click on the rail (or the jump-down button) gliding the list.
+    pub(super) glide: Option<super::rail::Glide>,
+    /// The rail's last `(offset, thumb top)`, so the thumb only moves the
+    /// way the pane did.
+    pub(super) rail_thumb: Option<(f32, f32)>,
+    /// Scrolled just now: the rail shows its thumb.
+    pub(super) rail_scrolling: bool,
+    /// Hides the thumb a moment after the last scroll.
+    pub(super) rail_hide: Option<Task<()>>,
 }
 
 /// How often live timers are re-checked.

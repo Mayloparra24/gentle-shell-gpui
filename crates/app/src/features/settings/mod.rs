@@ -19,6 +19,7 @@ mod app;
 mod background;
 mod claude;
 mod layout;
+mod maestro;
 mod models;
 mod notifications;
 mod packages;
@@ -75,6 +76,8 @@ pub struct SettingsView {
     /// Setup & requirements: the onboarding checklist, embedded.
     setup: Entity<crate::features::onboarding::OnboardingView>,
     _setup: Subscription,
+    /// UI testing (Maestro): what was found, the job running and its log.
+    maestro: maestro::Maestro,
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -138,8 +141,10 @@ impl SettingsView {
             notifications_note: None,
             setup,
             _setup: setup_sub,
+            maestro: maestro::Maestro::default(),
         };
         this.reload(cx);
+        this.refresh_maestro(cx);
         this
     }
 
@@ -249,6 +254,7 @@ impl Render for SettingsView {
                         section(IconName::CircleCheck, "Setup & requirements")
                             .child(self.setup.clone()),
                     )
+                    .child(self.maestro_section(cx))
                     .child(theme::theme_section(&self.transparency, cx))
                     .child(models::models_section(s))
                     .child(self.gentle_ai_section(s, cx))

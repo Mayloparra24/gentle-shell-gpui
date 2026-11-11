@@ -12,12 +12,15 @@ How Gentle Shell GPUI connects to Gentle Shell (the `gentle-shell --mode rpc` ba
 | Provider sign-in | `crates/pi-rpc/src/login.rs`, `login-helper.mjs`, `features/providers/` | Node process, JSONL |
 | Launcher subcommands (`upgrade`, `install`, `remove`, `setup`) | `features/settings/upgrade.rs`, `settings/packages.rs`, `setup/gentle.rs` | Child process |
 | Engram (memory) | `features/memory/client.rs`, `gentle_core::engram` | Local HTTP |
+| Maestro (UI testing tools for the agent) | `features/settings/maestro.rs` (the section), `features/setup/maestro.rs`, `setup/fetch.rs` | Downloads into the toolchain; `gentle-shell mcp add` |
 | Subscription usage | `features/usage/` | HTTPS |
 | Gentle Shell update | `features/updates/` | HTTPS (npm registry) |
 | App update | `features/app_update/` | HTTPS (GitHub releases) |
 | First-run installers | `features/setup/`, `features/onboarding/` | Processes, HTTPS |
 | Git | `features/git/` | `git` process |
 | Gentle Design canvas | `features/browser/` | System web view |
+| Web apps (`gentle-open`, `/web`, dev-server URLs) | `features/browser/`, `gentle_core::web` | Single-instance request, system web view |
+| Devices (Android emulators, iOS simulators) | `features/devices/`, `gentle_core::devices` | `adb`, `emulator` and `simctl` processes |
 
 Common rule: every child process is created with `pi_rpc::command` (never `std::process::Command::new` directly) and, if it needs to find the user's tools, it gets `pi_rpc::child_path()` as `PATH`.
 
@@ -71,7 +74,7 @@ It is used by `pi_package` (to find `@earendil-works/pi-coding-agent`) and by `L
 | --- | --- |
 | `login_shell_path()` (Unix only) | Runs `$SHELL -l -i -c "printf '__GENTLE_PATH_START__%s__GENTLE_PATH_END__' \"$PATH\""` with a 5 s limit; the markers isolate the value from whatever the rc files print (nvm, fnm, mise). On Windows it returns `None`. |
 | `base_path()` | Login shell PATH first, then the inherited one without duplicates. Computed once (`BASE_PATH`). |
-| `set_extra_path(dirs)` | Folders that go before everything else. `setup::apply_toolchain_path` puts the toolchains installed by the app here (`<data dir>/gentle-shell-gpui/toolchain/{node,npm-global,bin}`). |
+| `set_extra_path(dirs)` | Folders that go before everything else. `setup::apply_toolchain_path` puts the toolchains installed by the app here (`<data dir>/gentle-shell-gpui/toolchain/{node,npm-global,bin,maestro/bin}` and the Java runtime's `bin`). |
 | `search_path()` / `child_path()` | Extra + base. This is the PATH every child receives. |
 | `find_program(name)`, `resolve_node(cwd)` | Lookup on that PATH. |
 | `forget_cached()` | Forgets the login PATH and the cached `--version` outputs; call it after installing something. |
@@ -175,7 +178,7 @@ Window screens that need another command use `SessionView::send_command(Value)`,
 | `session_info_changed` | Session name |
 | `thinking_level_changed` | Effort level |
 | `bash_execution_update` | Live output of the active `!cmd` |
-| `tool_execution_start` | ODD phase (`gentle_state::infer_phase`); job label for `bash_background` / `monitor` |
+| `tool_execution_start` | ODD phase (`gentle_state::infer_phase`); job label for `bash_background` / `monitor`; device launches and device commands of `bash` / `bash_background` → `SessionEvent::Device` / `DeviceCommand` |
 | `tool_execution_end` | Task list (`todo`), jobs (`details.gentleJobs`), `gentle_design` canvas → `SessionEvent::DesignCanvas` |
 | `message_end` with `role: "custom"` | Updates jobs from `gentle-jobs.notice` |
 | Settled turn (`effects.settled`) | Refreshes stats and Git; `TurnEnded` alert unless `aborted` |
@@ -189,6 +192,80 @@ Gentle Shell writes them. The app only reads them:
 - `features/sessions/discovery.rs`: `settings.json` `sessionDir` (with `~` expanded) or `<agent>/sessions/<session_dir_name(cwd)>/*.jsonl`; `summary.rs` does a light cached scan.
 - `features/usage/stats.rs`: local token and cost stats.
 - The active session path comes from `get_state.sessionFile`; the window stores it in `workspaces.json` to resume with `--session`.
+
+## Devices: Android emulators and iOS simulators
+
+`features/devices/` shows each emulator or simulator in its own floating card, and `gentle_core::devices` holds the parsers and plans. `Workspace` keeps these cards and the web cards in one stage list and tiles them. Nothing is written to Gentle Shell's configuration: the panel only runs the SDK tools.
+
+### Discovery
+
+| Platform | Commands | Parsed by |
+| --- | --- | --- |
+| Android AVDs | `emulator -list-avds` | `parse_avd_list` |
+| Running Android | `adb devices -l`, then `adb -s <serial> emu avd name` and `getprop sys.boot_completed` | `parse_adb_devices`, `android_devices` |
+| iOS | `simctl list devices available --json` | `parse_simctl_devices` |
+
+`Tools::detect` looks for `adb` and `emulator` on `pi_rpc::child_path()` first, then under `ANDROID_HOME`, `ANDROID_SDK_ROOT`, `~/Library/Android/sdk`, `~/Android/Sdk` and `%LOCALAPPDATA%\Android\Sdk`. On macOS, `simctl` is resolved directly from Xcode's developer folder (`DEVELOPER_DIR`, `/Applications/Xcode.app/…`, then `xcode-select -p`) because `xcode-select` often points at the Command Line Tools, which have no `simctl`; the result is cached for the process. Every child is created with `pi_rpc::command` and gets `pi_rpc::child_path()` as `PATH`.
+
+### Launch and stop
+
+Android boots headless and cheap through `emulator`:
+
+```text
+-avd <name> -port <even port> -no-window -no-audio -no-boot-anim
+-no-snapshot-save -gpu swiftshader_indirect
+-camera-back none -camera-front none -no-metrics
+```
+
+The port comes from `next_emulator_port` (5554, 5556, …), skipping serials adb already reports and ports that cannot be bound. `wait_android` polls `getprop sys.boot_completed`; on timeout or cancellation it kills the process instead of leaving it running. iOS uses `simctl boot <udid>` and `simctl bootstatus <udid> -b`, and `simctl shutdown <udid>` to stop. Android stops with `adb -s <serial> emu kill` (or by killing the process the panel owns). Devices the panel started are stopped on app quit.
+
+### Stages and the instance tray
+
+`workspace/stages.rs`: `Workspace` holds a `Vec<Stage>` of `Web` and `Device` cards, each shown (floating) or hidden in the title bar's instance tray. What an agent opens starts hidden: `SessionEvent::Device`, `AgentWeb` (a loopback URL a tool printed), `DesignCanvas` and `--open-url` (`gentle-open`). What the user opens shows at once: `/web` (`SessionEvent::OpenWeb`) and ⌘K → Devices. The card's own button (−) only hides it; the tray's row opens it, its eye toggles it, ⏻ stops the device (`DevicesPanel::stop_all`, also for one an agent started) and × closes a page. Each stage remembers the agent pane that opened it and the last `gentle_core::devices::device_command` that pane ran on a device of the same platform (`adb`, `emulator`, `[xcrun] simctl`, `maestro`, `appium`, `detox`); a card opened from the palette is adopted by the first agent that drives its platform. The window observes each panel but only redraws when the tray's title or status for it changed, so a card's frames don't redraw the window. Opening the tray runs `refresh_if_stale` on the device cards, since a hidden card stops polling once its device booted. Showing or hiding a card re-docks the shown ones (`floating::docked`): they sit side by side at the window's bottom-right at their natural size (phone 400×760, page 560×380), shrink together, keeping their proportions, when they don't fit in the part of the window they may take (62% of a wide window, up to 720 px of a narrow one), and wrap into more rows when shrinking would take them below the card minimum, so the conversation stays usable beside them. Two or more cards re-dock when the window resizes; each card stays draggable and resizable afterwards. A device intent reuses the card already following that device and adds a new stage for a different one, so an Android emulator and an iOS simulator can run side by side. A hidden web card drops its native view (and the web process behind it); showing it again builds a fresh view on its URL, so in-page navigation is not kept. On Linux the GTK pump only runs while a view exists. The design canvas is another card with its own label, so it coexists with web and device stages; its `Stopped` notice closes only the design card.
+
+### Preview
+
+| Platform | Capture | Frame |
+| --- | --- | --- |
+| Android | `adb -s <serial> exec-out screencap` (raw, no PNG encoding on the device) | `parse_screencap` reads the 12/16-byte header and the panel samples it down |
+| iOS | `simctl io <udid> screenshot --type=png --display=primary <temp file>` | PNG decoded and sampled down |
+
+The texture is captured at the card's real pixel width (the preview box in points × `scale_factor`, adjusted for the phone aspect ratio) and rebuilt as a GPUI `RenderImage` with a CatmullRom downscale; it is not a full-resolution video stream. A single capture loop per card takes at most one frame every 1.5 s (2 s while booting), only while the card is shown, no screen covers it and the app window is active. Hiding the card, opening a screen over it or switching away from the app stops the screenshots; the device keeps running. The loop then ends instead of sleeping, and the card's next render that wants frames starts it again, so hidden cards cost no timer wake-ups.
+
+### Agent-triggered devices
+
+`SessionView` reads the `command` of a `bash`/`bash_background`/`monitor` tool call at `tool_execution_start`. `gentle_core::devices::launch_intent` recognizes `[<path>/]emulator … -avd <name>`, `emulator @<name>` and `[xcrun] simctl boot [<udid>|booted]`, and the window follows that device from the instance tray (`DevicesPanel::follow`) without opening a card. It does not launch a second copy: it polls discovery until the agent's device appears (`WATCH_EVERY`, at most 3 minutes), also while the card is hidden, so the tray shows its state. A different device gets a different stage. Ordinary commands such as `adb devices`, `emulator -list-avds` or `simctl list` start nothing; they only update the tray's last command. Simple `NAME=value` assignments in the same command are resolved (`UDID=…`, `AVD=…`), so `xcrun simctl boot "$UDID"` follows that exact device; an unresolved variable follows the first device of that platform.
+
+The agent keeps driving the device with its own tools (adb, simctl, Appium, Maestro, Detox, …). The cheapest Android start is the one the card itself uses:
+
+```bash
+emulator -avd "$AVD" -no-window -no-audio -no-boot-anim -no-snapshot-save \
+  -gpu swiftshader_indirect -camera-back none -camera-front none -no-metrics &
+adb wait-for-device
+until [ "$(adb shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do sleep 1; done
+```
+
+On iOS:
+
+```bash
+xcrun simctl boot "$UDID"
+xcrun simctl bootstatus "$UDID" -b
+xcrun simctl io "$UDID" screenshot --type=png --display=primary shot.png
+```
+
+The app follows either command by name; the panel never wraps or throttles the agent's own adb/simctl calls.
+
+## Web apps and the in-app browser
+
+`features/browser/` is a general system web view now, not only Gentle Design's canvas. It shows any `http(s)` page in its own floating card; the design canvas, web apps and device cards all live in the same tileable stage list, and the ones an agent opened wait in the instance tray (see Stages and the instance tray).
+
+| Entry point | What happens |
+| --- | --- |
+| `gentle-open <url>` | A generated shim in `<data dir>/gentle-shell-gpui/toolchain/bin` (`.cmd` on Windows), written at startup. It runs `<app> --open-url <url>`, which forwards an `OpenRequest` with `url` through the single-instance server to the running window. The agent's shell PATH already contains that `toolchain/bin` via `pi_rpc::child_path()`. |
+| `/web <url>` | A composer built-in. It emits `SessionEvent::OpenWeb` without sending a prompt to Gentle Shell; the card shows at once. |
+| A shell tool prints a URL | `gentle_core::web::loopback_url` scans the tool's command, result text and extension `notify` messages; only `localhost`, `127.0.0.1` and `[::1]` URLs count (`SessionEvent::AgentWeb`), so a dev server (`Vite`, `Next`, `python -m http.server`, …) appears in the instance tray without asking. Public URLs require the explicit tool. A URL that is already open reuses its card; a new URL adds another one, so the agent can keep a web build and a mobile build visible together. |
+
+Only `http://` and `https://` are accepted by `--open-url` and `/web`. The generated shim is app-owned; no Gentle Shell configuration is modified. The app must be running to forward the request (in the agent context it always is); if it is not, the CLI becomes the primary and opens the window with the page. A canvas `Stopped` notice only closes the card when it is still showing the design, not after it navigated to a web app.
 
 ## Extension UI requests
 
@@ -242,7 +319,7 @@ App paths: `dirs::data_dir()/gentle-shell-gpui/` (on macOS, `~/Library/Applicati
 | Launcher `config.json` (`startupReleaseCheck`, `skippedStartupRelease`) | Launcher, shared | R/W | `features/updates/` (same `launcher_config_path()`) |
 | `<agent>/auth.json` | Pi | R (Pi writes it via `login-helper.mjs`) | `usage/credentials.rs`, `settings/snapshot.rs`, `setup/extras.rs` |
 | `<agent>/settings.json` | Pi | R/W | `themes.rs` (`theme`), `sessions/discovery.rs` (`sessionDir`), `profiles/files.rs` (orchestrator), `setup/gentle.rs` (`packages`) |
-| `<agent>/models.json`, `<agent>/mcp.json` | Pi | R | `settings/snapshot.rs`, `setup/extras.rs` |
+| `<agent>/models.json`, `<agent>/mcp.json` | Pi | R (`mcp.json` changes only through `gentle-shell mcp add`, so Pi writes it) | `settings/snapshot.rs`, `setup/extras.rs`, `setup/maestro.rs` |
 | `<agent>/subagents.json`, `<cwd>/.pi/subagents.json` | Gentle AI | R/W | `profiles/env.rs`, `profiles/apply.rs` |
 | `<agent>/gentle-ai/managed-assets.json` | Gentle AI installer | R/W | `profiles/apply.rs` |
 | `<agent>/claude-bridge.json` | Claude bridge | R/W | `settings/claude.rs` |
@@ -293,6 +370,7 @@ Same as the launcher's startup check (`lib/gentle-shell-startup-update.ts`): `re
 | Setup | `gentle-shell setup` |
 | ClaudeBridge | `gentle-shell install npm:<bridge>` |
 | Engram | `Gentleman-Programming/engram` release from GitHub, verified, into `toolchain/bin` |
+| Maestro (Settings → UI testing, not part of this checklist) | Java 17+ is looked up (`toolchain/java`, `JAVA_HOME`, macOS `/usr/libexec/java_home -v 17+`, the `java` on the PATH, each checked by its `release` file); without one, the latest Temurin 21 JRE from `api.adoptium.net`, checked against Adoptium's sha256, into `toolchain/java`. The CLI is looked up (`toolchain/maestro/bin`, PATH, `~/.maestro/bin`); without one, `maestro.zip` from `mobile-dev-inc/maestro`'s latest GitHub release, checked against its `checksums_sha256.txt`, into `toolchain/maestro`. Then `gentle-shell mcp add maestro --env JAVA_HOME=<home> --description … -- <maestro> mcp` (`cmd /c <maestro.bat> mcp` on Windows). `status` reports the CLI (and whether it is the app's own), Java and whether Pi's `mcp.json` has an enabled `maestro` server; `test_connection` runs `gentle-shell mcp list` and returns the `maestro:` line; `disconnect` runs `gentle-shell mcp remove maestro`; `remove` disconnects and deletes `toolchain/maestro` and `toolchain/java`. Install and disconnect emit `SettingsEvent::Changed`, so tabs restart when idle and load or drop the tools. |
 | Provider | Providers screen |
 
 Anything that needs `sudo` or an interactive login is delivered as `Fix::Terminal`, and `features/onboarding/` opens it in a terminal tab. After installing, `refresh_paths` (= `forget_cached` + `apply_toolchain_path`).

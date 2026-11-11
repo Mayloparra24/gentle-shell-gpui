@@ -39,6 +39,9 @@ flowchart TD
 | `core` | Stays in `app` |
 | --- | --- |
 | `transcript`, `activity`, `tools`, `commands` | `session/agents.rs`: `now_ms` (system clock). |
+| `devices`: AVD/adb/simctl parsers, launch and stop plans, boot checks, raw screencap headers, launch-intent and device-command detection | `devices/`: finding the SDK tools, running them, capturing and downscaling frames, the GPUI card. |
+| `scroll`: row weights from content, the scroll estimate for rows not laid out yet, the steady thumb rule | `session/view/rail.rs` and `transcript_list.rs`: recording on-screen row heights, drawing the rail. |
+| `web`: http(s) URL extraction, loopback filtering and log punctuation | `browser/` and session events: the generated `gentle-open` shim, in-app browser card. |
 | `gentle_state`: `PermissionMode`, jobs, phase inference | `shared/gentle_state.rs`: reading and saving `permission-mode.json`. |
 | `notifications`: `Alert`, policy validation and changes; `alert_timing`: `Gate` and `ContextLatch` | `alerts/`: file cache and writing, playback, bundled tones, notifying the window. |
 | `text::first_line` | `shared/ui.rs`: the remaining presentation utilities. |
@@ -62,11 +65,11 @@ crates/
 │       ├── cli.rs               # arguments (`[FOLDER] [-p TEXT]`) and initial folder
 │       ├── features/            # one folder per feature; its entry point is mod.rs
 │       │   ├── session/  workspace/  workspaces/  sessions/  palette/  profiles/  settings/  usage/  setup/
-│       │   ├── browser/  files/  terminal/  git/  providers/  memory/  onboarding/  notices/  alerts/
+│       │   ├── browser/  devices/  files/  terminal/  git/  providers/  memory/  onboarding/  notices/  alerts/
 │       │   └── app_update/  updates/  welcome/
 │       ├── platform/            # OS integration: single instance, Dock and window icons
 │       └── shared/              # pieces used by several features, with no logic of their own:
-│                                # ui, themes, assets, banner, surge, pane, gentle_state
+│                                # ui, floating, themes, assets, banner, surge, pane, gentle_state
 ├── core/                        # shared pure logic (gentle-core)
 └── pi-rpc/
 ```
@@ -148,7 +151,8 @@ workspace/
 ├── tabs.rs         # tabs and renaming
 ├── persistence.rs  # snapshot and saving
 ├── actions.rs      # shortcut handlers
-├── overlays.rs     # overlay screens, palette, browser and max animation
+├── overlays.rs     # overlay screens, palette and max animation
+├── stages.rs       # web and device cards, tiling, the title bar's instance tray
 ├── view.rs         # title bar, tabs and panes
 └── render.rs       # impl Render
 

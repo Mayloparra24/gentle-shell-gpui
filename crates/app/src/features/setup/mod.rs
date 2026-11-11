@@ -10,6 +10,7 @@
 mod extras;
 mod fetch;
 mod gentle;
+pub mod maestro;
 mod probe;
 
 use std::path::{Path, PathBuf};
@@ -102,7 +103,7 @@ fn prefix_bin(prefix: &Path, windows: bool) -> PathBuf {
 }
 
 /// The app-owned toolchain folders that exist: managed Node, the user npm
-/// prefix, and loose binaries (Engram).
+/// prefix, loose binaries (Engram), the Maestro CLI and its Java.
 fn managed_dirs() -> Vec<PathBuf> {
     let Some(toolchain) = toolchain_dir() else {
         return Vec::new();
@@ -112,6 +113,8 @@ fn managed_dirs() -> Vec<PathBuf> {
         prefix_bin(&toolchain.join("node"), windows),
         prefix_bin(&toolchain.join("npm-global"), windows),
         toolchain.join("bin"),
+        maestro::toolchain_bin(&toolchain),
+        maestro::toolchain_java_bin(&toolchain),
     ]
     .into_iter()
     .filter(|dir| dir.is_dir())

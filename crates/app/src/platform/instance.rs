@@ -17,6 +17,9 @@ use serde::{Deserialize, Serialize};
 pub struct OpenRequest {
     pub folder: Option<PathBuf>,
     pub prompt: Option<String>,
+    /// A page to show in the in-app browser (`gentle-open`).
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -171,6 +174,7 @@ mod tests {
         let request = OpenRequest {
             folder: Some("/tmp".into()),
             prompt: Some("hola".into()),
+            url: None,
         };
         assert!(forward(&path, &request), "a live primary accepts");
         assert_eq!(rx.recv_blocking().unwrap(), request);

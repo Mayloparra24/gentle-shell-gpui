@@ -18,15 +18,26 @@ fn main() {
         .filter(|p| p.is_dir())
         .and_then(|p| dunce::canonicalize(p).ok());
     let prompt = cli.prompt;
+    let url = cli.url;
+    if let Some(url) = url.as_deref()
+        && (url.is_empty() || !(url.starts_with("http://") || url.starts_with("https://")))
+    {
+        eprintln!("gentle-shell-gpui: --open-url expects an http(s) URL");
+        std::process::exit(2);
+    }
     // Only one app per user: a second launch hands its request over and exits.
     let request = instance::OpenRequest {
         folder: folder.clone(),
         prompt: prompt.clone(),
+        url: url.clone(),
     };
     let requests = match instance::claim(&request) {
         instance::Role::Forwarded => return,
         instance::Role::Primary(requests) => requests,
     };
+    // `gentle-open` lives in the toolchain folder the agents get on PATH;
+    // create it before that PATH is computed.
+    features::browser::install_open_tool();
     // Toolchains onboarding installed into the app's own folders.
     setup::apply_toolchain_path();
     // Gentle Shell 4.7's own install moved its config folder without copying
@@ -43,5 +54,5 @@ fn main() {
             eprintln!("Could not copy Gentle Shell's settings to its new folder: {error}")
         }
     }
-    app::run(folder, prompt, requests);
+    app::run(folder, prompt, url, requests);
 }
