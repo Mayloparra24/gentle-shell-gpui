@@ -28,16 +28,32 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+      # Ubuntu's mirror for GitHub runners can crawl (65 MB took over 10 minutes),
+      # so the downloaded .debs are cached and only fetched once per image.
+      - name: Restore apt packages
+        if: runner.os == 'Linux'
+        id: apt-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.arch }}-${{ env.ImageOS }}-v1
       - name: Linux system libraries
         if: runner.os == 'Linux'
-        # GitHub's Ubuntu runners can stall in apt (man-db triggers, slow
-        # mirrors): no man pages, no recommends, retried downloads, capped.
-        timeout-minutes: 10
+        timeout-minutes: 25
         run: |
           sudo rm -f /var/lib/man-db/auto-update
-          sudo apt-get -o Acquire::Retries=3 update
-          sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+          mkdir -p ~/apt-archives/partial
+          APT="sudo apt-get -o Acquire::Retries=3 -o Dir::Cache::Archives=$HOME/apt-archives"
+          $APT update
+          $APT install -y --no-install-recommends libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
             libvulkan-dev libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev \
             libwebkit2gtk-4.1-dev libgtk-3-dev
+          sudo chown -R "$USER" ~/apt-archives
+      - name: Save apt packages
+        if: runner.os == 'Linux' && steps.apt-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.arch }}-${{ env.ImageOS }}-v1
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo test --workspace --locked
