@@ -4,6 +4,10 @@ use std::time::{Duration, Instant};
 
 /// The focus pulse's length.
 const PULSE: Duration = Duration::from_millis(460);
+/// A typed kiss's flight, the least time between two, and how many fly.
+const KISS_LIFE: Duration = Duration::from_millis(900);
+const KISS_GAP: Duration = Duration::from_millis(90);
+const KISSES_MAX: usize = 10;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -17,6 +21,7 @@ use super::activity::chip_popover;
 use super::dialogs::checkbox_box;
 use super::{NARROW, TINY, image_tile, number_badge};
 use crate::features::session::SessionView;
+use crate::shared::kisses::{HEART, LIPS, noise, paint_sprite};
 use crate::shared::ui;
 use gentle_core::transcript::format_tokens;
 
@@ -207,6 +212,106 @@ impl SessionView {
                             .unwrap_or(false)
                     }),
             )
+    }
+
+    /// The text grew (you typed): blow a small kiss from the caret. At most
+    /// one every `KISS_GAP` and `KISSES_MAX` alive, so it stays a sprinkle.
+    pub(in crate::features::session) fn blow_kiss(&mut self, cx: &mut Context<Self>) {
+        let len = self.composer.read(cx).value().len();
+        let typed = len > self.composer_len;
+        self.composer_len = len;
+        if !typed {
+            return;
+        }
+        self.kisses.retain(|(at, _, _)| at.elapsed() < KISS_LIFE);
+        let recent = self
+            .kisses
+            .last()
+            .is_some_and(|(at, _, _)| at.elapsed() < KISS_GAP);
+        if recent || self.kisses.len() >= KISSES_MAX {
+            return;
+        }
+        let Some(caret) = self.composer.read(cx).prepaint_caret_geometry() else {
+            return;
+        };
+        let bounds = caret.cursor_bounds();
+        let at = point(bounds.origin.x, bounds.origin.y);
+        self.kisses.push((Instant::now(), at, self.kisses_blown));
+        self.kisses_blown += 1;
+        if self.kisses.len() == 1 {
+            // Redraw every frame while any kiss is in the air.
+            self._kisses = cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(16))
+                        .await;
+                    let Ok(alive) = this.update(cx, |this, cx| {
+                        this.kisses.retain(|(at, _, _)| at.elapsed() < KISS_LIFE);
+                        cx.notify();
+                        !this.kisses.is_empty()
+                    }) else {
+                        return;
+                    };
+                    if !alive {
+                        return;
+                    }
+                }
+            });
+        }
+    }
+
+    /// The kisses in the air: each rises from where it was blown, swaying,
+    /// pops in small, and fades. Every fourth one is a heart. Painted in
+    /// window coordinates, over the composer.
+    fn render_kisses(&self) -> Option<impl IntoElement> {
+        if self.kisses.is_empty() {
+            return None;
+        }
+        let kisses = self.kisses.clone();
+        Some(
+            canvas(
+                |_, _, _| {},
+                move |_, _, window, _| {
+                    for (born, from, i) in &kisses {
+                        let age = born.elapsed().as_secs_f32() / KISS_LIFE.as_secs_f32();
+                        if age >= 1. {
+                            continue;
+                        }
+                        let i = *i;
+                        let travel = 1. - (1. - age).powi(3);
+                        let rise = 26. + 18. * noise(i, 2);
+                        let drift = (noise(i, 1) * 2. - 1.) * 12.;
+                        let sway = (age * 9. + i as f32).sin() * 4.;
+                        let at = point(
+                            from.x + px(drift * travel + sway),
+                            from.y - px(rise * travel),
+                        );
+                        let grow = ui::spring((age * 3.).min(1.));
+                        let dot = (1.1 + 0.4 * noise(i, 3)) * (0.5 + 0.5 * grow);
+                        let alpha = if age > 0.55 { (1. - age) / 0.45 } else { 1. };
+                        let heart = i % 4 == 3;
+                        let (body, line) = if heart {
+                            (ui::petal(), ui::petal())
+                        } else {
+                            (
+                                hsla(340. / 360., 0.85, 0.62, 1.),
+                                hsla(340. / 360., 0.70, 0.30, 1.),
+                            )
+                        };
+                        paint_sprite(
+                            window,
+                            if heart { &HEART } else { &LIPS },
+                            at,
+                            dot,
+                            body.opacity(alpha),
+                            line.opacity(alpha),
+                        );
+                    }
+                },
+            )
+            .absolute()
+            .size_0(),
+        )
     }
 
     /// Play the focus pulse: redraw every frame until it's over. Timed
@@ -433,6 +538,7 @@ impl SessionView {
             .child(self.render_activity(cx))
             .child(self.render_context_line(cx))
             .child(composer_box)
+            .children(self.render_kisses())
             .when(width >= TINY, |this| {
                 this.child(
                     h_flex()

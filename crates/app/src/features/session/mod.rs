@@ -88,6 +88,13 @@ pub struct SessionView {
     /// `PULSE` from then (see `composer_shell`), redrawn by `_pulse`.
     composer_pulse: Option<std::time::Instant>,
     _pulse: Task<()>,
+    /// Pixel kisses floating up from the caret as you type: when each was
+    /// blown, where, and its number (for its own drift and size).
+    kisses: Vec<(std::time::Instant, Point<Pixels>, usize)>,
+    kisses_blown: usize,
+    /// The composer's text length last time, to tell typing from deleting.
+    composer_len: usize,
+    _kisses: Task<()>,
     /// Images waiting to go with the next prompt; `[Image #N]` is the N-th.
     attachments: Vec<attachments::Attachment>,
     /// Decoded conversation images, by data hash.
@@ -161,7 +168,10 @@ impl SessionView {
                 window,
                 |this, _, event: &InputEvent, window, cx| match event {
                     InputEvent::PressEnter { shift: false, .. } => this.submit(window, cx),
-                    InputEvent::Change => cx.notify(),
+                    InputEvent::Change => {
+                        this.blow_kiss(cx);
+                        cx.notify();
+                    }
                     InputEvent::Focus | InputEvent::Blur => {
                         this.composer_focused = matches!(event, InputEvent::Focus);
                         if this.composer_focused {
@@ -221,6 +231,10 @@ impl SessionView {
             composer,
             composer_focused: false,
             composer_pulse: None,
+            kisses: Vec::new(),
+            kisses_blown: 0,
+            composer_len: 0,
+            _kisses: Task::ready(()),
             _pulse: Task::ready(()),
             attachments: Vec::new(),
             image_cache: attachments::ImageCache::default(),
