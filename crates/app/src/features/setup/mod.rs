@@ -104,8 +104,8 @@ fn prefix_bin(prefix: &Path, windows: bool) -> PathBuf {
 }
 
 /// The app-owned toolchain folders that exist: managed Node, the user npm
-/// prefix, loose binaries (Engram), the Maestro CLI and its Java, and the
-/// music player.
+/// prefix, loose binaries (Engram), the Maestro CLI and its Java, the
+/// music player, and the Android SDK's emulator and adb when installed.
 fn managed_dirs() -> Vec<PathBuf> {
     let Some(toolchain) = toolchain_dir() else {
         return Vec::new();
@@ -121,6 +121,8 @@ fn managed_dirs() -> Vec<PathBuf> {
         toolchain.join("music").join("bin"),
     ]
     .into_iter()
+    // The Android SDK's tools, so agents can start emulators and use adb.
+    .chain(crate::features::devices::android_tool_dirs())
     .filter(|dir| dir.is_dir())
     .collect()
 }

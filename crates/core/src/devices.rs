@@ -356,29 +356,43 @@ pub fn launch_intent(command: &str) -> Option<LaunchIntent> {
         let token = |at: usize| segment.get(at).map(String::as_str);
         let is = |at: usize, name: &str| token(at).is_some_and(|word| program_name(word) == name);
         let at = program_start(&segment);
-        if is(at, "emulator") {
-            if let Some(found) = segment.iter().position(|word| word == "-avd")
-                && let Some(avd) = segment.get(found + 1).map(|avd| avd.trim())
-                && !avd.is_empty()
-                && !avd.starts_with('-')
+        if is(at, "emulator")
+            && let Some(avd) = emulator_avd(&segment[at + 1..])
+        {
+            return Some(LaunchIntent {
+                platform: Platform::Android,
+                id: resolve_shell_value(&avd, &assignments),
+            });
+        }
+        // PowerShell: `Start-Process [-FilePath] emulator -ArgumentList '-avd','Pixel_7'`.
+        if token(at).is_some_and(|word| word.eq_ignore_ascii_case("Start-Process")) {
+            let rest = &segment[at + 1..];
+            let file = match rest
+                .iter()
+                .position(|w| w.eq_ignore_ascii_case("-FilePath"))
             {
-                // A shell variable we cannot resolve still tells us the
-                // platform; the card waits for whichever device appears.
-                return Some(LaunchIntent {
-                    platform: Platform::Android,
-                    id: resolve_shell_value(avd, &assignments),
-                });
-            }
-            // `emulator @Pixel_7` is the other legal spelling.
-            if let Some(avd) = segment.iter().skip(at + 1).find_map(|word| {
-                word.strip_prefix('@')
-                    .map(str::trim)
-                    .filter(|avd| !avd.is_empty())
-            }) {
-                return Some(LaunchIntent {
-                    platform: Platform::Android,
-                    id: resolve_shell_value(avd, &assignments),
-                });
+                Some(found) => rest.get(found + 1),
+                None => rest.iter().find(|word| !word.starts_with('-')),
+            };
+            if file.is_some_and(|file| program_name(file) == "emulator") {
+                // Arguments come as one string or a list: split both.
+                let args: Vec<String> = rest
+                    .iter()
+                    .flat_map(|word| word.split([',', ' ']))
+                    // `@('-avd','Pixel_7')` lists; a bare `@Pixel_7` stays.
+                    .map(|word| {
+                        word.trim_start_matches("@(")
+                            .trim_matches(|c| matches!(c, '\'' | '"' | '(' | ')'))
+                    })
+                    .filter(|word| !word.is_empty())
+                    .map(str::to_string)
+                    .collect();
+                if let Some(avd) = emulator_avd(&args) {
+                    return Some(LaunchIntent {
+                        platform: Platform::Android,
+                        id: resolve_shell_value(&avd, &assignments),
+                    });
+                }
             }
         }
         let simctl = (is(at, "xcrun") && is(at + 1, "simctl")) || is(at, "simctl");
@@ -460,6 +474,26 @@ fn program_name(word: &str) -> &str {
     name.strip_suffix(".exe").unwrap_or(name)
 }
 
+/// The AVD in an `emulator` launch's arguments: `-avd <name>` or `@name`.
+/// A shell variable we cannot resolve later still tells us the platform;
+/// the card waits for whichever device appears.
+fn emulator_avd(args: &[String]) -> Option<String> {
+    if let Some(found) = args.iter().position(|word| word == "-avd")
+        && let Some(avd) = args.get(found + 1).map(|avd| avd.trim())
+        && !avd.is_empty()
+        && !avd.starts_with('-')
+    {
+        return Some(avd.to_string());
+    }
+    // `emulator @Pixel_7` is the other legal spelling.
+    args.iter().find_map(|word| {
+        word.strip_prefix('@')
+            .map(str::trim)
+            .filter(|avd| !avd.is_empty())
+            .map(str::to_string)
+    })
+}
+
 /// Where the program starts in a segment: past leading environment
 /// assignments (`DEVELOPER_DIR=… xcrun …`) and wrappers that run another
 /// program (`env FOO=1 emulator …`, `sudo emulator …`, `nohup …`).
@@ -469,16 +503,27 @@ fn program_start(segment: &[String]) -> usize {
     while token(at).is_some_and(is_assignment) {
         at += 1;
     }
-    while matches!(
-        token(at),
-        Some("env" | "sudo" | "nohup" | "exec" | "command")
-    ) {
+    while token(at).is_some_and(|word| {
+        matches!(word, "env" | "sudo" | "nohup" | "exec" | "command")
+            // Windows: `cmd /c …`, `start "" …` (a quoted window title).
+            || word.eq_ignore_ascii_case("cmd")
+            || word.eq_ignore_ascii_case("start")
+    }) {
         at += 1;
-        while token(at).is_some_and(|word| word.starts_with('-') || is_assignment(word)) {
+        while token(at).is_some_and(|word| {
+            word.starts_with('-') || is_cmd_flag(word) || word.is_empty() || is_assignment(word)
+        }) {
             at += 1;
         }
     }
     at
+}
+
+/// A `cmd` / `start` switch (`/c`, `/b`, `/min`), not a Unix path.
+fn is_cmd_flag(word: &str) -> bool {
+    word.strip_prefix('/').is_some_and(|rest| {
+        !rest.is_empty() && rest.len() <= 8 && rest.chars().all(|c| c.is_ascii_alphabetic())
+    })
 }
 
 /// Simple `NAME=value` assignments anywhere in the command, so a launch
@@ -880,6 +925,32 @@ mod tests {
         assert_eq!(launch_intent("xcrun simctl list devices"), None);
         assert_eq!(launch_intent("grep -avd x file"), None);
         assert_eq!(launch_intent("echo 'emulator -avd Pixel'"), None);
+    }
+
+    #[test]
+    fn windows_launch_forms_are_detected() {
+        let pixel = Some(LaunchIntent {
+            platform: Platform::Android,
+            id: Some("Pixel_7".into()),
+        });
+        for command in [
+            r#"start "" "C:\Users\me\AppData\Local\Android\Sdk\emulator\emulator.exe" -avd Pixel_7"#,
+            "cmd /c start /b emulator -avd Pixel_7",
+            "Start-Process emulator -ArgumentList '-avd','Pixel_7','-no-window'",
+            r#"Start-Process -FilePath "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator.exe" -ArgumentList "-avd Pixel_7 -no-audio""#,
+            r#"& "C:\Android\Sdk\emulator\emulator.exe" -avd Pixel_7"#,
+        ] {
+            assert_eq!(launch_intent(command), pixel, "{command}");
+        }
+        assert_eq!(
+            launch_intent("Start-Process notepad -ArgumentList '-avd x'"),
+            None
+        );
+        // A Unix path after a wrapper is still the program, not a `cmd` switch.
+        assert_eq!(
+            launch_intent("nohup /opt/sdk/emulator/emulator -avd Pixel_7 &"),
+            pixel
+        );
     }
 
     #[test]
