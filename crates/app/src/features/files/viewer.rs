@@ -12,7 +12,7 @@ use std::process::Stdio;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -39,8 +39,11 @@ const SAVE_HINT: &str = if cfg!(target_os = "macos") {
 } else {
     "Ctrl+S"
 };
-/// How often an open file is checked for outside writes.
+/// How often an open file is checked for outside writes while it has focus.
 const POLL: Duration = Duration::from_millis(800);
+/// The same for an unfocused pane, which may be in a hidden tab or
+/// workspace: nobody sees it change.
+const POLL_UNFOCUSED: Duration = Duration::from_secs(5);
 /// How long the header says "Saved".
 const SAVED_FLASH: Duration = Duration::from_millis(1600);
 /// How long typing pauses before the Markdown preview catches up.
@@ -340,19 +343,29 @@ impl FileView {
     }
 
     /// Check the file for outside writes while the window is in front: a
-    /// cheap stat off the UI thread, and a read only when it changed.
+    /// cheap stat off the UI thread, and a read only when it changed. Panes
+    /// without focus (maybe not even on screen) are checked less often.
     fn watch(path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Task<()> {
         cx.spawn_in(window, async move |this, cx| {
+            let mut checked = Instant::now();
             loop {
                 cx.background_executor().timer(POLL).await;
-                let Ok(due) = this.update_in(cx, |this, window, _| {
-                    window.is_window_active() && this.edit.as_ref().is_some_and(|e| !e.saving)
+                let Ok(due) = this.update_in(cx, |this, window, cx| {
+                    let every = if this.focus.contains_focused(window, cx) {
+                        POLL
+                    } else {
+                        POLL_UNFOCUSED
+                    };
+                    window.is_window_active()
+                        && checked.elapsed() >= every
+                        && this.edit.as_ref().is_some_and(|e| !e.saving)
                 }) else {
                     break;
                 };
                 if !due {
                     continue;
                 }
+                checked = Instant::now();
                 let job_path = path.clone();
                 let stamp = cx
                     .background_executor()

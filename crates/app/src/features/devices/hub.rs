@@ -56,6 +56,55 @@ pub fn running_port() -> Option<u16> {
     ready(port).then_some(port)
 }
 
+/// The `(pid, port)` recorded in `hub.json`.
+fn recorded() -> Option<(u32, u16)> {
+    let text = std::fs::read_to_string(state_path()?).ok()?;
+    let record = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+    Some((
+        record["pid"].as_u64()? as u32,
+        record["port"].as_u64()? as u16,
+    ))
+}
+
+/// Ask process `pid` to stop (SIGTERM lets a hub stop its helpers; Windows
+/// ends its tree).
+fn terminate(pid: u32) {
+    let pid = pid.to_string();
+    let mut command = if cfg!(windows) {
+        let mut command = pi_rpc::command("taskkill");
+        command.args(["/PID", &pid, "/T", "/F"]);
+        command
+    } else {
+        let mut command = pi_rpc::command("kill");
+        command.args(["-TERM", &pid]);
+        command
+    };
+    let _ = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// A hub left by a run that crashed or was killed keeps serving (and its
+/// helpers keep running): stop it before starting another. A hub answering
+/// on the recorded port is the recorded process, not a reused pid.
+fn stop_orphan() {
+    let Some((pid, port)) = recorded() else {
+        return;
+    };
+    if ready(port) {
+        terminate(pid);
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline && ready(port) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    if let Some(path) = state_path() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// The running hub process; dropping it stops the hub.
 pub struct HubProcess {
     child: Child,
@@ -67,6 +116,7 @@ impl HubProcess {
     pub fn start() -> Result<Self, String> {
         let (node, entry) =
             setup::hub_command().ok_or("Turn on Use devices in Configuration → Devices first.")?;
+        stop_orphan();
         let port = std::net::TcpListener::bind(("127.0.0.1", 0))
             .and_then(|listener| listener.local_addr())
             .map(|addr| addr.port())
@@ -103,6 +153,10 @@ impl HubProcess {
         let child = command
             .spawn()
             .map_err(|e| format!("The device hub didn't start: {e}"))?;
+        // Recorded before it answers, so a crash while it starts still
+        // leaves the next run something to stop.
+        let record = json!({"port": port, "pid": child.id()}).to_string();
+        let _ = std::fs::write(dir.join("hub.json"), record);
         let mut hub = Self { child, port };
         let deadline = Instant::now() + START_TIMEOUT;
         loop {
@@ -123,8 +177,6 @@ impl HubProcess {
             }
             std::thread::sleep(Duration::from_millis(150));
         }
-        let record = json!({"port": port, "pid": hub.child.id()}).to_string();
-        let _ = std::fs::write(dir.join("hub.json"), record);
         Ok(hub)
     }
 
@@ -153,7 +205,10 @@ pub fn stop_agent_daemon() {
 
 impl Drop for HubProcess {
     fn drop(&mut self) {
-        if let Some(path) = state_path() {
+        // A hub started since (stop, then start again) owns the record now.
+        if recorded().is_some_and(|(pid, _)| pid == self.child.id())
+            && let Some(path) = state_path()
+        {
             let _ = std::fs::remove_file(path);
         }
         // SIGTERM lets the hub stop its helpers (serve-sim, scrcpy) first.

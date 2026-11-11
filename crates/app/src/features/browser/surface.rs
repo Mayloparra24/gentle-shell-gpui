@@ -4,11 +4,43 @@
 //! while a screen covers the window, and it only exists while the surface is
 //! shown: a hidden page costs no web process.
 
+use std::cell::RefCell;
+use std::rc::{Rc, Weak};
+
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use super::{PUMP_EVERY, native, page_background};
+use super::{PUMP_EVERY, PUMP_IDLE, native, page_background};
 use crate::shared::ui;
+
+thread_local! {
+    /// The GTK pump every live native view shares (see [`shared_pump`]).
+    static PUMP: RefCell<Weak<Task<()>>> = const { RefCell::new(Weak::new()) };
+}
+
+/// A share of the one GTK pump: the first live view starts it, dropping the
+/// last share stops it. One loop serves every view, so its cost doesn't
+/// grow with the cards and device tabs open.
+fn shared_pump(cx: &App) -> Rc<Task<()>> {
+    PUMP.with(|pump| {
+        if let Some(task) = pump.borrow().upgrade() {
+            return task;
+        }
+        let task = Rc::new(cx.spawn(async move |cx| {
+            loop {
+                let every = if cx.update(|cx| cx.active_window().is_some()) {
+                    PUMP_EVERY
+                } else {
+                    PUMP_IDLE
+                };
+                cx.background_executor().timer(every).await;
+                native::pump();
+            }
+        }));
+        *pump.borrow_mut() = Rc::downgrade(&task);
+        task
+    })
+}
 
 pub struct WebSurface {
     url: String,
@@ -24,8 +56,8 @@ pub struct WebSurface {
     /// The view is being built (see `place`).
     creating: bool,
     failed: Option<String>,
-    /// Pumps GTK's loop while a native view exists (Linux).
-    _pump: Option<Task<()>>,
+    /// This view's share of the GTK pump while a native view exists (Linux).
+    _pump: Option<Rc<Task<()>>>,
     /// Re-places the view when the window moves (Windows hosts it in a popup
     /// positioned in screen coordinates).
     _window_moves: Option<Subscription>,
@@ -131,12 +163,7 @@ impl WebSurface {
                         // GTK's loop only needs pumping while a view exists;
                         // `hide` drops the pump with the view.
                         if native::NEEDS_PUMP {
-                            surface._pump = Some(cx.spawn(async move |_, cx| {
-                                loop {
-                                    cx.background_executor().timer(PUMP_EVERY).await;
-                                    native::pump();
-                                }
-                            }));
+                            surface._pump = Some(shared_pump(cx));
                         }
                     }
                     Err(error) => surface.failed = Some(error),

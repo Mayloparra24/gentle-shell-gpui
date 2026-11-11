@@ -18,9 +18,11 @@ mod view;
 
 pub use view::title_button;
 
+use std::io::Read;
 use std::path::PathBuf;
+use std::process::Stdio;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gentle_core::music::{MoodResult, MusicState, parse_mood_result};
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -35,6 +37,11 @@ use client::{Connection, Error};
 const BANDS: usize = 40;
 /// How fast a band falls back after a peak (per poll).
 const DECAY: f32 = 0.8;
+/// How often a window in the background checks whether it came back.
+const INACTIVE_POLL: Duration = Duration::from_secs(2);
+/// The longest a helper runs: starting the player, or the model reading a
+/// mood.
+const HELPER_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Runs inside gentle-stream's Python: `start` attaches to the player or
 /// starts it (`client.ensure`); `mood <text> <gentle-shell>` asks the model
@@ -138,7 +145,15 @@ impl Music {
         };
         this._poll = cx.spawn_in(window, async move |this, cx| {
             loop {
-                let Ok((wait, request)) = this.read_with(cx, |this, _| this.next_poll()) else {
+                // Nobody looks at a window in the background: check back
+                // without asking the player.
+                let Ok((wait, request)) = this.update_in(cx, |this, window, _| {
+                    if window.is_window_active() {
+                        this.next_poll()
+                    } else {
+                        (INACTIVE_POLL, None)
+                    }
+                }) else {
                     return;
                 };
                 cx.background_executor().timer(wait).await;
@@ -222,12 +237,15 @@ impl Music {
         cx: &mut Context<Self>,
     ) {
         let before = (self.state.is_some(), self.playing());
+        let mut changed = false;
         match result {
             Ok(Some(mut state)) => {
                 if !state.spectrum.is_empty() {
                     self.shown.resize(state.spectrum.len(), 0.);
                     for (shown, level) in self.shown.iter_mut().zip(&state.spectrum) {
-                        *shown = level.max(*shown * DECAY);
+                        let next = level.max(*shown * DECAY);
+                        changed |= next != *shown;
+                        *shown = next;
                     }
                 }
                 let volume = (state.volume * 100.).round();
@@ -237,18 +255,32 @@ impl Music {
                         .update(cx, |s, cx| s.set_value(volume, window, cx));
                 }
                 state.spectrum.clear();
+                changed |= self.state.as_ref() != Some(&state);
                 self.state = Some(state);
             }
             Ok(None) => {
+                changed = self.state.is_some() || !self.shown.is_empty();
                 self.state = None;
                 self.shown.clear();
+                // The player this app started is gone (no helper is still
+                // starting it): one that shows up later isn't ours to stop.
+                if self.job.is_none() {
+                    self.started_here = false;
+                }
             }
-            Err(error) => self.note = Some((error, false)),
+            Err(error) => {
+                let note = Some((error, false));
+                changed = self.note != note;
+                self.note = note;
+            }
         }
         if before != (self.state.is_some(), self.playing()) {
             cx.emit(MusicChanged);
         }
-        cx.notify();
+        // Polls mostly bring the same state: redraw only for news.
+        if changed {
+            cx.notify();
+        }
     }
 
     /// A control (`toggle`, `next`, `set_volume`, `stop`), answered with the
@@ -273,11 +305,11 @@ impl Music {
         self.send(json!({"cmd": "next"}), cx);
     }
 
-    /// The app is quitting: stop the music it started. A player started
-    /// elsewhere (`/gentle:music` in a terminal) keeps playing. Blocking, but
-    /// one local request.
+    /// The app is quitting: stop the music it started, even before a poll
+    /// saw it play. A player started elsewhere (`/gentle:music` in a
+    /// terminal) keeps playing. Blocking, but one local request.
     pub fn shutdown(&self) {
-        if self.started_here && self.state.is_some() {
+        if self.started_here {
             let _ = request_on(&self.conn, &json!({"cmd": "stop"}));
         }
     }
@@ -399,21 +431,53 @@ fn request_on(
     Ok(None)
 }
 
-/// Run [`HELPER`] in gentle-stream's Python.
+/// Run [`HELPER`] in gentle-stream's Python; killed past [`HELPER_TIMEOUT`].
 fn helper(python: &PathBuf, args: &[String]) -> Result<MoodResult, String> {
-    let output = pi_rpc::command(python)
+    let mut child = pi_rpc::command(python)
         .arg("-c")
         .arg(HELPER)
         .args(args)
         .env("PATH", pi_rpc::child_path())
-        .stdin(std::process::Stdio::null())
-        .output()
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("gentle-stream's Python didn't start: {e}"))?;
-    parse_mood_result(&String::from_utf8_lossy(&output.stdout)).map_err(|error| {
-        String::from_utf8_lossy(&output.stderr)
+    let stdout = drain(child.stdout.take());
+    let stderr = drain(child.stderr.take());
+    let deadline = Instant::now() + HELPER_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("gentle-stream didn't answer in time.".into());
+            }
+        }
+    }
+    let stdout = stdout.join().unwrap_or_default();
+    let stderr = stderr.join().unwrap_or_default();
+    parse_mood_result(&String::from_utf8_lossy(&stdout)).map_err(|error| {
+        String::from_utf8_lossy(&stderr)
             .lines()
             .rfind(|line| !line.trim().is_empty())
             .map(str::to_string)
             .unwrap_or(error)
+    })
+}
+
+/// Read a child's pipe to the end on its own thread, so neither pipe fills
+/// while the other is read.
+fn drain(stream: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        if let Some(mut stream) = stream {
+            let _ = stream.read_to_end(&mut bytes);
+        }
+        bytes
     })
 }

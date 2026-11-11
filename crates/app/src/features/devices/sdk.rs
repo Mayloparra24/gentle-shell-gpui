@@ -4,8 +4,14 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+/// How long a listed set of AVDs is reused: the list is read on every poll,
+/// and listing spawns the emulator binary.
+const AVDS_TTL: Duration = Duration::from_secs(60);
+
+static AVDS: Mutex<Option<(Instant, Vec<String>)>> = Mutex::new(None);
 
 fn exe(name: &str) -> String {
     if cfg!(windows) {
@@ -54,8 +60,27 @@ pub(crate) fn android_tool_dirs() -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// Every AVD `emulator -list-avds` knows; empty without the SDK.
+/// Every AVD `emulator -list-avds` knows; empty without the SDK. Reused for
+/// [`AVDS_TTL`] unless [`forget_avds`] runs.
 pub(super) fn avds() -> Vec<String> {
+    let cached = AVDS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, avds)) = cached.as_ref()
+        && at.elapsed() < AVDS_TTL
+    {
+        return avds.clone();
+    }
+    drop(cached);
+    let avds = list_avds();
+    *AVDS.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), avds.clone()));
+    avds
+}
+
+/// The next [`avds`] lists again (an explicit refresh, a boot).
+pub(super) fn forget_avds() {
+    *AVDS.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn list_avds() -> Vec<String> {
     let Some(emulator) = android_sdk()
         .map(|sdk| sdk.join("emulator").join(exe("emulator")))
         .filter(|path| path.is_file())

@@ -81,7 +81,8 @@ fn last_usage_at(record: &SessionRecord) -> i64 {
         .unwrap_or(i64::MIN)
 }
 
-/// Parsed session files, so reopening Stats only reads new or changed ones.
+/// Parsed session files, so refreshing Stats only reads new or changed ones.
+/// Freed when the Usage screen closes ([`forget_sessions`]).
 static SESSION_RECORDS: FileCache<Option<SessionRecord>> = FileCache::new(16_384);
 
 /// Top-level session files only (`sessions/<dir>/*.jsonl`; nested subagent
@@ -89,6 +90,11 @@ static SESSION_RECORDS: FileCache<Option<SessionRecord>> = FileCache::new(16_384
 /// of one session id keep the richer one.
 pub fn load_sessions(root: &Path, max_bytes: u64) -> StatsData {
     load_sessions_in(&SESSION_RECORDS, root, max_bytes)
+}
+
+/// Drop the parsed sessions: nothing reads them until Stats opens again.
+pub fn forget_sessions() {
+    SESSION_RECORDS.clear();
 }
 
 fn load_sessions_in(
