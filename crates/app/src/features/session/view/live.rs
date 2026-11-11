@@ -55,6 +55,8 @@ pub(in crate::features::session) struct Live {
     pub(super) rail_scrolling: bool,
     /// Hides the thumb a moment after the last scroll.
     pub(super) rail_hide: Option<Task<()>>,
+    /// The thumb is being dragged.
+    pub(super) rail_drag: Option<super::rail::RailDrag>,
 }
 
 /// How often live timers are re-checked.

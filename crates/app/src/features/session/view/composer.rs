@@ -233,6 +233,32 @@ impl SessionView {
             .into_any_element()
     }
 
+    /// The composer box widens outward when it takes the keyboard (the side
+    /// margins it keeps at rest go to zero), with the field's spring, so
+    /// the whole box seems to expand; it settles back on blur.
+    fn expand_on_focus(&self, composer_box: Div) -> AnyElement {
+        /// The side margin at rest.
+        const INSET: f32 = 8.;
+        let focused = self.composer_focused;
+        if self.composer_moves == 0 {
+            return composer_box
+                .mx(px(if focused { 0. } else { INSET }))
+                .into_any_element();
+        }
+        let (from, to) = if focused { (INSET, 0.) } else { (0., INSET) };
+        let ease = ease_out_quint();
+        composer_box
+            .with_animation(
+                ("composer-expand", self.composer_moves as usize),
+                Animation::new(Duration::from_millis(if focused { 320 } else { 220 })),
+                move |el, t| {
+                    let k = if focused { ui::spring(t) } else { ease(t) };
+                    el.mx(px(from + (to - from) * k))
+                },
+            )
+            .into_any_element()
+    }
+
     pub(super) fn render_composer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let (prefix, leaf) = ui::split_path(&self.cwd);
         let empty = self.composer.read(cx).value().trim().is_empty() && self.attachments.is_empty();
@@ -390,6 +416,7 @@ impl SessionView {
             .children(self.render_attachments(cx))
             .child(self.render_text_field(empty, ready, cx))
             .child(bottom);
+        let composer_box = self.expand_on_focus(composer_box);
 
         v_flex()
             .w_full()
