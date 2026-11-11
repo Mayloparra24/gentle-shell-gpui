@@ -70,7 +70,13 @@ impl SessionView {
     }
 
     fn handle_event(&mut self, event: &Value, window: &mut Window, cx: &mut Context<Self>) {
+        let answering = self.transcript.streaming_item();
         let effects = self.transcript.apply(event);
+        if let Some(ix) = answering
+            && self.transcript.streaming_item() != Some(ix)
+        {
+            self.answer_finished(ix, cx);
+        }
         match event["type"].as_str() {
             Some("queue_update") => self.activity.queued = queued_count(event),
             Some("compaction_start") => self.usage.compacting = true,

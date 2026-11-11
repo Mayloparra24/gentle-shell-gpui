@@ -172,6 +172,11 @@ pub struct Effects {
 
 impl Transcript {
     /// Take the changes since the last call (`None`: nothing changed).
+    /// The assistant message being streamed, if any.
+    pub fn streaming_item(&self) -> Option<usize> {
+        self.streaming
+    }
+
     pub fn take_dirty(&mut self) -> Option<Dirty> {
         self.dirty.take()
     }
