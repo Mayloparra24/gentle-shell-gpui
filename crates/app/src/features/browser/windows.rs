@@ -219,3 +219,7 @@ impl Drop for NativeView {
         }
     }
 }
+
+/// The page lives in its own native window here, which gives the keyboard
+/// back when the app's window is clicked.
+pub(super) fn reclaim_keyboard(_window: &Window) {}

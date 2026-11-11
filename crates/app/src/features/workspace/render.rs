@@ -41,6 +41,11 @@ impl Render for Workspace {
         v_flex()
             .size_full()
             .text_color(ui::fg())
+            // A click in a web page (a device, the browser card) takes the
+            // keyboard away from GPUI; any click that reaches GPUI takes it back.
+            .capture_any_mouse_down(|_, window, _| {
+                crate::features::browser::reclaim_keyboard(window)
+            })
             .on_action(cx.listener(Self::on_new_tab))
             .on_action(cx.listener(Self::on_new_terminal_tab))
             .on_action(cx.listener(Self::on_close_tab))

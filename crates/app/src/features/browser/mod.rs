@@ -27,6 +27,12 @@ use crate::shared::ui;
 mod surface;
 pub use surface::WebSurface;
 
+/// A mouse-down reached GPUI rather than a page: give GPUI the keyboard
+/// back if a page had taken it (see `macos::give_keyboard_to`).
+pub fn reclaim_keyboard(window: &Window) {
+    native::reclaim_keyboard(window);
+}
+
 // The native web view, one module per system with the same interface:
 // `host` (the window to build in, taken during a frame), `NativeView::{new,
 // place, load_url, reload}`, plus `pump` for a toolkit loop GPUI doesn't run
