@@ -25,15 +25,20 @@ pub fn install_open_tool() {
     if std::fs::read_to_string(&path).ok().as_deref() == Some(body.as_str()) {
         return;
     }
-    if std::fs::write(&path, &body).is_err() {
-        return;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755));
+    if std::fs::write(&path, &body).is_ok() {
+        make_executable(&path);
     }
 }
+
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+}
+
+/// Windows runs the `.cmd` shim as is.
+#[cfg(not(unix))]
+fn make_executable(_: &Path) {}
 
 fn shim_dir() -> Option<PathBuf> {
     Some(
