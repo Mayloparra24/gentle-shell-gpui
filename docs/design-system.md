@@ -200,12 +200,15 @@ Presentation utilities in the same module: `split_path` (prefix `~/a/b/` and lea
 | `pop_in(id, el)` | 340 ms | `spring` | Opacity and relative `top` from 12 px | Screens, dialogs, palette. |
 | `popover_in(id, el)` | 300 ms | `spring` | Opacity only, without changing the measured size | Content inside an `island` or a popover. |
 | `scrim(id)` | 220 ms | `ease_out_quint` | `backdrop()` veil fading in | Behind a panel (`screen` already adds it). |
-| `pulse(id, el)` | 1400 ms, repeating | `pulsating_between(0.35, 1.0)` | Breathes the opacity | Live indicators: activity dot, running agents, thinking `✿`. |
+| `pulse(el)` | 1400 ms, repeating at ~30 fps | `pulsating_between(0.35, 1.0)` | Breathes the opacity | Live indicators: activity dot, running agents, thinking `✿`. |
+| `spinner(size, color)` | 800 ms a turn, ~30 fps | linear | The `Loader` icon turning | Rows that stay on screen while work runs: running tool cards, the model picker loading, running agents. |
+| `shimmer(text, base, highlight)` | 2000 ms sweep, ~30 fps | smoothstep band | A highlight crossing the text | "Working…", "Thinking…", "Starting gentle-shell…". |
 | `spring(t)` | — | — | Spring with ~3 % overshoot | Inside the animator for anything that opens. |
 
 Guidelines:
 
 - **One animation per id.** GPUI plays an animation once per `ElementId`. To repeat it, change the id with a counter (`ElementId::NamedInteger("effort-knob".into(), moves)` in `features/session/view/effort.rs`, `NamedInteger("max-surge".into(), run)` in `surge.rs`); to keep it from replaying when something reopens, the id must stay stable.
+- **Live indicators are slow on purpose.** `pulse`, `spinner` and `shimmer` read one app clock and redraw their view every 33 ms instead of at the display's rate: a frame re-renders the whole view and its ancestors (the conversation, during a turn), so a 120 Hz dot would cost four times the work for no visible gain. Use them, not `Spinner`/`ShimmerText` or a repeating `with_animation`, for anything that stays on screen while work runs. They hold still with reduced motion.
 - **Stagger with `appear_after`**: same base and a constant gap per step (`self.entrance + STEP_GAP * (index + 1)` with `STEP_GAP = 110 ms` in `features/onboarding/sequence.rs`).
 - **Do not replay on scroll**: the conversation only applies `appear` to a row during `APPEAR_WINDOW` (300 ms) after it was first seen (`features/session/view/transcript_list.rs`).
 - **`spring` goes in the animator, not as easing**: GPUI's easing must stay within 0..=1 and the spring goes past 1 (`pop_in` applies it inside the closure).
@@ -316,7 +319,7 @@ Typical screen footer: `h_flex().px_4().py_3().gap_2().border_t_1().border_color
 
 | State | Shape |
 | --- | --- |
-| Loading | `h_flex().gap_2().text_sm().text_color(ui::muted())` + `Spinner::new().small()` (in `muted` or `accent`) + "Reading sessions…". Inline, `Spinner::new().xsmall()`. |
+| Loading | `h_flex().gap_2().text_sm().text_color(ui::muted())` + `Spinner::new().small()` (in `muted` or `accent`) + "Reading sessions…". Inline, `Spinner::new().xsmall()`. Brief loads only; a spinner that can stay up through a whole turn is `ui::spinner`. |
 | Reloading with data | The list stays and the refresh button shows `.loading(..)`. |
 | Empty | `v_flex().items_center().py_8().gap_2()`, icon in `faint` (`Inbox`, `Layers`) and a `text_sm muted` sentence that says what to do ("No profiles left. Create one with New."). |
 | Error | `text_sm` text in `danger` with a `ghost` "Retry" button; or a `card` with `border_color(ui::danger().opacity(0.35))`, `CircleAlert` icon, `section_label` and the message; technical output, if any, goes in a `well_box`. |
