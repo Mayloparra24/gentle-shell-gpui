@@ -2,7 +2,7 @@
 //! state it reads back, and the commands the UI and window run.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -24,6 +24,9 @@ impl SessionView {
     }
 
     /// Send `command`; `then` runs on the UI thread with the response data.
+    /// A response from a backend since replaced (restart, folder change) or
+    /// gone is dropped: it belongs to a conversation no longer shown, and its
+    /// "exited before answering" is the shutdown the app asked for.
     pub(super) fn request(
         &self,
         command: Value,
@@ -33,13 +36,19 @@ impl SessionView {
         let Some(process) = self.process() else {
             return;
         };
-        // The task holds the response, not the process: closing the tab still
-        // stops the backend with a quiet request (`!` command, compaction) in
-        // flight.
+        // The task holds the response and a weak handle, not the process:
+        // closing the tab still stops the backend with a quiet request (`!`
+        // command, compaction) in flight.
         let response = process.request(command);
+        let sent_to = Arc::downgrade(&process);
         cx.spawn(async move |this, cx| {
             let result = response.await.map(|r| r.data);
             let _ = this.update(cx, |this, cx| {
+                let current = matches!(&this.backend.status,
+                    BackendStatus::Ready(p) if Weak::as_ptr(&sent_to) == Arc::as_ptr(p));
+                if !current {
+                    return;
+                }
                 then(this, result, cx);
                 this.sync_view(cx);
                 this.sync_chrome(cx);
