@@ -53,6 +53,20 @@ struct Repo {
     /// Status paths are relative to this, not to the sidebar's root.
     toplevel: PathBuf,
     tree: WorkTree,
+    /// `Repository: <path>` when the sidebar's root sits inside a larger one.
+    repository: Option<String>,
+}
+
+impl Repo {
+    fn read(root: &Path, toplevel: PathBuf) -> Option<Self> {
+        let tree = git::work_tree(&toplevel)?;
+        let repository = git::repository_line(root, &toplevel);
+        Some(Repo {
+            toplevel,
+            tree,
+            repository,
+        })
+    }
 }
 
 /// One row of the virtualized list; every kind is [`ROW_HEIGHT`] tall.
@@ -180,6 +194,10 @@ impl ChangesView {
         self.repo.as_ref()?.as_ref().map(|repo| &repo.tree)
     }
 
+    fn repository_line(&self) -> Option<String> {
+        self.repo.as_ref()?.as_ref()?.repository.clone()
+    }
+
     fn toplevel(&self) -> Option<PathBuf> {
         self.repo
             .as_ref()?
@@ -201,8 +219,7 @@ impl ChangesView {
         let known = self.toplevel();
         async move {
             let toplevel = known.or_else(|| git::toplevel(&root))?;
-            let tree = git::work_tree(&toplevel)?;
-            Some(Repo { toplevel, tree })
+            Repo::read(&root, toplevel)
         }
     }
 
@@ -303,12 +320,13 @@ impl ChangesView {
         let Some(toplevel) = self.toplevel() else {
             return;
         };
+        let root = self.root.clone();
         cx.spawn(async move |this, cx| {
             let (result, tree) = cx
                 .background_executor()
                 .spawn(async move {
                     let result = job(&toplevel);
-                    let tree = git::work_tree(&toplevel).map(|tree| Repo { toplevel, tree });
+                    let tree = Repo::read(&root, toplevel);
                     (result, tree)
                 })
                 .await;
@@ -440,6 +458,7 @@ impl ChangesView {
         }
         let description = self.description.read(cx).value().to_string();
         let amend = self.amend;
+        let root = self.root.clone();
         self.busy = Some(if push {
             "Committing and pushing…"
         } else {
@@ -462,7 +481,7 @@ impl ChangesView {
                                 Ok(())
                             }
                         });
-                    let tree = git::work_tree(&toplevel).map(|tree| Repo { toplevel, tree });
+                    let tree = Repo::read(&root, toplevel);
                     (committed, result, tree)
                 })
                 .await;
@@ -1075,6 +1094,26 @@ impl Render for ChangesView {
             .size_full()
             .min_h_0()
             .child(self.render_header(cx))
+            .when_some(self.repository_line(), |d, line| {
+                // The tail (the repository's own name) is what a narrow
+                // sidebar cuts, so the tooltip carries the whole line.
+                let tip = line.clone();
+                d.child(
+                    div()
+                        .id("changes-repository")
+                        .flex_none()
+                        .px_3()
+                        .pb_1p5()
+                        .truncate()
+                        .text_size(px(11.))
+                        .text_color(ui::muted())
+                        .tooltip(move |window, cx| {
+                            gpui_kit::component::tooltip::Tooltip::new(tip.clone())
+                                .build(window, cx)
+                        })
+                        .child(line),
+                )
+            })
             .child(self.render_list(cx))
             .when(matches!(self.repo, Some(Some(_))), |d| {
                 d.child(self.render_commit(cx))
