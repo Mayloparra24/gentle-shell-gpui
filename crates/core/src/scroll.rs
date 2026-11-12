@@ -34,13 +34,22 @@ pub fn item_weight(item: &Item) -> f32 {
         Item::User { text, images } => {
             3.8 + text_lines(text) + if images.is_empty() { 0. } else { 7. }
         }
-        Item::Assistant { blocks, error, .. } => {
+        Item::Assistant {
+            blocks,
+            streaming,
+            error,
+        } => {
             let text: f32 = blocks
                 .iter()
-                .map(|block| match block {
+                .enumerate()
+                .map(|(ix, block)| match block {
                     // Paragraph gaps add about half a line each.
                     Block::Text(text) => text_lines(text) * 1.25,
-                    // Collapsed to a one-line header.
+                    // The one being streamed reads along, open under its
+                    // header; the others fold to the header.
+                    Block::Thinking(text) if *streaming && ix + 1 == blocks.len() => {
+                        1.5 + text_lines(text.trim())
+                    }
                     Block::Thinking(_) => 1.5,
                     Block::ToolCall => 0.,
                 })
@@ -328,6 +337,30 @@ mod tests {
         assert!(item_weight(&user("hola")) < item_weight(&user(&"x".repeat(400))));
         let long = (0..40).map(|_| "una línea").collect::<Vec<_>>().join("\n");
         assert!(item_weight(&answer(&long)) > 10. * item_weight(&answer("ok")));
+    }
+
+    #[test]
+    fn live_thinking_counts_its_text() {
+        let thinking = |text: &str, streaming| Item::Assistant {
+            blocks: vec![Block::Thinking(text.into())],
+            streaming,
+            error: None,
+        };
+        let long = (0..40).map(|_| "un paso").collect::<Vec<_>>().join("\n");
+        // Streamed, it shows open: it weighs at least the 40 lines it draws.
+        assert!(item_weight(&thinking(&long, true)) > 40.);
+        // Done, it folds to its header whatever its length.
+        assert_eq!(
+            item_weight(&thinking(&long, false)),
+            item_weight(&thinking("ok", false))
+        );
+        // Followed by the answer, it isn't the one being streamed anymore.
+        let answered = Item::Assistant {
+            blocks: vec![Block::Thinking(long), Block::Text("ok".into())],
+            streaming: true,
+            error: None,
+        };
+        assert!(item_weight(&answered) < 10.);
     }
 
     #[test]
