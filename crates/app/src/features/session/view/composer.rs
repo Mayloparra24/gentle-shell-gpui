@@ -379,8 +379,10 @@ impl SessionView {
                 .on_click(cx.listener(|this, _, window, cx| this.submit(window, cx)))
         };
 
+        let repository = self.git.repository.clone();
         let git = self.git.snapshot.as_ref().map(|git| {
             h_flex()
+                .id("git-chip")
                 .flex_shrink_0()
                 .gap_1()
                 .text_size(px(12.))
@@ -402,6 +404,9 @@ impl SessionView {
                             .text_color(ui::muted())
                             .child(format!("±{}", git.files.len())),
                     )
+                })
+                .when_some(repository, |this, line| {
+                    this.tooltip(move |window, cx| Tooltip::new(line.clone()).build(window, cx))
                 })
         });
 

@@ -316,12 +316,20 @@ impl SessionView {
         self.git.at = Some(Instant::now());
         let cwd = self.cwd.clone();
         cx.spawn(async move |this, cx| {
-            let snapshot = cx
+            let (snapshot, repository) = cx
                 .background_executor()
-                .spawn(async move { git::snapshot(&cwd) })
+                .spawn(async move {
+                    let snapshot = git::snapshot(&cwd);
+                    let repository = snapshot
+                        .as_ref()
+                        .and_then(|_| git::toplevel(&cwd))
+                        .and_then(|top| git::repository_line(&cwd, &top));
+                    (snapshot, repository)
+                })
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.git.snapshot = snapshot;
+                this.git.repository = repository;
                 cx.notify();
             });
         })

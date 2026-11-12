@@ -5,6 +5,7 @@
 //! submodules.
 
 pub mod refs;
+pub mod repo;
 pub mod status;
 
 pub fn truncate_diff(diff: &str, max: usize) -> String {
