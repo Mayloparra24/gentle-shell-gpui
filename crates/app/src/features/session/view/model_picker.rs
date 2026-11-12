@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use super::NARROW;
 use crate::features::session::SessionView;
-use crate::features::session::state::ModelInfo;
+use crate::features::session::state::{BackendStatus, ModelInfo};
 use crate::shared::ui;
 use gentle_core::transcript::format_tokens;
 
@@ -154,6 +154,8 @@ impl SessionView {
         let current = self.models.current.clone();
         let search = self.model_search.clone();
         let has_any = !self.models.available.is_empty();
+        let loading = models_loading(self.models.loaded, &self.backend.status);
+        let (empty_message, show_sign_in) = model_picker_empty_state(loading, has_any);
         let content_weak = weak.clone();
         let scroll = self.live.model_scroll.clone();
 
@@ -251,11 +253,7 @@ impl SessionView {
                             .py_4()
                             .text_size(px(12.))
                             .text_color(ui::faint())
-                            .child(if has_any {
-                                "No models match."
-                            } else {
-                                "No models yet. Sign in to a provider."
-                            }),
+                            .child(empty_message),
                     );
                 }
                 let sign_in = weak.clone();
@@ -277,7 +275,7 @@ impl SessionView {
                         ),
                     )
                     .child(list)
-                    .child(
+                    .children(show_sign_in.then(|| {
                         div().p(px(6.)).child(
                             Button::new("picker-sign-in")
                                 .ghost()
@@ -297,8 +295,8 @@ impl SessionView {
                                         );
                                     });
                                 }),
-                        ),
-                    );
+                        )
+                    }));
                 ui::island(cx)
                     .w_full()
                     .child(ui::popover_in(
@@ -307,6 +305,22 @@ impl SessionView {
                     ))
                     .into_any_element()
             })
+    }
+}
+
+/// The list is still on its way only while the backend can answer; once it
+/// failed or exited, `loaded` would stay `false` for good.
+fn models_loading(loaded: bool, status: &BackendStatus) -> bool {
+    !loaded && matches!(status, BackendStatus::Starting | BackendStatus::Ready(_))
+}
+
+fn model_picker_empty_state(loading: bool, has_any: bool) -> (&'static str, bool) {
+    if has_any {
+        ("No models match.", true)
+    } else if loading {
+        ("Loading models…", false)
+    } else {
+        ("No models yet. Sign in to a provider.", true)
     }
 }
 
@@ -322,4 +336,45 @@ fn provider_color(provider: &str) -> Hsla {
         .bytes()
         .fold(0usize, |h, b| h.wrapping_mul(31).wrapping_add(b as usize));
     palette[hash % palette.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{model_picker_empty_state, models_loading};
+    use crate::features::session::state::BackendStatus;
+
+    #[test]
+    fn model_picker_empty_state_loading() {
+        assert_eq!(
+            model_picker_empty_state(true, false),
+            ("Loading models…", false)
+        );
+    }
+
+    #[test]
+    fn model_picker_empty_state_preserves_loaded_and_search_states() {
+        assert_eq!(
+            model_picker_empty_state(false, false),
+            ("No models yet. Sign in to a provider.", true)
+        );
+        for loading in [false, true] {
+            assert_eq!(
+                model_picker_empty_state(loading, true),
+                ("No models match.", true)
+            );
+        }
+    }
+
+    #[test]
+    fn models_loading_only_while_the_backend_can_still_answer() {
+        assert!(models_loading(false, &BackendStatus::Starting));
+        assert!(!models_loading(true, &BackendStatus::Starting));
+        // A backend that never answers must not leave the picker loading.
+        assert!(!models_loading(
+            false,
+            &BackendStatus::Failed("not installed".into())
+        ));
+        assert!(!models_loading(false, &BackendStatus::Exited(Some(1))));
+        assert!(!models_loading(false, &BackendStatus::Exited(None)));
+    }
 }
