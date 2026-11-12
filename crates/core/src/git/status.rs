@@ -19,8 +19,8 @@ pub struct GitSnapshot {
     pub files: Vec<FileChange>,
 }
 
-/// Parse `git status --porcelain=v1 -z`. Renames carry their source as an
-/// extra NUL-separated field, which is skipped.
+/// Parse `git status --porcelain=v1 -z`. Renames and copies carry their
+/// source as an extra NUL-separated field, which is skipped.
 pub fn parse_status(raw: &str) -> Vec<FileChange> {
     let mut files = Vec::new();
     let mut fields = raw.split('\0').filter(|f| !f.is_empty());
@@ -35,6 +35,11 @@ pub fn parse_status(raw: &str) -> Vec<FileChange> {
             ('R', _) | (_, 'R') => {
                 fields.next();
                 'R'
+            }
+            // A copy's destination is a new file, as in porcelain v2.
+            ('C', _) | (_, 'C') => {
+                fields.next();
+                'A'
             }
             ('A', _) => 'A',
             ('D', _) | (_, 'D') => 'D',
@@ -228,6 +233,14 @@ mod tests {
                 ('A', "added.rs")
             ]
         );
+    }
+
+    #[test]
+    fn copy_source_is_not_an_extra_change() {
+        let files = parse_status("C  copied.txt\0source.txt\0M  source.txt\0");
+        let summary: Vec<(char, &str)> =
+            files.iter().map(|f| (f.status, f.path.as_str())).collect();
+        assert_eq!(summary, vec![('A', "copied.txt"), ('M', "source.txt")]);
     }
 
     #[test]
