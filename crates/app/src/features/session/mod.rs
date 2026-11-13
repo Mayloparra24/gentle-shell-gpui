@@ -46,8 +46,9 @@ pub enum SessionEvent {
     /// A Gentle Shell command whose UI is terminal-only was run (typed or
     /// from the palette): open the app's own screen for it instead.
     OpenScreen(gentle_core::commands::Screen),
-    /// The thinking level was set to `max`: the window plays its surge.
-    MaxEffort,
+    /// The thinking level was set (and the backend took it): the window
+    /// plays that level's surge.
+    Effort(String),
     /// Gentle Design's canvas opened, refreshed or stopped: the window keeps
     /// it in its instance tray (or reloads the card already showing it).
     DesignCanvas(crate::features::browser::CanvasNotice),

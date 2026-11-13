@@ -1,9 +1,11 @@
-//! The max-effort surge. A pixel comet laps the window's edge, shedding
+//! The effort surge. At max, a pixel comet laps the window's edge, shedding
 //! sparks and drawing a shimmering outline; the edge flares; the window
 //! shakes harder and harder while energy spirals into a glowing core; then
 //! the core hatches: a flash, a shockwave, one last jolt, and Gentle Shell's
-//! pixel rose bursts out with a rebound and a shower of sparks. Paint only
-//! (plus the root's shake offset); it never takes input.
+//! pixel rose bursts out with a rebound and a shower of sparks. Lower levels
+//! play the start of the same show and stop earlier ([`Level`]), so raising
+//! the effort step by step builds up to the full surge. Paint only (plus
+//! the root's shake offset); it never takes input.
 
 use std::f32::consts::{FRAC_PI_2, TAU};
 use std::time::Duration;
@@ -12,7 +14,7 @@ use gpui_kit::*;
 
 use crate::{shared::banner, shared::ui};
 
-/// The whole show, start to fade.
+/// The whole show at max, start to fade.
 pub const DURATION: Duration = Duration::from_millis(4400);
 
 // The timeline, as fractions of `DURATION`.
@@ -47,17 +49,109 @@ const SPARKS: usize = 56;
 /// Peak tremble, in px; the jolt reaches `JOLT_GAIN` times that.
 const SHAKE: f32 = 7.;
 const JOLT_GAIN: f32 = 1.6;
+/// The comet's tail fades over this long after it stops.
+const COMET_FADE: f32 = 0.12;
+/// Without the tremble, the flared edge dims over this long.
+const FLARE_ALONE: f32 = 0.24;
+/// Without the hatch, the core dims over this long.
+const CORE_FADE: f32 = 0.1;
 
-/// The surge's paint for run `run` (a new run restarts it).
-pub fn overlay(run: u64) -> impl IntoElement {
+/// How much of the surge an effort level plays. Each level adds a beat to
+/// the one below: a short comet run, half the edge, the full lap with the
+/// edge flaring, the core gathering while the window trembles, the hatch;
+/// max adds the rose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Level {
+    /// Share of the edge the comet runs (1 is the whole lap).
+    lap: f32,
+    /// The lap closes and the edge flares.
+    flare: bool,
+    /// Energy gathers into a core while the window trembles this hard (a
+    /// share of max's tremble); 0 skips it.
+    tremble: f32,
+    /// The core hatches: a flash, a shockwave, one jolt and a shower of sparks.
+    hatch: bool,
+    /// Gentle Shell's rose bursts out of the hatch.
+    rose: bool,
+}
+
+/// The full show.
+pub const MAX: Level = Level {
+    lap: 1.,
+    flare: true,
+    tremble: 1.,
+    hatch: true,
+    rose: true,
+};
+
+impl Level {
+    /// The surge for thinking level `name`; `off` and unknown levels have none.
+    pub fn of(name: &str) -> Option<Self> {
+        let quiet = Level {
+            lap: 1.,
+            flare: false,
+            tremble: 0.,
+            hatch: false,
+            rose: false,
+        };
+        Some(match name {
+            "minimal" => Level { lap: 0.25, ..quiet },
+            "low" => Level { lap: 0.5, ..quiet },
+            "medium" => Level {
+                flare: true,
+                ..quiet
+            },
+            "high" => Level {
+                flare: true,
+                tremble: 0.45,
+                ..quiet
+            },
+            "xhigh" => Level {
+                flare: true,
+                tremble: 0.75,
+                hatch: true,
+                ..quiet
+            },
+            "max" => MAX,
+            _ => return None,
+        })
+    }
+
+    /// When the comet stops: a shorter run takes less time, at a gentler pace.
+    fn lap_end(self) -> f32 {
+        LAP_END * (0.45 + 0.55 * self.lap)
+    }
+
+    /// Where this level's show ends on max's timeline (0..=1).
+    fn end(self) -> f32 {
+        if self.hatch {
+            1.
+        } else if self.tremble > 0. {
+            BLOOM + CORE_FADE
+        } else if self.flare {
+            LAP_END + 0.04 + FLARE_ALONE
+        } else {
+            self.lap_end() + COMET_FADE
+        }
+    }
+
+    /// How long this level's show lasts.
+    pub fn duration(self) -> Duration {
+        DURATION.mul_f32(self.end())
+    }
+}
+
+/// The surge's paint for run `run` of `level` (a new run restarts it).
+pub fn overlay(run: u64, level: Level) -> impl IntoElement {
+    let end = level.end();
     div().absolute().inset_0().with_animation(
-        ElementId::NamedInteger("max-surge".into(), run),
-        Animation::new(DURATION),
-        |el, t| {
+        ElementId::NamedInteger("effort-surge".into(), run),
+        Animation::new(level.duration()),
+        move |el, t| {
             el.child(
                 canvas(
                     |_, _, _| {},
-                    move |bounds, _, window, _| paint(bounds, t, window),
+                    move |bounds, _, window, _| paint(bounds, t * end, level, window),
                 )
                 .size_full(),
             )
@@ -68,19 +162,26 @@ pub fn overlay(run: u64) -> impl IntoElement {
 /// The window's shake offset `elapsed` into a run. The window's root applies
 /// it in place (it re-renders each frame while a surge plays) rather than
 /// wrapping itself in an animation, which would re-key every element inside.
-pub fn shake_at(elapsed: Duration) -> (f32, f32) {
-    shake(elapsed.as_secs_f32() / DURATION.as_secs_f32())
+pub fn shake_at(elapsed: Duration, level: Level) -> (f32, f32) {
+    shake(elapsed.as_secs_f32() / DURATION.as_secs_f32(), level)
 }
 
-/// The window's offset at `t`: a tremble that builds up before the hatch,
-/// one hard jolt as the rose bursts out, then stillness.
-fn shake(t: f32) -> (f32, f32) {
+/// The window's offset at `t` (max's timeline): a tremble that builds up
+/// before the hatch, one hard jolt as the core hatches, then stillness.
+/// Levels without the tremble stay still.
+fn shake(t: f32, level: Level) -> (f32, f32) {
+    if level.tremble <= 0. {
+        return (0., 0.);
+    }
     let (amp, speed) = if (SHAKE_START..BLOOM).contains(&t) {
         let build = (t - SHAKE_START) / (BLOOM - SHAKE_START);
-        (SHAKE * build * build, 260.)
-    } else if (BLOOM..BLOOM + JOLT).contains(&t) {
+        (SHAKE * level.tremble * build * build, 260.)
+    } else if level.hatch && (BLOOM..BLOOM + JOLT).contains(&t) {
         let after = (t - BLOOM) / JOLT;
-        (SHAKE * JOLT_GAIN * (1. - after).powi(2), 200.)
+        (
+            SHAKE * level.tremble * JOLT_GAIN * (1. - after).powi(2),
+            200.,
+        )
     } else {
         return (0., 0.);
     };
@@ -91,7 +192,7 @@ fn shake(t: f32) -> (f32, f32) {
     (dx, dy)
 }
 
-fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
+fn paint(bounds: Bounds<Pixels>, t: f32, level: Level, window: &mut Window) {
     let petal = ui::petal();
     let spark = hsla(petal.h, 0.9, 0.93, 1.);
     let wine = hsla(petal.h, petal.s * 0.7, petal.l * 0.4, 1.);
@@ -121,13 +222,14 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
             );
         }
     };
-    let length = perimeter(w, h, RADIUS);
-    let lap = |t: f32| ease_in_out((t / LAP_END).clamp(0., 1.)) * length;
+    let length = perimeter(w, h, RADIUS) * level.lap;
+    let lap_end = level.lap_end();
+    let lap = |t: f32| ease_in_out((t / lap_end).clamp(0., 1.)) * length;
 
     // 1. The comet. The path it covered stays lit as a shimmering line (a
     //    wave of light runs along it); its tail fades from white through rose
     //    to wine; its head sheds sparks that drift into the window.
-    let comet_fade = 1. - ((t - LAP_END) / 0.12).clamp(0., 1.);
+    let comet_fade = 1. - ((t - lap_end) / COMET_FADE).clamp(0., 1.);
     if comet_fade > 0. {
         let head = lap(t);
         let mut along = 0.;
@@ -152,7 +254,7 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
             dot += 1;
         }
         for i in 0..SHED {
-            let born = i as f32 / SHED as f32 * LAP_END;
+            let born = i as f32 / SHED as f32 * lap_end;
             let age = (t - born) / SHED_LIFE;
             if !(0. ..1.).contains(&age) {
                 continue;
@@ -205,9 +307,18 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
 
     // 2. The lap closes and the edge flares; it glows on, beating with the
     //    tremble, until the hatch.
-    let flare = bump(t, LAP_END - 0.04, LAP_END + 0.04, BLOOM + 0.1);
+    let flare_end = if level.tremble > 0. {
+        BLOOM + 0.1
+    } else {
+        LAP_END + 0.04 + FLARE_ALONE
+    };
+    let flare = if level.flare {
+        bump(t, LAP_END - 0.04, LAP_END + 0.04, flare_end)
+    } else {
+        0.
+    };
     if flare > 0. {
-        let beat = if (SHAKE_START..BLOOM).contains(&t) {
+        let beat = if level.tremble > 0. && (SHAKE_START..BLOOM).contains(&t) {
             0.75 + 0.25 * (t * 120.).sin()
         } else {
             1.
@@ -227,7 +338,8 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
     }
 
     // 3. Energy gathers: pixels spiral into a core that swells and pulses.
-    if (SHAKE_START..BLOOM).contains(&t) {
+    //    Without the hatch the core then dims where it is.
+    if level.tremble > 0. && (SHAKE_START..BLOOM).contains(&t) {
         let build = (t - SHAKE_START) / (BLOOM - SHAKE_START);
         let reach = w.min(h) * 0.48;
         for i in 0..MOTES {
@@ -250,6 +362,15 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
         soft(window, cx, cy, core * 4. * pulse, 0.3 + 0.3 * build, 14);
         soft(window, cx, cy, core * pulse, 0.6 + 0.35 * build, 6);
         window.paint_quad(fill(square(cx, cy, core * 0.35), spark.opacity(0.9)));
+    }
+    let dim = (t - BLOOM) / CORE_FADE;
+    if level.tremble > 0. && !level.hatch && (0. ..1.).contains(&dim) {
+        let left = 1. - ease_out(dim);
+        soft(window, cx, cy, 160. * left, 0.6 * left, 14);
+        soft(window, cx, cy, 40. * left, 0.95 * left, 6);
+    }
+    if !level.hatch {
+        return;
     }
 
     // 4. The hatch: a flash across the window and a shockwave ring.
@@ -275,7 +396,7 @@ fn paint(bounds: Bounds<Pixels>, t: f32, window: &mut Window) {
 
     // 5. The rose bursts out, overshooting and settling, in a soft halo,
     //    then holds and fades. It is white-hot for an instant.
-    let shown = if t < BLOOM {
+    let shown = if !level.rose || t < BLOOM {
         0.
     } else if t < BLOOM + 0.03 {
         (t - BLOOM) / 0.03
@@ -404,7 +525,8 @@ fn ease_in_out(t: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        BLOOM, JOLT, JOLT_GAIN, SHAKE, SHAKE_START, bump, perimeter, perimeter_point, shake,
+        BLOOM, JOLT, JOLT_GAIN, Level, MAX, SHAKE, SHAKE_START, bump, perimeter, perimeter_point,
+        shake,
     };
 
     fn close(a: (f32, f32), b: (f32, f32)) -> bool {
@@ -444,15 +566,15 @@ mod tests {
         let peak = |from: f32, to: f32| {
             (0..200)
                 .map(|i| {
-                    let (dx, dy) = shake(from + (to - from) * i as f32 / 200.);
+                    let (dx, dy) = shake(from + (to - from) * i as f32 / 200., MAX);
                     dx.abs().max(dy.abs())
                 })
                 .fold(0., f32::max)
         };
         // Still during the comet and after the jolt.
-        assert_eq!(shake(0.2), (0., 0.));
-        assert_eq!(shake(BLOOM + JOLT + 0.01), (0., 0.));
-        assert_eq!(shake(0.99), (0., 0.));
+        assert_eq!(shake(0.2, MAX), (0., 0.));
+        assert_eq!(shake(BLOOM + JOLT + 0.01, MAX), (0., 0.));
+        assert_eq!(shake(0.99, MAX), (0., 0.));
         // The tremble builds: its last stretch is stronger than its first.
         let span = BLOOM - SHAKE_START;
         assert!(
@@ -462,6 +584,39 @@ mod tests {
         let jolt = peak(BLOOM, BLOOM + JOLT * 0.3);
         assert!(jolt > peak(SHAKE_START, BLOOM));
         assert!(jolt <= SHAKE * JOLT_GAIN);
+    }
+
+    #[test]
+    fn each_effort_level_builds_on_the_one_below() {
+        let levels: Vec<Level> = ["minimal", "low", "medium", "high", "xhigh", "max"]
+            .into_iter()
+            .map(|name| Level::of(name).unwrap())
+            .collect();
+        assert_eq!(Level::of("off"), None);
+        assert_eq!(levels[5], MAX);
+        let tremble = |level: Level| {
+            (0..400)
+                .map(|i| {
+                    let (dx, dy) = shake(i as f32 / 400., level);
+                    dx.abs().max(dy.abs())
+                })
+                .fold(0., f32::max)
+        };
+        for pair in levels.windows(2) {
+            let (lower, higher) = (pair[0], pair[1]);
+            // Never longer, never shakier, never a beat the next level lacks.
+            assert!(lower.duration() <= higher.duration(), "{lower:?}");
+            assert!(tremble(lower) <= tremble(higher), "{lower:?}");
+            assert!(lower.lap <= higher.lap);
+            assert!(!lower.flare || higher.flare);
+            assert!(!lower.hatch || higher.hatch);
+            assert!(!lower.rose || higher.rose);
+        }
+        // The window only moves once the core starts gathering.
+        assert_eq!(tremble(Level::of("medium").unwrap()), 0.);
+        assert!(tremble(Level::of("high").unwrap()) > 0.);
+        // Max keeps its full length.
+        assert_eq!(MAX.duration(), super::DURATION);
     }
 
     #[test]

@@ -250,7 +250,7 @@ pub struct Workspace {
     renaming: Option<TabRename>,
     /// The max-effort surge playing over the window (its run number and when
     /// it started), and the timer that clears it.
-    surge: Option<(u64, std::time::Instant)>,
+    surge: Option<(u64, std::time::Instant, crate::shared::surge::Level)>,
     surge_runs: u64,
     _surge_end: Option<Task<()>>,
     /// Web and device stages, in creation order: shown ones float and tile,
