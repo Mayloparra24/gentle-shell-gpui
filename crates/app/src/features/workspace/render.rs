@@ -143,15 +143,11 @@ impl Render for Workspace {
                                                 .map(|id| self.pane_title(id))
                                                 .unwrap_or_default();
                                             let hover = cx.entity().downgrade();
-                                            Button::new("title-close-pane")
-                                                .ghost()
-                                                .xsmall()
-                                                .icon(Icon::new(IconName::X))
-                                                .tooltip(format!(
-                                                    "Close \u{201c}{}\u{201d} ({})",
-                                                    target.trim_end_matches(" •"),
-                                                    if mac { "⌘W" } else { "Ctrl+W" }
-                                                ))
+                                            // The hover is the wrapper's: the button's
+                                            // tooltip already takes its own `on_hover`,
+                                            // and GPUI allows one per element.
+                                            div()
+                                                .id("title-close-pane-hover")
                                                 .on_hover(move |hovered, _, cx| {
                                                     let hovered = *hovered;
                                                     let _ = hover.update(cx, |this, cx| {
@@ -161,10 +157,25 @@ impl Render for Workspace {
                                                         }
                                                     });
                                                 })
-                                                .on_click(cx.listener(|this, _, window, cx| {
-                                                    this.close_hover = false;
-                                                    this.on_close_pane(&ClosePane, window, cx)
-                                                }))
+                                                .child(
+                                                    Button::new("title-close-pane")
+                                                        .ghost()
+                                                        .xsmall()
+                                                        .icon(Icon::new(IconName::X))
+                                                        .tooltip(format!(
+                                                            "Close \u{201c}{}\u{201d} ({})",
+                                                            target.trim_end_matches(" •"),
+                                                            if mac { "⌘W" } else { "Ctrl+W" }
+                                                        ))
+                                                        .on_click(cx.listener(
+                                                            |this, _, window, cx| {
+                                                                this.close_hover = false;
+                                                                this.on_close_pane(
+                                                                    &ClosePane, window, cx,
+                                                                )
+                                                            },
+                                                        )),
+                                                )
                                         })
                                         .child(div().w(px(1.)).h(px(14.)).mx_1().bg(ui::border()))
                                     })
