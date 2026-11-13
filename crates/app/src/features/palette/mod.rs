@@ -112,6 +112,15 @@ pub struct WorkspaceRow {
     pub name: String,
     pub tabs: usize,
     pub current: bool,
+    pub activity: Activity,
+}
+
+/// What a workspace's agents are doing: how many work and how many wait on
+/// you (an agent that waits isn't counted as working).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Activity {
+    pub working: usize,
+    pub needs_you: usize,
 }
 
 pub struct PaletteInput {
@@ -251,6 +260,14 @@ impl PaletteView {
             state.set_placeholder(category.placeholder(), window, cx);
             state.focus(window, cx);
         });
+        self.refresh_rows(cx);
+        cx.notify();
+    }
+
+    /// The workspaces changed while the switcher is open (an agent started,
+    /// finished or asked something): re-list them in place.
+    pub fn set_workspaces(&mut self, workspaces: Vec<WorkspaceRow>, cx: &mut Context<Self>) {
+        self.workspaces = workspaces;
         self.refresh_rows(cx);
         cx.notify();
     }

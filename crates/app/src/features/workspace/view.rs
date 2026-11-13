@@ -14,6 +14,33 @@ impl Workspace {
             .any(|id| self.panes.get(id).is_some_and(|p| p.running))
     }
 
+    /// What the agents of `space` do. A workspace not shown yet since launch
+    /// has no panes, so it counts as idle.
+    pub(super) fn space_activity(&self, space: &Space) -> Activity {
+        let mut activity = Activity::default();
+        for id in space.tabs.iter().flat_map(|tab| tab.tree.leaves()) {
+            match self.panes.get(&id) {
+                Some(pane) if pane.needs_you => activity.needs_you += 1,
+                Some(pane) if pane.running => activity.working += 1,
+                _ => {}
+            }
+        }
+        activity
+    }
+
+    /// What the agents of the other workspaces do, for the workspace chip.
+    fn elsewhere_activity(&self) -> Activity {
+        let mut total = Activity::default();
+        for (index, space) in self.spaces.iter().enumerate() {
+            if index != self.current {
+                let activity = self.space_activity(space);
+                total.working += activity.working;
+                total.needs_you += activity.needs_you;
+            }
+        }
+        total
+    }
+
     pub(super) fn pane_title(&self, id: PaneId) -> SharedString {
         self.panes
             .get(&id)
@@ -29,6 +56,21 @@ impl Workspace {
             .find(|c| c.is_alphanumeric())
             .map(|c| c.to_uppercase().collect::<String>())
             .unwrap_or_else(|| "·".into());
+        // Agents in the other workspaces: a dot here, details in the switcher.
+        let elsewhere = self.elsewhere_activity();
+        let (tip, dot) = if elsewhere.needs_you > 0 {
+            (
+                "Switch workspace · an agent in another one needs you",
+                Some(ui::warning()),
+            )
+        } else if elsewhere.working > 0 {
+            (
+                "Switch workspace · agents are working in another one",
+                Some(ui::accent()),
+            )
+        } else {
+            ("Switch workspace", None)
+        };
         h_flex()
             .id("workspace-chip")
             .h(px(TITLE_ITEM))
@@ -42,7 +84,7 @@ impl Workspace {
             .text_size(px(12.5))
             .cursor_pointer()
             .hover(|s| s.bg(ui::surface_hover().opacity(0.6)))
-            .tooltip(|window, cx| Tooltip::new("Switch workspace").build(window, cx))
+            .tooltip(move |window, cx| Tooltip::new(tip).build(window, cx))
             // Keep clicks on the chip from turning into window drags: `occlude`
             // hides the title bar's drag area from Windows' hit test, and
             // stopping the mouse-down keeps TitleBar from starting a move.
@@ -76,6 +118,9 @@ impl Workspace {
                     .text_color(ui::fg())
                     .child(name),
             )
+            .when_some(dot, |d, color| {
+                d.child(div().size(px(6.)).flex_none().rounded_full().bg(color))
+            })
             .child(
                 Icon::new(IconName::ChevronDown)
                     .xsmall()

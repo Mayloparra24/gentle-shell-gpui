@@ -70,6 +70,7 @@ pub enum SessionEvent {
 struct Chrome {
     title: String,
     running: bool,
+    needs_you: bool,
     session_file: Option<PathBuf>,
     models: u64,
 }
@@ -296,6 +297,11 @@ impl SessionView {
         self.transcript.running
     }
 
+    /// A dialog (a question, a confirmation) waits for an answer.
+    pub fn needs_you(&self) -> bool {
+        !self.extension.dialogs.is_empty()
+    }
+
     pub fn composer(&self) -> Entity<TextareaState> {
         self.composer.clone()
     }
@@ -354,6 +360,7 @@ impl SessionView {
         let chrome = Chrome {
             title: self.title(),
             running: self.is_running(),
+            needs_you: self.needs_you(),
             session_file: self.session_file(),
             models: self.models.rev,
         };

@@ -169,6 +169,7 @@ impl SessionView {
                         .await;
                     let _ = this.update(cx, |this, cx| {
                         this.extension.dialogs.retain(|d| d.id != id);
+                        this.sync_chrome(cx);
                         cx.notify();
                     });
                 })
@@ -308,6 +309,7 @@ impl SessionView {
                 .notice(NoticeLevel::Error, format!("{error:#}"));
         }
         self.prepare_dialog(window, cx);
+        self.sync_chrome(cx);
         cx.notify();
     }
 

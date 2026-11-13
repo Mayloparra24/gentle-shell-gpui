@@ -23,7 +23,7 @@ use crate::features::memory::{MemoryEvent, MemoryView};
 use crate::features::notices::{self, Notices};
 use crate::features::onboarding::{OnboardingEvent, OnboardingView, Probe};
 use crate::features::palette::{
-    Category, PaletteAction, PaletteEvent, PaletteInput, PaletteView, WorkspaceRow,
+    Activity, Category, PaletteAction, PaletteEvent, PaletteInput, PaletteView, WorkspaceRow,
 };
 use crate::features::profiles::{ModelChoice, ProfilesEvent, ProfilesView};
 use crate::features::providers::{ProvidersEvent, ProvidersView};
@@ -119,20 +119,23 @@ struct Pane {
     /// refresh it on `SessionEvent::ChromeChanged`, everything on the title poll.
     title: SharedString,
     running: bool,
+    /// An agent waits on a dialog only you can answer.
+    needs_you: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Pane {
-    /// Re-read the title and busy state; whether either changed.
+    /// Re-read the title and activity; whether any changed.
     fn sync_chrome(&mut self, cx: &App) -> bool {
         let title = (self.item.title)(cx);
-        let running = self
-            .session
-            .as_ref()
-            .is_some_and(|s| s.read(cx).is_running());
-        let changed = title != self.title || running != self.running;
+        let (running, needs_you) = self.session.as_ref().map_or((false, false), |s| {
+            let s = s.read(cx);
+            (s.is_running(), s.needs_you())
+        });
+        let changed = title != self.title || running != self.running || needs_you != self.needs_you;
         self.title = title;
         self.running = running;
+        self.needs_you = needs_you;
         changed
     }
 }
@@ -501,6 +504,7 @@ impl Workspace {
             session_file: None,
             title: SharedString::default(),
             running: false,
+            needs_you: false,
             _subscriptions: Vec::new(),
         };
         pane.sync_chrome(cx);
