@@ -48,6 +48,7 @@ pub enum PaletteAction {
     NewAgentPane,
     NewTerminalPane,
     ClosePane,
+    ReopenClosed,
     ToggleSidebar,
     /// Send `/name` as a prompt in the active agent pane.
     Command(String),

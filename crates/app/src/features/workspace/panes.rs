@@ -489,13 +489,15 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Close `pane`, asking first when it holds unsaved edits.
+    /// Close `pane`, asking first when it holds unsaved edits or its agent
+    /// is working or waiting on you.
     pub(super) fn close_pane(&mut self, pane: PaneId, window: &mut Window, cx: &mut Context<Self>) {
-        let unsaved: Vec<SharedString> = self.unsaved_titles([pane], cx);
-        if unsaved.is_empty() {
+        let unsaved = self.unsaved_titles([pane], cx);
+        let busy = self.busy_titles([pane]);
+        if unsaved.is_empty() && busy.is_empty() {
             self.close_pane_now(pane, window, cx);
         } else {
-            self.confirm_discard_edits(unsaved, window, cx, move |this, window, cx| {
+            self.confirm_close(unsaved, busy, window, cx, move |this, window, cx| {
                 this.close_pane_now(pane, window, cx)
             });
         }
@@ -515,25 +517,64 @@ impl Workspace {
             .collect()
     }
 
-    /// "Close without saving?" for `titles`; `then` runs only on confirm.
-    pub(super) fn confirm_discard_edits(
+    /// Titles of the agents among `panes` in the middle of something:
+    /// running a turn or waiting on a dialog. Closing one stops it.
+    pub(super) fn busy_titles(&self, panes: impl IntoIterator<Item = PaneId>) -> Vec<SharedString> {
+        panes
+            .into_iter()
+            .filter_map(|id| self.panes.get(&id))
+            .filter(|p| p.running || p.needs_you)
+            .map(|p| p.title.clone())
+            .collect()
+    }
+
+    /// "Close anyway?" for files with unsaved edits and agents at work;
+    /// `then` runs only on confirm.
+    pub(super) fn confirm_close(
         &mut self,
-        titles: Vec<SharedString>,
+        unsaved: Vec<SharedString>,
+        busy: Vec<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
         then: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
     ) {
-        let names = titles
-            .iter()
-            .map(|t| t.trim_end_matches(" •").to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        let title = if titles.len() == 1 {
-            format!("Close {names} without saving?")
-        } else {
-            format!("Close {} files without saving?", titles.len())
+        let names = |titles: &[SharedString]| {
+            titles
+                .iter()
+                .map(|t| format!("\u{201c}{}\u{201d}", t.trim_end_matches(" •")))
+                .collect::<Vec<_>>()
+                .join(", ")
         };
-        let description = format!("Unsaved edits in {names} are lost. ⌘S saves first.");
+        let title = match (unsaved.len(), busy.len()) {
+            (0, 1) => format!("Stop {} and close it?", names(&busy)),
+            (0, n) => format!("Stop {n} agents and close them?"),
+            (1, 0) => format!("Close {} without saving?", names(&unsaved)),
+            (n, 0) => format!("Close {n} files without saving?"),
+            _ => "Close unsaved files and working agents?".to_string(),
+        };
+        let mut lines = Vec::new();
+        if !unsaved.is_empty() {
+            lines.push(format!(
+                "Unsaved edits in {} are lost. ⌘S saves first.",
+                names(&unsaved)
+            ));
+        }
+        if !busy.is_empty() {
+            lines.push(format!(
+                "{} {} working or waiting for your answer; closing stops {}. The \
+                 conversation is kept: {} reopens it.",
+                names(&busy),
+                if busy.len() == 1 { "is" } else { "are" },
+                if busy.len() == 1 { "it" } else { "them" },
+                closed::REOPEN_KEY,
+            ));
+        }
+        let description = lines.join(" ");
+        let ok = if busy.is_empty() {
+            "Close without saving"
+        } else {
+            "Stop and close"
+        };
         let this = cx.entity().downgrade();
         let then = Rc::new(then);
         window.open_alert_dialog(cx, move |alert, _, _| {
@@ -541,7 +582,7 @@ impl Workspace {
             alert
                 .title(title.clone())
                 .description(description.clone())
-                .ok_text("Close without saving")
+                .ok_text(ok)
                 .ok_variant(ButtonVariant::Danger)
                 .show_cancel(true)
                 .on_ok(move |_, window, cx| {
@@ -566,12 +607,13 @@ impl Workspace {
         else {
             return;
         };
-        let active = index == self.space().active;
-        let tab = &mut self.space_mut().tabs[index];
-        if tab.tree.len() == 1 {
+        if self.space().tabs[index].tree.len() == 1 {
             self.close_tab_now(index, window, cx);
             return;
         }
+        self.remember_close(index, &[pane], cx);
+        let active = index == self.space().active;
+        let tab = &mut self.space_mut().tabs[index];
         let next = tab.tree.focus_after_close(&pane);
         if let Some(tree) = tab.tree.clone().without(&pane) {
             tab.tree = tree;
@@ -586,21 +628,24 @@ impl Workspace {
         if active {
             self.focus_active(window, cx);
         }
+        self.announce_close(window, cx);
         self.schedule_save(cx);
         cx.notify();
     }
 
-    /// Close tab `index`, asking first when any of its panes holds unsaved edits.
+    /// Close tab `index`, asking first when any of its panes holds unsaved
+    /// edits or an agent at work.
     pub(super) fn close_tab(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(tab) = self.space().tabs.get(index) else {
             return;
         };
         let unsaved = self.unsaved_titles(tab.tree.leaves(), cx);
-        if unsaved.is_empty() {
+        let busy = self.busy_titles(tab.tree.leaves());
+        if unsaved.is_empty() && busy.is_empty() {
             self.close_tab_now(index, window, cx);
         } else {
             let id = tab.id;
-            self.confirm_discard_edits(unsaved, window, cx, move |this, window, cx| {
+            self.confirm_close(unsaved, busy, window, cx, move |this, window, cx| {
                 // The tab may have moved while the dialog was open.
                 if let Some(index) = this.space().tabs.iter().position(|t| t.id == id) {
                     this.close_tab_now(index, window, cx);
@@ -618,10 +663,13 @@ impl Workspace {
         if index >= self.space().tabs.len() {
             return;
         }
+        let leaves = self.space().tabs[index].tree.leaves();
+        self.remember_close(index, &leaves, cx);
         let tab = self.space_mut().tabs.remove(index);
         for pane in tab.tree.leaves() {
             self.panes.remove(&pane);
         }
+        self.announce_close(window, cx);
         if self.space().tabs.is_empty() {
             // Closing the last pane never closes the window (⌘Q quits):
             // the workspace starts over with a fresh agent tab.

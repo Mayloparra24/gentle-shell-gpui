@@ -139,6 +139,19 @@ pub(super) fn screen_rows() -> Vec<Row> {
             PaletteAction::ClosePane,
         ),
         row(
+            IconName::RotateCcwClock,
+            "Reopen closed pane",
+            &format!(
+                "The last pane or tab closed, where it was ({})",
+                if cfg!(target_os = "macos") {
+                    "⌥⌘T"
+                } else {
+                    "Ctrl+Alt+Shift+T"
+                }
+            ),
+            PaletteAction::ReopenClosed,
+        ),
+        row(
             IconName::PanelLeft,
             "Toggle sidebar",
             &format!("Files and the left panel ({cmd}B)"),

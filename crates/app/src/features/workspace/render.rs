@@ -57,6 +57,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::on_new_agent_pane))
             .on_action(cx.listener(Self::on_new_terminal_pane))
             .on_action(cx.listener(Self::on_close_pane))
+            .on_action(cx.listener(Self::on_reopen_closed))
             .on_action(cx.listener(Self::on_focus_next_pane))
             .on_action(cx.listener(Self::on_focus_prev_pane))
             .on_action(cx.listener(Self::on_toggle_sidebar))
@@ -134,19 +135,37 @@ impl Render for Workspace {
                                                     this.on_split_down(&SplitDown, window, cx)
                                                 })),
                                         )
-                                        .child(
+                                        .child({
+                                            // Names the pane it closes; hovering it
+                                            // marks that pane (see `render_pane`).
+                                            let target = self
+                                                .focused_pane()
+                                                .map(|id| self.pane_title(id))
+                                                .unwrap_or_default();
+                                            let hover = cx.entity().downgrade();
                                             Button::new("title-close-pane")
                                                 .ghost()
                                                 .xsmall()
                                                 .icon(Icon::new(IconName::X))
                                                 .tooltip(format!(
-                                                    "Close pane ({})",
+                                                    "Close \u{201c}{}\u{201d} ({})",
+                                                    target.trim_end_matches(" •"),
                                                     if mac { "⌘W" } else { "Ctrl+W" }
                                                 ))
+                                                .on_hover(move |hovered, _, cx| {
+                                                    let hovered = *hovered;
+                                                    let _ = hover.update(cx, |this, cx| {
+                                                        if this.close_hover != hovered {
+                                                            this.close_hover = hovered;
+                                                            cx.notify();
+                                                        }
+                                                    });
+                                                })
                                                 .on_click(cx.listener(|this, _, window, cx| {
+                                                    this.close_hover = false;
                                                     this.on_close_pane(&ClosePane, window, cx)
-                                                })),
-                                        )
+                                                }))
+                                        })
                                         .child(div().w(px(1.)).h(px(14.)).mx_1().bg(ui::border()))
                                     })
                                     .when_some(
