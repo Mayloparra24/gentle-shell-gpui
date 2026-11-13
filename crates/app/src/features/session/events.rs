@@ -323,7 +323,7 @@ impl SessionView {
                     let repository = snapshot
                         .as_ref()
                         .and_then(|_| git::toplevel(&cwd))
-                        .and_then(|top| git::repository_line(&cwd, &top));
+                        .and_then(|top| git::repository_path(&cwd, &top));
                     (snapshot, repository)
                 })
                 .await;

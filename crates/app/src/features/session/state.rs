@@ -214,7 +214,7 @@ impl TodoIsland {
 #[derive(Default)]
 pub(super) struct GitStatus {
     pub(super) snapshot: Option<GitSnapshot>,
-    /// `Repository: <path>` when the session folder sits inside a larger one.
+    /// Shortened path of the repository when the session folder sits inside a larger one.
     pub(super) repository: Option<String>,
     /// When the working tree was last refreshed.
     pub(super) at: Option<Instant>,

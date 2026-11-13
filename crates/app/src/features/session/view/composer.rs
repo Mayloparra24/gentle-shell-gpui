@@ -405,7 +405,8 @@ impl SessionView {
                             .child(format!("±{}", git.files.len())),
                     )
                 })
-                .when_some(repository, |this, line| {
+                .when_some(repository, |this, path| {
+                    let line = format!("Repository: {path}");
                     this.tooltip(move |window, cx| Tooltip::new(line.clone()).build(window, cx))
                 })
         });
