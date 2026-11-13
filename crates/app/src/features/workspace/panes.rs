@@ -149,7 +149,11 @@ impl Workspace {
                 SessionEvent::OpenScreen(screen) => {
                     this.open_screen(*screen, Some(session.clone()), window, cx)
                 }
-                SessionEvent::MaxEffort => this.play_surge(cx),
+                SessionEvent::Effort(level) => {
+                    if let Some(level) = crate::shared::surge::Level::of(level) {
+                        this.play_surge(level, cx)
+                    }
+                }
                 SessionEvent::DesignCanvas(canvas) => {
                     this.show_design_canvas(canvas.clone(), id, window, cx)
                 }

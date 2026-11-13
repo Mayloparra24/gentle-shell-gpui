@@ -32,9 +32,9 @@ impl Render for Workspace {
         // the root moves in place and asks for the next frame, so the element
         // tree (and every element's state) stays the same.
         let (shake_x, shake_y) = match self.surge {
-            Some((_, started)) => {
+            Some((_, started, level)) => {
                 window.request_animation_frame();
-                crate::shared::surge::shake_at(started.elapsed())
+                crate::shared::surge::shake_at(started.elapsed(), level)
             }
             None => (0., 0.),
         };
@@ -408,8 +408,8 @@ impl Render for Workspace {
                 Overlay::Onboarding(view) => view.clone().into_any_element(),
                 Overlay::Welcome(view) => view.clone().into_any_element(),
             }))
-            .when_some(self.surge, |root, (run, _)| {
-                root.child(crate::shared::surge::overlay(run))
+            .when_some(self.surge, |root, (run, _, level)| {
+                root.child(crate::shared::surge::overlay(run, level))
             })
             .when_some(crate::features::hydration::playing(cx), |root, run| {
                 root.child(crate::features::hydration::overlay(run, cx))

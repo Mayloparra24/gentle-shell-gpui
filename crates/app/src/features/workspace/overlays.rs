@@ -135,18 +135,20 @@ impl Workspace {
         }
     }
 
-    /// Play the max-effort surge over the window; choosing max again
-    /// restarts it.
-    pub(super) fn play_surge(&mut self, cx: &mut Context<Self>) {
+    /// Play an effort level's surge over the window; another change
+    /// restarts it at the new level.
+    pub(super) fn play_surge(
+        &mut self,
+        level: crate::shared::surge::Level,
+        cx: &mut Context<Self>,
+    ) {
         self.surge_runs += 1;
         let run = self.surge_runs;
-        self.surge = Some((run, std::time::Instant::now()));
+        self.surge = Some((run, std::time::Instant::now(), level));
         self._surge_end = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor()
-                .timer(crate::shared::surge::DURATION)
-                .await;
+            cx.background_executor().timer(level.duration()).await;
             let _ = this.update(cx, |this, cx| {
-                if this.surge.is_some_and(|(playing, _)| playing == run) {
+                if this.surge.is_some_and(|(playing, _, _)| playing == run) {
                     this.surge = None;
                     cx.notify();
                 }

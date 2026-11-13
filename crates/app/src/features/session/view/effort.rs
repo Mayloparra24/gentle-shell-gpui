@@ -118,8 +118,10 @@ impl SessionView {
                 if this.report(result).is_none() {
                     this.models.thinking = previous;
                     cx.notify();
-                } else if this.models.thinking == "max" {
-                    cx.emit(crate::features::session::SessionEvent::MaxEffort);
+                } else {
+                    cx.emit(crate::features::session::SessionEvent::Effort(
+                        this.models.thinking.clone(),
+                    ));
                 }
             },
         );
