@@ -95,6 +95,7 @@ impl Workspace {
             PaletteAction::NewAgentPane => self.split_with_kind(PaneKind::Agent, window, cx),
             PaletteAction::NewTerminalPane => self.split_with_kind(PaneKind::Terminal, window, cx),
             PaletteAction::ClosePane => self.on_close_pane(&ClosePane, window, cx),
+            PaletteAction::ReopenClosed => self.reopen_closed(window, cx),
             PaletteAction::ToggleSidebar => self.toggle_sidebar(cx),
             PaletteAction::Agents => {
                 if let Some(tab) = tab {

@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use crate::features::workspace::{
     ClosePane, CloseTab, FocusNextPane, FocusPrevPane, NewTab, NewTerminalTab, NextTab, PrevTab,
-    Quit, SplitDown, SplitRight, TilePane, ToggleSidebar, Workspace,
+    Quit, ReopenClosed, SplitDown, SplitRight, TilePane, ToggleSidebar, Workspace,
 };
 use crate::{
     features::app_update, features::files, features::session, features::workspace,
@@ -105,16 +105,24 @@ fn bind_keys(cx: &mut App) {
         };
     }
     // A new tiled pane is ctrl-shift-d off macOS: ctrl-d belongs to terminals.
-    let (tile, split_down, workspaces) = if cfg!(target_os = "macos") {
-        ("cmd-d", "cmd-shift-d", "ctrl-cmd-k")
+    // ⌘⇧T is a new terminal tab, so reopening takes ⌥⌘T; off macOS
+    // ctrl-alt-t opens the desktop's terminal, hence the extra shift.
+    let (tile, split_down, workspaces, reopen) = if cfg!(target_os = "macos") {
+        ("cmd-d", "cmd-shift-d", "ctrl-cmd-k", "cmd-alt-t")
     } else {
-        ("ctrl-shift-d", "ctrl-shift-e", "ctrl-alt-k")
+        (
+            "ctrl-shift-d",
+            "ctrl-shift-e",
+            "ctrl-alt-k",
+            "ctrl-alt-shift-t",
+        )
     };
     cx.bind_keys([
         KeyBinding::new(key!("t"), NewTab, None),
         KeyBinding::new(key!("shift-t"), NewTerminalTab, None),
         KeyBinding::new(key!("w"), ClosePane, None),
         KeyBinding::new(key!("shift-w"), CloseTab, None),
+        KeyBinding::new(reopen, ReopenClosed, None),
         KeyBinding::new("ctrl-tab", NextTab, None),
         KeyBinding::new("ctrl-shift-tab", PrevTab, None),
         KeyBinding::new(tile, TilePane, None),
@@ -150,6 +158,7 @@ fn set_menus(cx: &mut App) {
             MenuItem::action("Split Down", SplitDown),
             MenuItem::action("Close Pane", ClosePane),
             MenuItem::action("Close Tab", CloseTab),
+            MenuItem::action("Reopen Closed Pane", ReopenClosed),
             MenuItem::separator(),
             MenuItem::action("Toggle Sidebar", ToggleSidebar),
             MenuItem::separator(),

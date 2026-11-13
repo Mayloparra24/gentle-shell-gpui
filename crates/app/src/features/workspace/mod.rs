@@ -38,6 +38,7 @@ use crate::shared::ui;
 use gentle_core::commands::Screen;
 
 mod actions;
+mod closed;
 mod layout;
 mod overlays;
 mod panes;
@@ -68,6 +69,7 @@ actions!(
         NewAgentPane,
         NewTerminalPane,
         ClosePane,
+        ReopenClosed,
         FocusNextPane,
         FocusPrevPane,
         ToggleSidebar,
@@ -263,6 +265,11 @@ pub struct Workspace {
     /// While a pane is dragged: the pane under the pointer and where it would
     /// land there.
     drop_hint: Option<(PaneId, DropZone)>,
+    /// Panes and tabs closed, most recent last, to reopen.
+    closed: Vec<closed::Closed>,
+    /// The pointer is on the title bar's close button: the pane it would
+    /// close is marked.
+    close_hover: bool,
     /// gentle-stream, behind the title bar's ♪ button.
     music: Entity<Music>,
     /// Simulators and emulators, docked at the right or floating.
@@ -357,6 +364,8 @@ impl Workspace {
             next_stage: 1,
             resume_welcome: None,
             drop_hint: None,
+            closed: Vec::new(),
+            close_hover: false,
             music,
             devices,
             _surge_end: None,

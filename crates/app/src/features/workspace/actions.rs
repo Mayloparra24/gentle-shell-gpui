@@ -99,6 +99,15 @@ impl Workspace {
         }
     }
 
+    pub(super) fn on_reopen_closed(
+        &mut self,
+        _: &ReopenClosed,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reopen_closed(window, cx);
+    }
+
     pub(super) fn on_focus_next_pane(
         &mut self,
         _: &FocusNextPane,

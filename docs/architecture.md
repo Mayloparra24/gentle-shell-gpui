@@ -149,6 +149,7 @@ workspace/mod.rs     # Workspace, types (Pane, Tab, Space, Overlay) and public A
 workspace/
 ├── layout.rs       # pane split calculations, tiling direction, drop zones
 ├── panes.rs        # create, split, focus and close panes
+├── closed.rs       # reopening closed panes and tabs where they were
 ├── spaces.rs       # named workspaces
 ├── tabs.rs         # tabs and renaming
 ├── persistence.rs  # snapshot and saving

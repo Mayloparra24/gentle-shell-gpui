@@ -181,6 +181,7 @@ impl Workspace {
             self.switch_workspace(next, window, cx);
         }
         let space = self.spaces.remove(index);
+        self.forget_closed_in(index);
         for tab in space.tabs {
             for pane in tab.tree.leaves() {
                 // Dropping a session drops its PiProcess, which shuts the backend down.

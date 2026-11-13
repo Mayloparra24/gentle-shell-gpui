@@ -463,6 +463,9 @@ impl Workspace {
         };
         let tiled = tab.tree.len() > 1;
         let focused = tiled && tab.focused == id;
+        // The title bar's close button is hovered and this pane is what it
+        // closes.
+        let closing = self.close_hover && tab.focused == id;
         let title = pane.title.clone();
         let body = div()
             .id(("pane", id))
@@ -477,7 +480,9 @@ impl Workspace {
             // Panes read as glass on their own; only a split's focused pane gets
             // an edge. The width stays so focus changes don't shift content.
             .border_1()
-            .border_color(if focused {
+            .border_color(if closing {
+                ui::danger()
+            } else if focused {
                 ui::petal().opacity(0.45)
             } else {
                 gpui_kit::transparent_black()
@@ -542,7 +547,10 @@ impl Workspace {
                 self.drop_hint
                     .filter(|(pane, _)| *pane == id && cx.has_active_drag())
                     .map(|(_, zone)| drop_overlay(zone)),
-            );
+            )
+            .when(closing, |d| {
+                d.child(div().absolute().inset_0().bg(ui::danger().opacity(0.08)))
+            });
         // The grip: a pill straddling the pane's top edge (outside the
         // clipped body); drag it onto another pane's edge to move the pane
         // there, or onto its middle to swap the two.
