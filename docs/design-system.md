@@ -231,6 +231,7 @@ Guidelines:
 The pixel art style shares rules: flat squares painted with `paint_quad`, slightly smaller than their cell so the grid shows (`dot * 0.55` in the rose, `dot * 0.9` in sprites); sprites defined as text (`#` body, `o` outline) like `LIPS` and `HEART` in `features/welcome/finale.rs`; colors derived from `petal()` when the effect belongs to the app.
 
 - **Welcome finale** (`features/welcome/finale.rs`, `FINALE = 5600 ms`): the banner rewrites itself in slow motion, the rose throws 14 pixelated kisses (one in four is a heart in `petal`), "Sexyyyy" enters letter by letter with `spring` and the screen dissolves from `DISSOLVE = 0.86` with smoothstep.
+- **Water reminder** (`features/hydration/drops.rs`, `DURATION = 6000 ms`): pixel drops (`DROP` sprite, `paint_sprite`) rain over the window, each splashing with a flat ripple where it lands, while a floating card fills a pixel glass drop by drop and says it's time for some water; everything fades from `FADE`. `hydration::show` plays it and `hydration::overlay(run)` paints it over the window root. Its water is `info()` and a lighter glint of the same hue. With reduced motion only the card shows.
 - **Max effort surge** (`shared/surge.rs`, `DURATION = 4400 ms`): a pixel comet runs along the window edge, the window shakes, the core hatches and the rose comes out. `SessionEvent::MaxEffort` triggers it and `Workspace::play_surge` plays it; `surge::overlay(run)` paints and `surge::shake_at(elapsed)` gives the offset. Its colors (`spark`, `wine`) are derived from the hue of `petal()`.
 
 ## Icons

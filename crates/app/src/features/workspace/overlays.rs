@@ -28,17 +28,7 @@ impl Workspace {
             .active_session()
             .map(|t| t.read(cx).commands())
             .unwrap_or_default();
-        let workspaces = self
-            .spaces
-            .iter()
-            .enumerate()
-            .map(|(index, space)| WorkspaceRow {
-                index,
-                name: space.name.clone(),
-                tabs: space.tab_count(),
-                current: index == self.current,
-            })
-            .collect();
+        let workspaces = self.workspace_rows();
         let input = PaletteInput {
             commands,
             workspaces,
@@ -63,6 +53,21 @@ impl Workspace {
         );
         self.overlay = Some((Overlay::Palette(view), subscription));
         cx.notify();
+    }
+
+    /// Every workspace as the switcher lists it, with what its agents do.
+    pub(super) fn workspace_rows(&self) -> Vec<WorkspaceRow> {
+        self.spaces
+            .iter()
+            .enumerate()
+            .map(|(index, space)| WorkspaceRow {
+                index,
+                name: space.name.clone(),
+                tabs: space.tab_count(),
+                current: index == self.current,
+                activity: self.space_activity(space),
+            })
+            .collect()
     }
 
     pub(super) fn run_palette_action(

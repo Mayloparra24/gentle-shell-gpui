@@ -10,6 +10,7 @@ pub mod engram;
 pub mod fuzzy;
 pub mod gentle_state;
 pub mod git;
+pub mod hydration;
 pub mod music;
 pub mod notifications;
 pub mod profiles;

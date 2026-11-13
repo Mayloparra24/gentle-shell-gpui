@@ -6,6 +6,7 @@ pub mod browser;
 pub mod devices;
 pub mod files;
 pub mod git;
+pub mod hydration;
 pub mod memory;
 pub mod music;
 pub mod notices;

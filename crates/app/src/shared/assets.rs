@@ -51,6 +51,8 @@ gpui_kit::assets::icon_assets!(
         X,
         Zap,
         Paperclip,
+        // Configuration → Water reminder.
+        Droplets,
         // File tree header and context menu.
         FilePlus,
         FolderPlus,

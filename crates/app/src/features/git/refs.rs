@@ -1,11 +1,11 @@
 //! The Branches tab: every ref, stash, worktree and submodule with HEAD's
 //! footer numbers, and the stash and remote-checkout actions.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use gentle_core::git::refs::{
     HeadInfo, REF_FORMAT, RefKind, RefsSnapshot, parse_left_right, parse_refs, parse_stashes,
-    parse_submodules, parse_worktrees,
+    parse_submodules, parse_worktrees, worktree_path,
 };
 use gentle_core::git::status::parse_status_v2;
 
@@ -121,4 +121,39 @@ pub fn refs_snapshot(toplevel: &Path) -> Option<RefsSnapshot> {
 /// Check out a remote branch as a new local branch tracking it.
 pub fn checkout_remote(toplevel: &Path, remote_branch: &str) -> Result<(), String> {
     run(toplevel, &["switch", "--track", remote_branch]).map(drop)
+}
+
+/// A linked worktree for `branch`, beside the main one
+/// ([`worktree_path`]); `new` creates the branch there from HEAD. Returns the
+/// new worktree's folder.
+pub fn add_worktree(toplevel: &Path, branch: &str, new: bool) -> Result<PathBuf, String> {
+    // From a linked worktree too, new ones go beside the main worktree
+    // (`git worktree list` names it first).
+    let main = git(toplevel, &["worktree", "list", "--porcelain"])
+        .and_then(|raw| parse_worktrees(&raw).into_iter().next())
+        .map_or_else(|| toplevel.to_path_buf(), |main| main.path);
+    let path = worktree_path(&main, branch, |p| p.exists());
+    let folder = path.to_string_lossy();
+    let args: Vec<&str> = if new {
+        vec!["worktree", "add", "-b", branch, "--", &folder]
+    } else {
+        vec!["worktree", "add", "--", &folder, branch]
+    };
+    run(toplevel, &args)?;
+    Ok(path)
+}
+
+/// Remove the linked worktree at `path`: its folder goes, its branch stays.
+/// git refuses while it has changes of its own.
+pub fn remove_worktree(toplevel: &Path, path: &Path) -> Result<(), String> {
+    run(
+        toplevel,
+        &["worktree", "remove", "--", &path.to_string_lossy()],
+    )
+    .map(drop)
+}
+
+/// Forget worktrees whose folders are gone.
+pub fn prune_worktrees(toplevel: &Path) -> Result<(), String> {
+    run(toplevel, &["worktree", "prune"]).map(drop)
 }

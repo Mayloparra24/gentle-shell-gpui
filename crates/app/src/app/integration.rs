@@ -114,6 +114,9 @@ pub fn attach_sidebar(
                         workspace.open_file_in_tab(path.clone(), window, cx)
                     }
                     FileTreeEvent::OpenDiff(path) => workspace.open_diff(path.clone(), window, cx),
+                    FileTreeEvent::OpenAgent(folder) => {
+                        workspace.open_agent_tab(folder.clone(), window, cx)
+                    }
                     FileTreeEvent::InsertPath(text) => {
                         if !workspace.insert_into_composer(text, window, cx) {
                             window.push_notification(

@@ -17,7 +17,7 @@ use gpui_kit::component::{Icon, Sizable as _, WindowExt as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::features::git::{self, RefEntry, RefsSnapshot, StashAction};
+use crate::features::git::{self, RefEntry, RefsSnapshot, StashAction, Worktree};
 use crate::shared::ui;
 
 const POLL: Duration = Duration::from_secs(5);
@@ -27,6 +27,8 @@ const ROW_HEIGHT: f32 = 26.;
 pub enum RefsEvent {
     /// HEAD or the refs changed (checkout, stash pop, …).
     Changed,
+    /// Open an agent tab in this worktree's folder.
+    OpenAgent(PathBuf),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -59,7 +61,8 @@ struct Repo {
 }
 
 /// One row of the virtualized list, [`ROW_HEIGHT`] tall: a section header,
-/// or a ref by its index in the snapshot's list for that section.
+/// a ref by its index in the snapshot's list for that section, or the offer
+/// to start a worktree on the branch the filter names.
 #[derive(Clone, Copy)]
 enum Line {
     Header {
@@ -68,6 +71,7 @@ enum Line {
         collapsed: bool,
     },
     Ref(Section, usize),
+    NewWorktree,
 }
 
 /// Indices of the `items` that pass `hit`.
@@ -185,13 +189,19 @@ impl RefsView {
     }
 
     /// Rebuild the flat row model: each section with a match gets a header
-    /// (with its match count) and, unless collapsed, its matching refs.
+    /// (with its match count) and, unless collapsed, its matching refs. A
+    /// filter that could be a new branch's name first offers a worktree on it.
     fn relayout(&mut self, cx: &App) {
         let mut lines = Vec::new();
         if let Some(repo) = self.snapshot() {
-            let query = self.filter.read(cx).value().trim().to_lowercase();
+            let typed = self.filter.read(cx).value();
+            let typed = typed.trim();
+            let query = typed.to_lowercase();
             let hit = |text: &str| query.is_empty() || text.to_lowercase().contains(&query);
             let refs = &repo.refs;
+            if could_be_branch(typed) && !refs.branches.iter().any(|b| b.name == typed) {
+                lines.push(Line::NewWorktree);
+            }
             let sections = [
                 (
                     Section::Branches,
@@ -238,6 +248,16 @@ impl RefsView {
         job: impl FnOnce(&Path) -> Result<(), String> + Send + 'static,
         cx: &mut Context<Self>,
     ) {
+        self.git_op_then_open(move |top| job(top).map(|()| None), cx);
+    }
+
+    /// [`Self::git_op`] for an operation that may yield a folder (a new
+    /// worktree) to open an agent tab in once it succeeds.
+    fn git_op_then_open(
+        &mut self,
+        job: impl FnOnce(&Path) -> Result<Option<PathBuf>, String> + Send + 'static,
+        cx: &mut Context<Self>,
+    ) {
         let Some(toplevel) = self.snapshot().map(|repo| repo.toplevel.clone()) else {
             return;
         };
@@ -255,12 +275,68 @@ impl RefsView {
                 .await;
             let _ = this.update(cx, |this, cx| {
                 this.busy = false;
-                this.error = result.err();
+                match result {
+                    Ok(open) => {
+                        if let Some(folder) = open {
+                            cx.emit(RefsEvent::OpenAgent(folder));
+                        }
+                    }
+                    Err(error) => this.error = Some(error),
+                }
                 this.apply(repo, cx);
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    /// A worktree for `branch`, then an agent tab in it; `new` creates the
+    /// branch from HEAD. Clears the filter that named a new branch.
+    fn new_worktree(
+        &mut self,
+        branch: String,
+        new: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if new {
+            self.filter
+                .update(cx, |state, cx| state.set_value("", window, cx));
+        }
+        self.git_op_then_open(
+            move |top| git::add_worktree(top, &branch, new).map(Some),
+            cx,
+        );
+    }
+
+    fn confirm_remove_worktree(
+        &mut self,
+        path: PathBuf,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let this = cx.entity().downgrade();
+        window.open_alert_dialog(cx, move |alert, _, _| {
+            let (this, path) = (this.clone(), path.clone());
+            alert
+                .title(format!("Remove the \u{201c}{title}\u{201d} worktree?"))
+                .description(format!(
+                    "Its folder {} is deleted; the branch stays. git refuses while \
+                     it has uncommitted changes.",
+                    path.display()
+                ))
+                .ok_text("Remove")
+                .ok_variant(ButtonVariant::Danger)
+                .show_cancel(true)
+                .on_ok(move |_, _, cx| {
+                    let path = path.clone();
+                    let _ = this.update(cx, |this, cx| {
+                        this.git_op(move |top| git::remove_worktree(top, &path), cx)
+                    });
+                    true
+                })
+        });
     }
 
     fn checkout(&mut self, branch: String, window: &mut Window, cx: &mut Context<Self>) {
@@ -390,6 +466,7 @@ impl RefsView {
                 collapsed,
             } => return self.render_section_header(section, count, collapsed, cx),
             Line::Ref(section, ix) => (section, ix),
+            Line::NewWorktree => return self.render_new_worktree(cx),
         };
         let rendered = self.snapshot().and_then(|repo| {
             let refs = &repo.refs;
@@ -412,40 +489,7 @@ impl RefsView {
                     let s = refs.stashes.get(ix)?;
                     self.render_stash(&s.name, &s.message, cx)
                 }
-                Section::Worktrees => {
-                    let w = refs.worktrees.get(ix)?;
-                    let title = match (&w.branch, &w.head) {
-                        (Some(branch), _) => branch.clone(),
-                        (None, Some(head)) => {
-                            format!("detached at {}", &head[..head.len().min(7)])
-                        }
-                        (None, None) => "bare".to_string(),
-                    };
-                    let flag = if w.prunable {
-                        Some(ui::chip("prunable", ui::warning()))
-                    } else if w.locked {
-                        Some(ui::chip("locked", ui::muted()))
-                    } else {
-                        None
-                    };
-                    let (prefix, leaf) = ui::split_path(&w.path);
-                    row(
-                        SharedString::from(format!("refs-worktree-{}", w.path.display())),
-                        IconName::FolderGit,
-                        ui::muted(),
-                        title,
-                        ui::fg(),
-                        Some(
-                            h_flex()
-                                .min_w_0()
-                                .gap_1()
-                                .child(detail(format!("{prefix}{leaf}")))
-                                .children(flag)
-                                .into_any_element(),
-                        ),
-                    )
-                    .into_any_element()
-                }
+                Section::Worktrees => self.render_worktree(refs.worktrees.get(ix)?, cx),
                 Section::Submodules => {
                     let s = refs.submodules.get(ix)?;
                     let state = match s.state {
@@ -547,6 +591,107 @@ impl RefsView {
         .into_any_element()
     }
 
+    /// A linked worktree: a click opens an agent tab in it; its menu also
+    /// removes it, or prunes it once its folder is gone.
+    fn render_worktree(&self, w: &Worktree, cx: &mut Context<Self>) -> AnyElement {
+        let title = match (&w.branch, &w.head) {
+            (Some(branch), _) => branch.clone(),
+            (None, Some(head)) => format!("detached at {}", &head[..head.len().min(7)]),
+            (None, None) => "bare".to_string(),
+        };
+        let flag = if w.prunable {
+            Some(ui::chip("prunable", ui::warning()))
+        } else if w.locked {
+            Some(ui::chip("locked", ui::muted()))
+        } else {
+            None
+        };
+        let (prefix, leaf) = ui::split_path(&w.path);
+        let (path, prunable, locked) = (w.path.clone(), w.prunable, w.locked);
+        let weak = cx.entity().downgrade();
+        row(
+            SharedString::from(format!("refs-worktree-{}", w.path.display())),
+            IconName::FolderGit,
+            ui::muted(),
+            title.clone(),
+            ui::fg(),
+            Some(
+                h_flex()
+                    .min_w_0()
+                    .gap_1()
+                    .child(detail(format!("{prefix}{leaf}")))
+                    .children(flag)
+                    .into_any_element(),
+            ),
+        )
+        .when(!prunable, |d| {
+            let path = path.clone();
+            d.cursor_pointer().on_click(
+                cx.listener(move |_, _, _, cx| cx.emit(RefsEvent::OpenAgent(path.clone()))),
+            )
+        })
+        .context_menu(move |menu, _, _| {
+            if prunable {
+                let weak = weak.clone();
+                return menu.item(
+                    PopupMenuItem::new("Prune")
+                        .icon(Icon::new(IconName::Trash))
+                        .on_click(move |_, _, cx| {
+                            let _ =
+                                weak.update(cx, |this, cx| this.git_op(git::prune_worktrees, cx));
+                        }),
+                );
+            }
+            let open = {
+                let (weak, path) = (weak.clone(), path.clone());
+                move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                    let _ = weak.update(cx, |_, cx| cx.emit(RefsEvent::OpenAgent(path.clone())));
+                }
+            };
+            let remove = {
+                let (weak, path, title) = (weak.clone(), path.clone(), title.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    let (path, title) = (path.clone(), title.clone());
+                    let _ = weak.update(cx, |this, cx| {
+                        this.confirm_remove_worktree(path, title, window, cx)
+                    });
+                }
+            };
+            menu.item(
+                PopupMenuItem::new("Open in agent tab")
+                    .icon(Icon::new(IconName::Bot))
+                    .on_click(open),
+            )
+            .separator()
+            .item(
+                PopupMenuItem::new("Remove worktree…")
+                    .icon(Icon::new(IconName::Trash))
+                    .disabled(locked)
+                    .on_click(remove),
+            )
+        })
+        .into_any_element()
+    }
+
+    /// "New worktree on branch “name”", for a filter no branch matches.
+    fn render_new_worktree(&self, cx: &mut Context<Self>) -> AnyElement {
+        let name = self.filter.read(cx).value().trim().to_string();
+        let branch = name.clone();
+        row(
+            SharedString::from("refs-new-worktree"),
+            IconName::Plus,
+            ui::accent(),
+            format!("New worktree on branch \u{201c}{name}\u{201d}"),
+            ui::fg(),
+            Some(detail("from HEAD".into())),
+        )
+        .cursor_pointer()
+        .on_click(cx.listener(move |this, _, window, cx| {
+            this.new_worktree(branch.clone(), true, window, cx)
+        }))
+        .into_any_element()
+    }
+
     fn render_body(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.repo {
             None => return note("Reading refs…").into_any_element(),
@@ -605,6 +750,13 @@ impl RefsView {
         let name = branch.name.clone();
         let menu_name = branch.name.clone();
         let current = branch.current;
+        // git keeps a branch in one worktree at a time.
+        let elsewhere = self.snapshot().is_some_and(|repo| {
+            repo.refs
+                .worktrees
+                .iter()
+                .any(|w| w.branch.as_deref() == Some(branch.name.as_str()))
+        });
         let weak = cx.entity().downgrade();
         row(
             SharedString::from(format!("refs-branch-{}", branch.name)),
@@ -622,15 +774,31 @@ impl RefsView {
         .when(!current, |d| d.cursor_pointer())
         .on_click(cx.listener(move |this, _, window, cx| this.checkout(name.clone(), window, cx)))
         .context_menu(move |menu, _, _| {
-            let (weak, name) = (weak.clone(), menu_name.clone());
+            let checkout = {
+                let (weak, name) = (weak.clone(), menu_name.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    let name = name.clone();
+                    let _ = weak.update(cx, |this, cx| this.checkout(name, window, cx));
+                }
+            };
+            let worktree = {
+                let (weak, name) = (weak.clone(), menu_name.clone());
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    let name = name.clone();
+                    let _ = weak.update(cx, |this, cx| this.new_worktree(name, false, window, cx));
+                }
+            };
             menu.item(
                 PopupMenuItem::new("Check out")
                     .icon(Icon::new(IconName::GitBranch))
                     .disabled(current)
-                    .on_click(move |_, window, cx| {
-                        let name = name.clone();
-                        let _ = weak.update(cx, |this, cx| this.checkout(name, window, cx));
-                    }),
+                    .on_click(checkout),
+            )
+            .item(
+                PopupMenuItem::new("New worktree")
+                    .icon(Icon::new(IconName::FolderPlus))
+                    .disabled(current || elsewhere)
+                    .on_click(worktree),
             )
         })
         .into_any_element()
@@ -769,6 +937,12 @@ fn detail(text: String) -> AnyElement {
         .text_color(ui::faint())
         .child(text)
         .into_any_element()
+}
+
+/// A filter worth offering as a new branch: one word. git judges the rest
+/// (`git check-ref-format`) and its refusal shows like any other error.
+fn could_be_branch(text: &str) -> bool {
+    !text.is_empty() && !text.contains(char::is_whitespace)
 }
 
 /// `↑2 ↓0`, as in the footer and on branches that track an upstream.

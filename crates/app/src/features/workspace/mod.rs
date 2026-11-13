@@ -23,7 +23,7 @@ use crate::features::memory::{MemoryEvent, MemoryView};
 use crate::features::notices::{self, Notices};
 use crate::features::onboarding::{OnboardingEvent, OnboardingView, Probe};
 use crate::features::palette::{
-    Category, PaletteAction, PaletteEvent, PaletteInput, PaletteView, WorkspaceRow,
+    Activity, Category, PaletteAction, PaletteEvent, PaletteInput, PaletteView, WorkspaceRow,
 };
 use crate::features::profiles::{ModelChoice, ProfilesEvent, ProfilesView};
 use crate::features::providers::{ProvidersEvent, ProvidersView};
@@ -119,20 +119,23 @@ struct Pane {
     /// refresh it on `SessionEvent::ChromeChanged`, everything on the title poll.
     title: SharedString,
     running: bool,
+    /// An agent waits on a dialog only you can answer.
+    needs_you: bool,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Pane {
-    /// Re-read the title and busy state; whether either changed.
+    /// Re-read the title and activity; whether any changed.
     fn sync_chrome(&mut self, cx: &App) -> bool {
         let title = (self.item.title)(cx);
-        let running = self
-            .session
-            .as_ref()
-            .is_some_and(|s| s.read(cx).is_running());
-        let changed = title != self.title || running != self.running;
+        let (running, needs_you) = self.session.as_ref().map_or((false, false), |s| {
+            let s = s.read(cx);
+            (s.is_running(), s.needs_you())
+        });
+        let changed = title != self.title || running != self.running || needs_you != self.needs_you;
         self.title = title;
         self.running = running;
+        self.needs_you = needs_you;
         changed
     }
 }
@@ -316,6 +319,8 @@ impl Workspace {
             cx.on_release(|this, cx| this.save_now(cx)),
             // The title-bar update pill follows this app's own update state.
             cx.observe_global::<crate::features::app_update::AppUpdate>(|_, cx| cx.notify()),
+            // The water reminder paints over the window while it shows.
+            cx.observe_global::<crate::features::hydration::Hydration>(|_, cx| cx.notify()),
             // Keep a multi-stage grid filling the window as it resizes. A
             // lone card keeps whatever size the user gave it.
             cx.observe_window_bounds(window, |this, window, cx| {
@@ -501,6 +506,7 @@ impl Workspace {
             session_file: None,
             title: SharedString::default(),
             running: false,
+            needs_you: false,
             _subscriptions: Vec::new(),
         };
         pane.sync_chrome(cx);
@@ -526,6 +532,11 @@ impl Workspace {
     /// Open `path` as a tab of its own.
     pub fn open_file_in_tab(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         self.open_tab(PaneKind::File, path, None, None, window, cx);
+    }
+
+    /// Open an agent tab working in `folder` (a worktree from the sidebar).
+    pub fn open_agent_tab(&mut self, folder: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_tab(PaneKind::Agent, folder, None, None, window, cx);
     }
 
     /// Type `text` at the active agent's prompt cursor, spaced from what is

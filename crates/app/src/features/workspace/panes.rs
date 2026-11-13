@@ -137,6 +137,11 @@ impl Workspace {
                         this.schedule_save(cx);
                     }
                     if changed {
+                        // An open switcher lists every workspace's activity.
+                        if let Some((Overlay::Palette(view), _)) = &this.overlay {
+                            let (view, rows) = (view.clone(), this.workspace_rows());
+                            view.update(cx, |view, cx| view.set_workspaces(rows, cx));
+                        }
                         cx.notify();
                     }
                 }
@@ -192,6 +197,7 @@ impl Workspace {
             session_file: resume,
             title: SharedString::default(),
             running: false,
+            needs_you: false,
             _subscriptions: subscriptions,
         };
         pane.sync_chrome(cx);
@@ -247,6 +253,7 @@ impl Workspace {
             session_file: None,
             title: SharedString::default(),
             running: false,
+            needs_you: false,
             _subscriptions: Vec::new(),
         };
         pane.sync_chrome(cx);

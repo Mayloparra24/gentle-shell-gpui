@@ -10,7 +10,7 @@ use gpui_kit::*;
 
 use crate::shared::ui;
 
-use super::{CATEGORIES, Category, Line, PaletteAction, PaletteEvent, PaletteView, Row};
+use super::{Activity, CATEGORIES, Category, Line, PaletteAction, PaletteEvent, PaletteView, Row};
 
 impl PaletteView {
     fn render_categories(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -58,6 +58,10 @@ impl PaletteView {
             .as_ref()
             .filter(|(index, _)| Some(*index) == row.workspace)
             .map(|(_, state)| state.clone());
+        let activity = row
+            .workspace
+            .and_then(|index| self.workspaces.iter().find(|w| w.index == index))
+            .and_then(|w| activity_badge(w.activity));
         h_flex()
             .id(("palette-row", i))
             .group("palette-row")
@@ -146,6 +150,7 @@ impl PaletteView {
                                     .child(row.meta.clone()),
                             )
                         })
+                        .children(activity)
                         .child(
                             div()
                                 .flex_1()
@@ -225,6 +230,32 @@ impl PaletteView {
             .child(text)
             .into_any_element()
     }
+}
+
+/// "needs you" or "working", with a dot in the tab bar's colors; nothing
+/// while every agent of the workspace is idle.
+fn activity_badge(activity: Activity) -> Option<Div> {
+    let (count, one, many, color) = if activity.needs_you > 0 {
+        (activity.needs_you, "needs you", "need you", ui::warning())
+    } else if activity.working > 0 {
+        (activity.working, "working", "working", ui::accent())
+    } else {
+        return None;
+    };
+    let label = if count == 1 {
+        one.to_string()
+    } else {
+        format!("{count} {many}")
+    };
+    Some(
+        h_flex()
+            .flex_none()
+            .gap_1()
+            .text_xs()
+            .text_color(color)
+            .child(div().size(px(6.)).rounded_full().bg(color))
+            .child(label),
+    )
 }
 
 fn hint(keys: impl IntoIterator<Item = impl IntoElement>, label: &'static str) -> Div {
