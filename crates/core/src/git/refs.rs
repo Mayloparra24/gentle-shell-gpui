@@ -1,7 +1,7 @@
 //! Refs for the Branches tab: branches, remotes, tags, stashes, worktrees and
 //! submodules, ahead/behind counts, and the HEAD footer and snapshot models.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RefKind {
@@ -158,6 +158,42 @@ pub fn parse_worktrees(raw: &str) -> Vec<Worktree> {
     out
 }
 
+/// Where a new worktree for `branch` goes: `<repo>.worktrees/<branch>` next
+/// to the main worktree `main`, with the branch's `/` as `-` so it stays one
+/// folder. Outside the repository, so it never shows up in its status. A
+/// name `taken` gets `-2`, `-3`, … appended.
+pub fn worktree_path(main: &Path, branch: &str, taken: impl Fn(&Path) -> bool) -> PathBuf {
+    let repo = main
+        .file_name()
+        .map_or_else(|| "repo".into(), |name| name.to_string_lossy());
+    let parent = main.parent().unwrap_or(main);
+    let base = parent.join(format!("{repo}.worktrees"));
+    let leaf: String = branch
+        .trim_matches('/')
+        .chars()
+        .map(|c| {
+            if matches!(c, '/' | '\\' | ':') {
+                '-'
+            } else {
+                c
+            }
+        })
+        .collect();
+    let leaf = if leaf.is_empty() {
+        "worktree".into()
+    } else {
+        leaf
+    };
+    let first = base.join(&leaf);
+    if !taken(&first) {
+        return first;
+    }
+    (2..)
+        .map(|n| base.join(format!("{leaf}-{n}")))
+        .find(|path| !taken(path))
+        .expect("an unbounded range yields a free name")
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Submodule {
     pub path: String,
@@ -291,6 +327,24 @@ mod tests {
         assert_eq!(trees[1].branch.as_deref(), Some("feature/a"));
         assert!(trees[1].locked);
         assert!(trees[2].detached && trees[2].prunable && trees[2].branch.is_none());
+    }
+
+    #[test]
+    fn new_worktrees_go_beside_the_repository() {
+        let main = Path::new("/code/app");
+        assert_eq!(
+            worktree_path(main, "feature/login", |_| false),
+            PathBuf::from("/code/app.worktrees/feature-login")
+        );
+        // A folder already there is never reused.
+        let taken = [
+            PathBuf::from("/code/app.worktrees/fix"),
+            PathBuf::from("/code/app.worktrees/fix-2"),
+        ];
+        assert_eq!(
+            worktree_path(main, "fix", |p| taken.iter().any(|t| t == p)),
+            PathBuf::from("/code/app.worktrees/fix-3")
+        );
     }
 
     #[test]

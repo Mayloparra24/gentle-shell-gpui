@@ -117,6 +117,8 @@ pub enum FileTreeEvent {
     OpenDiff(PathBuf),
     /// Type this at the active agent prompt's cursor.
     InsertPath(String),
+    /// Open an agent tab in this folder (a worktree).
+    OpenAgent(PathBuf),
     /// The header's collapse button: the owner should hide the sidebar.
     Collapse,
 }
@@ -215,7 +217,10 @@ impl FileTreeView {
                 ChangesEvent::OpenFile(path) => cx.emit(FileTreeEvent::Open(path.clone())),
                 ChangesEvent::Changed => cx.notify(),
             }),
-            cx.subscribe(&refs, |_, _, _: &RefsEvent, cx| cx.notify()),
+            cx.subscribe(&refs, |_, _, event: &RefsEvent, cx| match event {
+                RefsEvent::OpenAgent(path) => cx.emit(FileTreeEvent::OpenAgent(path.clone())),
+                RefsEvent::Changed => cx.notify(),
+            }),
         ];
         let mut this = Self {
             root,

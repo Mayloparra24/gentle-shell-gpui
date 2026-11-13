@@ -532,6 +532,11 @@ impl Workspace {
         self.open_tab(PaneKind::File, path, None, None, window, cx);
     }
 
+    /// Open an agent tab working in `folder` (a worktree from the sidebar).
+    pub fn open_agent_tab(&mut self, folder: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        self.open_tab(PaneKind::Agent, folder, None, None, window, cx);
+    }
+
     /// Type `text` at the active agent's prompt cursor, spaced from what is
     /// before it, and focus the prompt. `false` when no agent is open.
     pub fn insert_into_composer(

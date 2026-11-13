@@ -50,7 +50,7 @@ flowchart TD
 | `profiles`: routing model, `profiles.json` format, pins, agent frontmatter, notes | `profiles/`: homes and agent discovery, atomic writes, saved and materialized routing, Pi settings, pin and worktree files, Make default. |
 | `fuzzy`: fuzzy scoring and file ranking | `palette/`: walking files, reading branches with git. |
 | `sessions`: session summary, folder name from cwd, ordering, ISO dates and relative time | `sessions/`: finding and reading `.jsonl` files (line scanning is tied to reading), cache. |
-| `git`: status parsers (v1 and v2), numstat, refs, stash, worktrees, submodules, ahead/behind; diff trimming | `git/`: running `git`, counting lines of untracked files, stage, commit, push and branch operations. |
+| `git`: status parsers (v1 and v2), numstat, refs, stash, worktrees (and where a new one goes), submodules, ahead/behind; diff trimming | `git/`: running `git`, counting lines of untracked files, stage, commit, push and branch operations. |
 | `version`: stable versions, comparison and Gentle Shell update offer | `updates/`: launcher cache, npm query, clock. |
 | `engram`: observation model and query encoding | `memory/`: HTTP requests to Engram. |
 | `workspaces`: unique workspace names | `workspaces/`: saved model (uses `PaneTree`), reading and writing `workspaces.json`. |
@@ -205,7 +205,7 @@ git/mod.rs           # run git, toplevel; re-exports the types callers use
 git/
 ├── snapshot.rs     # changes for the panel and the tree
 ├── changes.rs      # Changes tab: stage, discard, stash, commit, push
-└── refs.rs         # Branches tab: branches, stash, remote checkout
+└── refs.rs         # Branches tab: branches, stash, remote checkout, worktrees (add, remove, prune)
 
 app_update/mod.rs    # AppUpdate (Global), Status, Problem; check, install, skip, restart
 app_update/
