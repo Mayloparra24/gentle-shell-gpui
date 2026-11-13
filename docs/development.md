@@ -74,7 +74,7 @@ Everything the app stores lives under `dirs::data_dir()/gentle-shell-gpui/`:
 | --- | --- |
 | `instance.json` | `platform/instance.rs` |
 | `workspaces.json` | `features/workspaces/store.rs` |
-| `settings.json` | `shared/themes.rs` (`store_path`): theme, transparency and the `onboarding` key (`{ "done": true, "version": … }`) that decides the first run (`features/setup/mod.rs`: `first_run`, `mark_done`). |
+| `settings.json` | `shared/themes.rs` (`store_path`): theme, transparency, the water reminder (`hydration`: `{ "enabled": true, "everyMinutes": 60 }`, written by `features/hydration`) and the `onboarding` key (`{ "done": true, "version": … }`) that decides the first run (`features/setup/mod.rs`: `first_run`, `mark_done`). |
 | `app-update.json` | `features/app_update/cache.rs` |
 | `toolchain/` | `features/setup/mod.rs` (Node, npm prefix, Engram, Maestro and its Java installed by the app) |
 

@@ -411,6 +411,9 @@ impl Render for Workspace {
             .when_some(self.surge, |root, (run, _)| {
                 root.child(crate::shared::surge::overlay(run))
             })
+            .when_some(crate::features::hydration::playing(cx), |root, run| {
+                root.child(crate::features::hydration::overlay(run, cx))
+            })
     }
 }
 

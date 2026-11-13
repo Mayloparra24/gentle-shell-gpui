@@ -319,6 +319,8 @@ impl Workspace {
             cx.on_release(|this, cx| this.save_now(cx)),
             // The title-bar update pill follows this app's own update state.
             cx.observe_global::<crate::features::app_update::AppUpdate>(|_, cx| cx.notify()),
+            // The water reminder paints over the window while it shows.
+            cx.observe_global::<crate::features::hydration::Hydration>(|_, cx| cx.notify()),
             // Keep a multi-stage grid filling the window as it resizes. A
             // lone card keeps whatever size the user gave it.
             cx.observe_window_bounds(window, |this, window, cx| {

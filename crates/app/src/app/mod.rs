@@ -34,6 +34,7 @@ pub fn run(
             #[cfg(target_os = "macos")]
             crate::platform::icons::set_dock_icon();
             app_update::init(cx);
+            crate::features::hydration::init(cx);
 
             bind_keys(cx);
             cx.on_action(|_: &Quit, cx| cx.quit());

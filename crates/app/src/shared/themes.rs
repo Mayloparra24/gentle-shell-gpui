@@ -525,6 +525,11 @@ pub fn read_pi_setting(agent: &Path) -> Option<String> {
     read_theme_key(&agent.join("settings.json"))
 }
 
+/// `key` of the app's settings file, if the file and the key exist.
+pub(crate) fn read_key(path: &Path, key: &str) -> Option<Value> {
+    read_settings(path)?.get(key).cloned()
+}
+
 /// Set `key` in the app's settings file, keeping every other key.
 pub(crate) fn write_key(path: &Path, key: &str, new: Value) -> std::io::Result<()> {
     let mut value = read_settings(path)

@@ -19,6 +19,7 @@ mod app;
 mod background;
 mod claude;
 mod devices;
+mod hydration;
 mod layout;
 mod maestro;
 mod models;
@@ -271,6 +272,7 @@ impl Render for SettingsView {
                     .child(self.devices_section(cx))
                     .child(self.maestro_section(cx))
                     .child(self.music_section(cx))
+                    .child(self.hydration_section(cx))
                     .child(theme::theme_section(&self.transparency, cx))
                     .child(models::models_section(s))
                     .child(self.gentle_ai_section(s, cx))
