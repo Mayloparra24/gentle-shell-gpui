@@ -53,14 +53,14 @@ struct Repo {
     /// Status paths are relative to this, not to the sidebar's root.
     toplevel: PathBuf,
     tree: WorkTree,
-    /// `Repository: <path>` when the sidebar's root sits inside a larger one.
+    /// Shortened path of the repository when the sidebar's root sits inside a larger one.
     repository: Option<String>,
 }
 
 impl Repo {
     fn read(root: &Path, toplevel: PathBuf) -> Option<Self> {
         let tree = git::work_tree(&toplevel)?;
-        let repository = git::repository_line(root, &toplevel);
+        let repository = git::repository_path(root, &toplevel);
         Some(Repo {
             toplevel,
             tree,
@@ -194,7 +194,7 @@ impl ChangesView {
         self.repo.as_ref()?.as_ref().map(|repo| &repo.tree)
     }
 
-    fn repository_line(&self) -> Option<String> {
+    fn repository_path(&self) -> Option<String> {
         self.repo.as_ref()?.as_ref()?.repository.clone()
     }
 
@@ -1094,7 +1094,8 @@ impl Render for ChangesView {
             .size_full()
             .min_h_0()
             .child(self.render_header(cx))
-            .when_some(self.repository_line(), |d, line| {
+            .when_some(self.repository_path(), |d, path| {
+                let line = format!("Repository: {path}");
                 // The tail (the repository's own name) is what a narrow
                 // sidebar cuts, so the tooltip carries the whole line.
                 let tip = line.clone();

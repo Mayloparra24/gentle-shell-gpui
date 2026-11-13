@@ -42,9 +42,9 @@ pub fn toplevel(cwd: &Path) -> Option<PathBuf> {
     (!top.is_empty()).then(|| PathBuf::from(top))
 }
 
-/// `Repository: <path>` when `root` is a folder inside a larger repository
-/// (its top level is above it); `None` when `root` is the top level.
-pub fn repository_line(root: &Path, toplevel: &Path) -> Option<String> {
+/// The shortened path of the repository when `root` is a folder inside a
+/// larger one (its top level is above it); `None` when `root` is the top level.
+pub fn repository_path(root: &Path, toplevel: &Path) -> Option<String> {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
     let home = dirs::home_dir();
     gentle_core::git::repo::nested_repository(
@@ -53,7 +53,6 @@ pub fn repository_line(root: &Path, toplevel: &Path) -> Option<String> {
         home.as_deref().map(|h| h.to_string_lossy()).as_deref(),
         cfg!(any(windows, target_os = "macos")),
     )
-    .map(|path| format!("Repository: {path}"))
 }
 
 /// Run `git` for its effect. The error is git's own message; credentials
