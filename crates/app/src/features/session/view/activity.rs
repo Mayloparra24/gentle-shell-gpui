@@ -11,7 +11,9 @@ use gpui_kit::*;
 
 use super::{NARROW, TINY, clock};
 use crate::features::session::SessionView;
+use crate::features::session::agents::job_row;
 use crate::shared::ui;
+use gentle_core::gentle_state::Job;
 use gentle_core::tools;
 use gentle_core::transcript::{Item, ToolStatus, format_tokens};
 
@@ -221,31 +223,8 @@ impl SessionView {
         } else {
             ui::muted()
         };
-        let rows: Vec<(String, &'static str, Hsla, String)> = self
-            .activity
-            .jobs
-            .iter()
-            .take(20)
-            .map(|job| {
-                let (glyph, color) = if job.is_running() {
-                    ("⧗", ui::accent())
-                } else if job.exit_code.unwrap_or(0) == 0 && job.status != "failed" {
-                    ("✓", ui::success())
-                } else {
-                    ("✗", ui::danger())
-                };
-                let label = if job.label.is_empty() {
-                    format!("job {}", job.id)
-                } else {
-                    job.label.clone()
-                };
-                let state = match job.exit_code {
-                    Some(code) => format!("exit {code}"),
-                    None => job.status.clone(),
-                };
-                (label, glyph, color, state)
-            })
-            .collect();
+        // The card shows the latest 20; the Agents window's Jobs tab lists all.
+        let jobs: Vec<Job> = self.activity.jobs.iter().take(20).cloned().collect();
         let label = if running > 0 {
             format!("{running} running")
         } else {
@@ -258,32 +237,7 @@ impl SessionView {
             label,
             "Background jobs",
             format!("{running}/{total}"),
-            move || {
-                rows.iter()
-                    .map(|(label, glyph, color, state)| {
-                        h_flex()
-                            .gap_2()
-                            .text_size(px(12.))
-                            .child(div().flex_none().text_color(*color).child(*glyph))
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .truncate()
-                                    .font_family(ui::MONO)
-                                    .text_color(ui::fg())
-                                    .child(label.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_color(ui::faint())
-                                    .child(state.clone()),
-                            )
-                            .into_any_element()
-                    })
-                    .collect()
-            },
+            move || jobs.iter().map(job_row).collect(),
         )
     }
 

@@ -99,7 +99,7 @@ impl Workspace {
             PaletteAction::ToggleSidebar => self.toggle_sidebar(cx),
             PaletteAction::Agents => {
                 if let Some(tab) = tab {
-                    tab.update(cx, |s, cx| s.open_agents_panel(cx));
+                    tab.update(cx, |s, cx| s.open_agents_panel(AgentsTab::Agents, cx));
                 }
             }
             PaletteAction::NewSession => {
@@ -158,6 +158,18 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The Agents window of `session` (else the active one), on `tab`.
+    fn open_agents_window(
+        &mut self,
+        tab: AgentsTab,
+        session: Option<Entity<SessionView>>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(session) = session.or_else(|| self.active_session()) {
+            session.update(cx, |s, cx| s.open_agents_panel(tab, cx));
+        }
+    }
+
     /// The native screen of a terminal-only Gentle Shell command; `session`
     /// is the agent it concerns (the one that ran it, else the active one).
     pub(super) fn open_screen(
@@ -175,13 +187,9 @@ impl Workspace {
                     view.update(cx, |view, cx| view.show_stats(cx));
                 }
             }
-            // Background jobs have no window of their own: the Agents window
-            // is where the session's background work lives.
-            Screen::Agents | Screen::Jobs => {
-                if let Some(session) = session.or_else(|| self.active_session()) {
-                    session.update(cx, |s, cx| s.open_agents_panel(cx));
-                }
-            }
+            Screen::Agents => self.open_agents_window(AgentsTab::Agents, session, cx),
+            // Background jobs are the Jobs tab of the Agents window.
+            Screen::Jobs => self.open_agents_window(AgentsTab::Jobs, session, cx),
             Screen::Profiles => self.open_profiles(window, cx),
             Screen::Palette => {
                 self.close_overlay(window, cx);

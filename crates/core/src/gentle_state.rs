@@ -67,9 +67,44 @@ pub struct Job {
     pub output_path: Option<String>,
 }
 
+/// How a job is doing, for its glyph and color.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobOutcome {
+    Running,
+    Succeeded,
+    Failed,
+}
+
 impl Job {
     pub fn is_running(&self) -> bool {
         matches!(self.status.as_str(), "running" | "started" | "")
+    }
+
+    pub fn outcome(&self) -> JobOutcome {
+        if self.is_running() {
+            JobOutcome::Running
+        } else if self.exit_code.unwrap_or(0) == 0 && self.status != "failed" {
+            JobOutcome::Succeeded
+        } else {
+            JobOutcome::Failed
+        }
+    }
+
+    /// The command that was started, or `job <id>` when it came without one.
+    pub fn display_label(&self) -> String {
+        if self.label.is_empty() {
+            format!("job {}", self.id)
+        } else {
+            self.label.clone()
+        }
+    }
+
+    /// `exit <code>` once it has ended, otherwise the reported status.
+    pub fn state_text(&self) -> String {
+        match self.exit_code {
+            Some(code) => format!("exit {code}"),
+            None => self.status.clone(),
+        }
     }
 }
 
@@ -322,6 +357,53 @@ mod tests {
         );
         assert!(!jobs[0].is_running());
         assert!(job_from_details(&json!({})).is_none());
+    }
+
+    fn job(label: &str, status: &str, exit_code: Option<i64>) -> Job {
+        Job {
+            id: "7".into(),
+            kind: "bash".into(),
+            label: label.into(),
+            status: status.into(),
+            exit_code,
+            output_path: None,
+        }
+    }
+
+    #[test]
+    fn job_outcome_tells_running_done_and_failed_apart() {
+        assert_eq!(job("", "running", None).outcome(), JobOutcome::Running);
+        // A job reported before it has a status is still running.
+        assert_eq!(job("", "started", None).outcome(), JobOutcome::Running);
+        assert_eq!(job("", "", None).outcome(), JobOutcome::Running);
+        assert_eq!(job("", "exited", Some(0)).outcome(), JobOutcome::Succeeded);
+        // No exit code yet reported but not running: nothing says it failed.
+        assert_eq!(job("", "exited", None).outcome(), JobOutcome::Succeeded);
+        assert_eq!(job("", "exited", Some(2)).outcome(), JobOutcome::Failed);
+        assert_eq!(job("", "failed", Some(0)).outcome(), JobOutcome::Failed);
+        assert_eq!(job("", "failed", None).outcome(), JobOutcome::Failed);
+    }
+
+    #[test]
+    fn running_status_takes_precedence_over_exit_code() {
+        for status in ["", "started", "running"] {
+            for code in [0, 2] {
+                let job = job("npm run dev", status, Some(code));
+                assert_eq!(job.outcome(), JobOutcome::Running);
+                assert_eq!(job.state_text(), format!("exit {code}"));
+            }
+        }
+    }
+
+    #[test]
+    fn job_row_text_falls_back_to_the_id_and_the_status() {
+        assert_eq!(
+            job("npm run dev", "running", None).display_label(),
+            "npm run dev"
+        );
+        assert_eq!(job("", "running", None).display_label(), "job 7");
+        assert_eq!(job("", "exited", Some(1)).state_text(), "exit 1");
+        assert_eq!(job("", "running", None).state_text(), "running");
     }
 
     #[test]

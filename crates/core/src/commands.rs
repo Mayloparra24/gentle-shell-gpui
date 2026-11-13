@@ -10,9 +10,9 @@ pub enum Screen {
     Usage,
     /// Usage, Local stats tab.
     Stats,
-    /// The session's Agents window.
+    /// The session's Agents window, on its Agents tab.
     Agents,
-    /// Background jobs (the session's Agents window, where helpers live).
+    /// The session's Agents window, on its Jobs tab (background jobs).
     Jobs,
     Profiles,
     Palette,

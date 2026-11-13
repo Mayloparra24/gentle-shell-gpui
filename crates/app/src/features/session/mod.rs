@@ -23,7 +23,7 @@ mod state;
 mod submit;
 mod view;
 
-pub use agents::AgentsPanel;
+pub use agents::{AgentsPanel, AgentsTab};
 
 actions!(session, [Abort, Stop, ToggleAgents, NewSession]);
 
@@ -352,7 +352,9 @@ impl SessionView {
             .collect()
     }
 
-    pub fn open_agents_panel(&mut self, cx: &mut Context<Self>) {
+    /// Opens the Agents window on `tab`.
+    pub fn open_agents_panel(&mut self, tab: AgentsTab, cx: &mut Context<Self>) {
+        self.agents_panel.tab = tab;
         self.open_agents(None, cx);
     }
 

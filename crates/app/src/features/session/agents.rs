@@ -11,12 +11,14 @@ use gpui_kit::*;
 use super::SessionView;
 use crate::shared::ui;
 use gentle_core::activity::{AgentTask, ThreadItem};
+use gentle_core::gentle_state::{Job, JobOutcome};
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum AgentsTab {
     #[default]
     Agents,
     Activity,
+    Jobs,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -73,6 +75,54 @@ pub fn status_color(status: &str) -> Hsla {
 
 fn duration(ms: Option<u64>) -> String {
     ms.map(ui::format_duration).unwrap_or_else(|| "–".into())
+}
+
+/// One background job: status glyph, command and exit code. The Jobs chip's
+/// card and the Jobs tab both list jobs with it.
+pub(super) fn job_row(job: &Job) -> AnyElement {
+    let (glyph, color) = match job.outcome() {
+        JobOutcome::Running => ("⧗", ui::accent()),
+        JobOutcome::Succeeded => ("✓", ui::success()),
+        JobOutcome::Failed => ("✗", ui::danger()),
+    };
+    h_flex()
+        .gap_2()
+        .text_size(px(12.))
+        .child(div().flex_none().text_color(color).child(glyph))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_family(ui::MONO)
+                .text_color(ui::fg())
+                .child(job.display_label()),
+        )
+        .child(
+            div()
+                .flex_none()
+                .text_color(ui::faint())
+                .child(job.state_text()),
+        )
+        .into_any_element()
+}
+
+/// What a tab shows while it has nothing to list.
+fn empty_state(icon: IconName, text: &'static str) -> AnyElement {
+    v_flex()
+        .pt_10()
+        .items_center()
+        .gap_2()
+        .child(Icon::new(icon).text_color(ui::faint()))
+        .child(
+            div()
+                .max_w(px(360.))
+                .text_sm()
+                .text_center()
+                .text_color(ui::muted())
+                .child(text),
+        )
+        .into_any_element()
 }
 
 /// Wall-clock milliseconds, the unit of the activity document's timestamps.
@@ -165,6 +215,29 @@ impl SessionView {
         let selected_id = selected.map(|t| t.summary.id.clone());
         let total_turns: u64 = tasks.iter().map(|t| t.summary.turns).sum();
         let total_tools: u64 = tasks.iter().map(|t| t.summary.tool_calls).sum();
+        let tab = self.agents_panel.tab;
+        let on_jobs = tab == AgentsTab::Jobs;
+        let jobs = &self.activity.jobs;
+        let jobs_running = jobs.iter().filter(|j| j.is_running()).count();
+        let (summary_line, running_now, count) = if on_jobs {
+            (
+                format!(
+                    "{jobs_running} running · {} finished",
+                    jobs.len() - jobs_running
+                ),
+                jobs_running > 0,
+                jobs.len(),
+            )
+        } else {
+            (
+                format!(
+                    "{} running · {} waiting · {} queued · {} finished · {total_turns} turns · {total_tools} tools",
+                    summary.running, summary.waiting, summary.queued, summary.finished
+                ),
+                summary.running > 0,
+                tasks.len(),
+            )
+        };
 
         let header = ui::screen_header()
             .child(Icon::new(IconName::Users).small().text_color(ui::muted()))
@@ -177,13 +250,21 @@ impl SessionView {
                     .child("Agents"),
             )
             .child(
-                div().flex_1().min_w_0().truncate().text_sm().text_color(ui::muted()).child(format!(
-                    "{} running · {} waiting · {} queued · {} finished · {total_turns} turns · {total_tools} tools",
-                    summary.running, summary.waiting, summary.queued, summary.finished
-                )),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(ui::muted())
+                    .child(summary_line),
             )
-            .when(summary.running > 0, |d| {
-                d.child(ui::pulse(div().flex_shrink_0().size(px(6.)).rounded_full().bg(ui::warning()),
+            .when(running_now, |d| {
+                d.child(ui::pulse(
+                    div()
+                        .flex_shrink_0()
+                        .size(px(6.))
+                        .rounded_full()
+                        .bg(ui::warning()),
                 ))
             })
             .child(
@@ -192,7 +273,7 @@ impl SessionView {
                     .text_xs()
                     .font_family(ui::MONO)
                     .text_color(ui::faint())
-                    .child(tasks.len().to_string()),
+                    .child(count.to_string()),
             )
             .child(
                 Button::new("agents-close")
@@ -230,16 +311,35 @@ impl SessionView {
             .border_1()
             .border_color(ui::border())
             .child(tab_button("agents-tab", "Agents", AgentsTab::Agents))
-            .child(tab_button("activity-tab", "Activity", AgentsTab::Activity));
+            .child(tab_button("activity-tab", "Activity", AgentsTab::Activity))
+            .child(tab_button("jobs-tab", "Jobs", AgentsTab::Jobs));
 
-        let left_body = match self.agents_panel.tab {
+        let no_subagents = || {
+            empty_state(
+                IconName::Bot,
+                "No subagents yet. When el Gentleman delegates work, helpers appear here live.",
+            )
+        };
+        let left_body = match tab {
+            AgentsTab::Agents if tasks.is_empty() => no_subagents(),
             AgentsTab::Agents => {
                 self.render_agents_table(&visible, selected_id.as_deref(), now, cx)
             }
             AgentsTab::Activity => match selected {
                 Some(task) => self.render_thread(task, cx),
-                None => div().into_any_element(),
+                None => no_subagents(),
             },
+            AgentsTab::Jobs if jobs.is_empty() => empty_state(
+                IconName::Activity,
+                "No background jobs yet. Commands the agent runs in the background show up here.",
+            ),
+            AgentsTab::Jobs => v_flex()
+                .gap_0p5()
+                .children(
+                    jobs.iter()
+                        .map(|job| div().px_3().py_1p5().child(job_row(job))),
+                )
+                .into_any_element(),
         };
 
         let left = v_flex()
@@ -255,24 +355,7 @@ impl SessionView {
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
-                    .child(if tasks.is_empty() {
-                        v_flex()
-                            .pt_10()
-                            .items_center()
-                            .gap_2()
-                            .child(Icon::new(IconName::Bot).text_color(ui::faint()))
-                            .child(
-                                div()
-                                    .max_w(px(360.))
-                                    .text_sm()
-                                    .text_center()
-                                    .text_color(ui::muted())
-                                    .child("No subagents yet. When el Gentleman delegates work, helpers appear here live."),
-                            )
-                            .into_any_element()
-                    } else {
-                        left_body
-                    }),
+                    .child(left_body),
             );
 
         let right = v_flex()
@@ -295,7 +378,7 @@ impl SessionView {
             .gap_2()
             .border_t_1()
             .border_color(ui::border())
-            .when_some(selected.filter(|t| t.summary.is_active()).map(|t| t.summary.clone()), |d, task| {
+            .when_some(selected.filter(|t| !on_jobs && t.summary.is_active()).map(|t| t.summary.clone()), |d, task| {
                 d.child(
                     Button::new("agents-stop")
                         .danger()
@@ -307,18 +390,20 @@ impl SessionView {
                         .on_click(cx.listener(move |this, _, _, cx| this.ask_to_stop_agent(&task, cx))),
                 )
             })
-            .child(
-                Button::new("agents-filter")
-                    .ghost()
-                    .small()
-                    .icon(Icon::new(IconName::Funnel))
-                    .label(filter.label())
-                    .selected(filter != AgentsFilter::All)
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.agents_panel.filter = this.agents_panel.filter.next();
-                        cx.notify();
-                    })),
-            )
+            .when(!on_jobs, |d| {
+                d.child(
+                    Button::new("agents-filter")
+                        .ghost()
+                        .small()
+                        .icon(Icon::new(IconName::Funnel))
+                        .label(filter.label())
+                        .selected(filter != AgentsFilter::All)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.agents_panel.filter = this.agents_panel.filter.next();
+                            cx.notify();
+                        })),
+                )
+            })
             .child(div().flex_1())
             .child(
                 Button::new("agents-close")
@@ -327,24 +412,26 @@ impl SessionView {
                     .label("Close")
                     .on_click(cx.listener(|this, _, _, cx| this.close_agents(cx))),
             )
-            .child(
-                Button::new("agents-transcript")
-                    .primary()
-                    .small()
-                    .icon(Icon::new(if self.agents_panel.tab == AgentsTab::Activity {
-                        IconName::ArrowLeft
-                    } else {
-                        IconName::MessageSquare
-                    }))
-                    .label(if self.agents_panel.tab == AgentsTab::Activity { "Back to agents" } else { "Open transcript" })
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.agents_panel.tab = match this.agents_panel.tab {
-                            AgentsTab::Agents => AgentsTab::Activity,
-                            AgentsTab::Activity => AgentsTab::Agents,
-                        };
-                        cx.notify();
-                    })),
-            );
+            .when(!on_jobs, |d| {
+                d.child(
+                    Button::new("agents-transcript")
+                        .primary()
+                        .small()
+                        .icon(Icon::new(if tab == AgentsTab::Activity {
+                            IconName::ArrowLeft
+                        } else {
+                            IconName::MessageSquare
+                        }))
+                        .label(if tab == AgentsTab::Activity { "Back to agents" } else { "Open transcript" })
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.agents_panel.tab = match this.agents_panel.tab {
+                                AgentsTab::Agents => AgentsTab::Activity,
+                                AgentsTab::Activity | AgentsTab::Jobs => AgentsTab::Agents,
+                            };
+                            cx.notify();
+                        })),
+                )
+            });
 
         let (backdrop, panel) = ui::screen(None);
         Some(
@@ -355,7 +442,14 @@ impl SessionView {
                     "agents-screen",
                     panel
                         .child(header)
-                        .child(h_flex().flex_1().min_h_0().child(left).child(right))
+                        .child(
+                            h_flex()
+                                .flex_1()
+                                .min_h_0()
+                                .child(left)
+                                // A job has no detail pane: the list takes the width.
+                                .when(!on_jobs, |d| d.child(right)),
+                        )
                         .child(footer),
                 ))
                 .into_any_element(),
